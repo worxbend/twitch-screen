@@ -367,22 +367,21 @@ void testBaselineRules() {
   // A re-baseline keeps whatever is already queued for display.
   okEq(q.size(), 2, "the queued cards were not discarded by re-baselining");
 
-  // 5. The two tests are complements, over the whole interesting range. Whatever
-  //    the device decides here, the relay decides the opposite with the same two
-  //    numbers — which is the property that makes replay work at all.
-  const uint32_t marks[] = {0, 1, 50, 117, 500, 501, 900};
-  for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); ++i) {
-    for (size_t j = 0; j < sizeof(marks) / sizeof(marks[0]); ++j) {
-      NotifyQueue<8> probe;
-      probe.greet(marks[i], 0x1111);          // fresh boot adopts marks[i]
-      const bool deviceResumes =
-          probe.greet(marks[j], 0x3333) == NotifyQueue<8>::Greet::Resumed;
-      // DeviceHubState.greet: `lastSeq.isAfter(SeqNo.Zero) && !lastSeq.isAfter(latestSequence)`
-      const bool relayReplays = marks[i] > 0 && marks[i] <= marks[j];
-      ok(deviceResumes == relayReplays,
-         "the device's §10.2 test is the complement of the relay's §10.3 test");
-    }
+  // Explicit §10.2 device cases. Cross-language replay is tested by the socket
+  // suite and golden stream below; copying the relay predicate is not parity.
+  struct BaselineCase { uint32_t previous, latest; bool resumes; };
+  const BaselineCase cases[] = {
+    {0, 0, false}, {0, 127, false}, {117, 127, true}, {127, 127, true},
+    {128, 127, false}, {0xffffffffu, 0xffffffffu, true}, {0xffffffffu, 1, false}
+  };
+  for (const auto &c : cases) {
+    NotifyQueue<8> probe;
+    probe.greet(c.previous, 0x1111);
+    const bool resumed = probe.greet(c.latest, 0x3333) == NotifyQueue<8>::Greet::Resumed;
+    ok(resumed == c.resumes, "device follows explicit baseline example");
+    okEq(probe.lastSeq(), c.resumes ? c.previous : c.latest, "baseline after greeting");
   }
+
 }
 
 // §18 V3 is the WELCOME the device actually greets on; drive the baseline with

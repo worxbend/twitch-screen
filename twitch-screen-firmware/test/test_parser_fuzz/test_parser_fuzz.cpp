@@ -66,6 +66,43 @@ int main() {
       ++failures; printf("FAIL: chunk invariance at seed iteration %u\n", iteration);
     }
   }
+  // Independent construction oracle: intact golden frames separated by bytes
+  // that cannot begin a header. A parser that drops every frame would satisfy
+  // chunk invariance above, but fails these exact count/hash/budget expectations.
+  for (unsigned iteration = 0; iteration < 1000; ++iteration) {
+    std::vector<uint8_t> bytes;
+    Result expected = {2166136261u, 0, 0, 0, false};
+    const unsigned frames = 1 + randomWord() % 16;
+    for (unsigned piece = 0; piece < frames; ++piece) {
+      const unsigned noise = randomWord() % 32;
+      bytes.insert(bytes.end(), noise, 0x55);
+      expected.resync += noise;
+      const auto &vector = gv::ALL_VECTORS[randomWord() % gv::ALL_COUNT];
+      bytes.insert(bytes.end(), vector.frame, vector.frame + vector.size);
+      ++expected.frames;
+      expected.bytes += vector.size;
+      const auto result = vector.frame[3] < 0x20 ? tsb::DecodeResult::WrongDirection
+                                               : tsb::DecodeResult::Ok;
+      expected.hash = (expected.hash ^ static_cast<uint32_t>(result)) * 16777619u;
+      expected.hash = (expected.hash ^ vector.frame[3]) * 16777619u;
+      for (size_t i = tsb::HEADER_SIZE; i < vector.size; ++i)
+        expected.hash = (expected.hash ^ vector.frame[i]) * 16777619u;
+    }
+    const Result got = parse(bytes, 128);
+    ++checks;
+    if (got.hash != expected.hash || got.frames != expected.frames ||
+        got.bytes != expected.bytes || got.resync != expected.resync || got.fatal) {
+      ++failures; printf("FAIL: golden/noise oracle iteration %u\n", iteration);
+    }
+  }
+  for (unsigned noise : {4095u, 4096u, 4097u}) {
+    const Result result = parse(std::vector<uint8_t>(noise, 0x55), 128);
+    ++checks;
+    if (result.frames != 0 || result.fatal != (noise >= 4096) ||
+        result.resync != (noise >= 4096 ? 4096 : noise)) {
+      ++failures; printf("FAIL: resync budget oracle at %u bytes\n", noise);
+    }
+  }
   printf("%d checks, %d failures\n", checks, failures);
   return failures != 0;
 }

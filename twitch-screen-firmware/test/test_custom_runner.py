@@ -33,6 +33,24 @@ class CustomTestRunner(TestRunnerBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._failures = []
+        self._saw_summary = False
+
+    def stage_testing(self):
+        if self.options.without_testing:
+            return None
+        try:
+            return super().stage_testing()
+        finally:
+            if not self._saw_summary:
+                self.test_suite.add_case(
+                    TestCase(
+                        name=f"{self.test_suite.test_name} (missing summary)",
+                        status=TestStatus.ERRORED,
+                        exception=RuntimeError("Host suite ended without a check summary"),
+                        stdout="\n".join(self._failures),
+                        source=TestCaseSource(filename=self.test_suite.test_dir),
+                    )
+                )
 
     def on_testing_line_output(self, line):
         if self.options.verbose:
@@ -46,8 +64,9 @@ class CustomTestRunner(TestRunnerBase):
         if not match:
             return
 
+        self._saw_summary = True
         checks, failures = int(match.group(1)), int(match.group(2))
-        passed = failures == 0
+        passed = checks > 0 and failures == 0
         self.test_suite.add_case(
             TestCase(
                 name="%s (%d checks)" % (self.test_suite.test_name, checks),
