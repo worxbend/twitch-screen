@@ -162,3 +162,49 @@ The existing masking tests ("the rendered configuration masks every secret" and 
 | `./mill --no-daemon test` | SUCCESS. 38 suites, 439 tests, 0 failed. |
 | `./mill --no-daemon mill.scalalib.scalafmt/` then `mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
 | `git diff --check` | clean |
+
+## K-018: Cleartext management credentials with no warning (plain HTTP, host 0.0.0.0 default)
+
+- Severity: Medium-bug. Area: relay-twitch.
+- **Disposition: fixed.** It closes the `[partial]` test gap. The WARN already existed at `HttpApi.scala:52-55`, but no test checked it or the loopback classification.
+
+### Change
+
+- `twitch-screen-relay/src/twitchscreen/relay/http/HttpApi.scala`: a small extraction that keeps behavior the same.
+  - `object HttpApi` gains `private val LoopbackHosts` (`localhost`, `127.0.0.1`, `::1`, `[::1]`), a pure `private[http] def isLoopback(host: Hostname)` that lowercases with `Locale.ROOT`, and `private[http] val PlaintextNonLoopbackWarning`. The message text is unchanged, so `docs/reference/relay-configuration.md:148` still describes it.
+  - `startOnPort` now runs `if !HttpApi.isLoopback(config.host) then logger.warn(HttpApi.PlaintextNonLoopbackWarning)`. It still logs once per bind, from the same `twitchscreen.relay.http.HttpApi` logger.
+- `twitch-screen-relay/test/src/twitchscreen/relay/http/ManagementAuthSuite.scala`:
+  - `withServer` takes `host: String = "127.0.0.1"`. Existing callers keep the default.
+  - New helper `plaintextWarnings(host)`. It attaches a logback `ListAppender` to the `HttpApi` logger, starts and stops the API on `host`, and returns the WARN messages that contain `plaintext HTTP on a non-loopback interface`. The appender is detached and stopped in `finally`. The pattern is copied from `DeviceBackpressureSuite`.
+
+### Tests (`ManagementAuthSuite.scala`, 3 new)
+
+- "a non-loopback bind warns once that management credentials travel in plaintext": binds `0.0.0.0` on an ephemeral port and expects exactly 1 warning.
+- "loopback binds do not warn about plaintext management credentials": `127.0.0.1` and `LOCALHOST` each produce `Nil`. `LOCALHOST` bound fine on this host, so it did not need a fallback.
+- "loopback classification is case-insensitive and covers IPv4, IPv6 and bracketed IPv6": `isLoopback` returns true for `localhost`, `LOCALHOST`, `127.0.0.1`, `::1`, `[::1]` and ` localhost ` (which `Hostname` trims). It returns false for `0.0.0.0`, `::`, `192.168.1.10` and `relay.example.com`.
+
+### Red, then green
+
+- Red, compile: `value isLoopback is not a member of object twitchscreen.relay.http.HttpApi`.
+- Green: `./mill --no-daemon test.testOnly twitchscreen.relay.http.ManagementAuthSuite`: 14 tests (11 + 3), 0 failed.
+
+### Mutation proof (each mutation was reverted afterwards)
+
+| Mutation | Result |
+|---|---|
+| Delete the `logger.warn` line | 1 failed out of 14: "a non-loopback bind warns once ..." |
+| Invert to `if HttpApi.isLoopback(config.host)` | 2 failed out of 14: "a non-loopback bind warns once ..." and "loopback binds do not warn ..." |
+| Drop `.toLowerCase(Locale.ROOT)` | 2 failed out of 14: "loopback binds do not warn ..." and "loopback classification ..." (message `LOCALHOST`) |
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly twitchscreen.relay.http.ManagementAuthSuite` | SUCCESS. 14 tests, 0 failed. |
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.http.*' 'twitchscreen.relay.observability.*'` | ApiSuite 27, TraceIdMdcSuite 2, ManagementRoutesSuite 4, DiagnosticsSuite 5, OtelLinkageSuite 3: 0 failed. ManagementAuthSuite failed 1 of 14 on the first run and then passed 14/14 in 3 of 3 reruns. See the note below. |
+| `./mill --no-daemon test` | SUCCESS. 39 suites, 444 tests, 0 failed. |
+| `./mill --no-daemon compile` | SUCCESS (`-Werror`) |
+| `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
+| `git diff --check` | clean |
+
+Note on the flake: the first parallel package run failed "a slowly trickled body cannot extend the whole-request deadline" (K-017) at `assertEquals(calls.get(), 0)`. So under parallel load, a protected handler ran once during a trickle case. That test and its code path are not touched by K-018: the new tests never call `/protected`, and each `withServer` has its own `calls` counter. It did not reproduce in the next 3 package runs or in the full `test` run. I am recording it as a timing flake that was already in K-017, for integration to follow up.

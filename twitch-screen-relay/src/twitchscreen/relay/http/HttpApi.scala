@@ -12,7 +12,7 @@ import sttp.tapir.server.netty.sync.{NettySyncServer, NettySyncServerBinding, Ne
 import sttp.tapir.server.tracing.opentelemetry.OpenTelemetryTracing
 import sttp.tapir.swagger.bundle.SwaggerInterpreter
 import twitchscreen.relay.RelayVersion
-import twitchscreen.relay.config.HttpConfig
+import twitchscreen.relay.config.{Hostname, HttpConfig}
 import twitchscreen.relay.observability.SetTraceIdInMDCInterceptor
 import io.netty.handler.codec.http.HttpServerCodec
 import io.netty.handler.timeout.ReadTimeoutHandler
@@ -50,10 +50,7 @@ final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenT
       readTimeout: FiniteDuration = HttpApi.ReadTimeout,
       requestDeadline: FiniteDuration = HttpApi.WholeRequestTimeout
   )(using Ox): NettySyncServerBinding =
-    if !Set("localhost", "127.0.0.1", "::1", "[::1]").contains(config.host.value.toLowerCase(java.util.Locale.ROOT)) then
-      logger.warn(
-        "Management credentials are served over plaintext HTTP on a non-loopback interface; use a trusted TLS proxy and restrict direct access"
-      )
+    if !HttpApi.isLoopback(config.host) then logger.warn(HttpApi.PlaintextNonLoopbackWarning)
     val netty = NettyConfig.default
       .host(config.host.value)
       .port(port)
@@ -75,6 +72,14 @@ final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenT
         afterBind(binding.port)
 
 object HttpApi:
+  private val LoopbackHosts: Set[String] = Set("localhost", "127.0.0.1", "::1", "[::1]")
+
+  /** True when `host` binds only the loopback interface, so management credentials never leave the machine in plaintext. */
+  private[http] def isLoopback(host: Hostname): Boolean = LoopbackHosts.contains(host.value.toLowerCase(java.util.Locale.ROOT))
+
+  private[http] val PlaintextNonLoopbackWarning: String =
+    "Management credentials are served over plaintext HTTP on a non-loopback interface; use a trusted TLS proxy and restrict direct access"
+
   private[http] val MaxConnections: Int = 128
   private[http] val MaxBodyBytes: Long = 65536
   private[http] val ReadTimeout: FiniteDuration = 30.seconds

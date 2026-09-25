@@ -1,5 +1,8 @@
 package twitchscreen.relay.http
 
+import ch.qos.logback.classic.{Level, Logger as LogbackLogger}
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import io.opentelemetry.api.OpenTelemetry
 import java.net.{URI, Socket}
 import java.io.ByteArrayInputStream
@@ -9,12 +12,14 @@ import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
+import org.slf4j.LoggerFactory
 import ox.{discard, fork, supervised}
 import sttp.shared.Identity
 import sttp.tapir.*
 import sttp.tapir.server.ServerEndpoint
 import twitchscreen.relay.config.*
 import scala.concurrent.duration.{DurationInt, DurationLong, FiniteDuration}
+import scala.jdk.CollectionConverters.*
 
 class ManagementAuthSuite extends munit.FunSuite:
   ox.logback.InheritableMDC.init
@@ -27,7 +32,11 @@ class ManagementAuthSuite extends munit.FunSuite:
   private val auth = HttpAuthConfig("operator", Sensitive(hash), Sensitive(token))
   private val basic = "Basic " + Base64.getEncoder.encodeToString(s"operator:$password".getBytes(UTF_8))
 
-  private def withServer(readTimeout: FiniteDuration = 30.seconds, requestDeadline: FiniteDuration = 30.seconds)(
+  private def withServer(
+      readTimeout: FiniteDuration = 30.seconds,
+      requestDeadline: FiniteDuration = 30.seconds,
+      host: String = "127.0.0.1"
+  )(
       test: (Int, AtomicInteger) => Unit
   ): Unit = supervised:
     val calls = AtomicInteger()
@@ -49,7 +58,7 @@ class ManagementAuthSuite extends munit.FunSuite:
           .handle(_ => Left(Fail.Unauthorized("callback signature required"))),
         Http.baseEndpoint.get.in("failure").out(stringBody).handleSuccess(_ => throw IllegalStateException("private exception detail"))
       )
-    val config = HttpConfig(Hostname("127.0.0.1").toOption.get, Port(8080).toOption.get, auth)
+    val config = HttpConfig(Hostname(host).toOption.get, Port(8080).toOption.get, auth)
     val binding =
       HttpApi(List(api), config, OpenTelemetry.noop()).startOnPort(0, readTimeout = readTimeout, requestDeadline = requestDeadline)
     test(binding.port, calls)
@@ -73,6 +82,21 @@ class ManagementAuthSuite extends munit.FunSuite:
     val client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build()
     try client.send(builder.build(), HttpResponse.BodyHandlers.ofString())
     finally client.close()
+
+  /** Starts and stops the API on `host` and returns the WARN messages that say management credentials travel in plaintext. */
+  private def plaintextWarnings(host: String): List[String] =
+    val logger = LoggerFactory.getLogger(classOf[HttpApi]).asInstanceOf[LogbackLogger]
+    val appender = ListAppender[ILoggingEvent]()
+    appender.start()
+    logger.addAppender(appender)
+    try withServer(host = host)((_, _) => ())
+    finally
+      logger.detachAppender(appender).discard
+      appender.stop()
+    appender.list.asScala.toList
+      .filter(_.getLevel == Level.WARN)
+      .map(_.getFormattedMessage)
+      .filter(_.contains("plaintext HTTP on a non-loopback interface"))
 
   /** Writes `head`, then `piece` every `interval` until the server closes the socket or `cap` passes. Returns the time the server took to
     * close the connection, or None if it never did within `cap`.
@@ -219,6 +243,18 @@ class ManagementAuthSuite extends munit.FunSuite:
       finally release.countDown()
       assertEquals(first.join().code.code, 200)
       assertEquals(second.join().code.code, 200)
+
+  test("a non-loopback bind warns once that management credentials travel in plaintext"):
+    assertEquals(plaintextWarnings("0.0.0.0").size, 1)
+
+  test("loopback binds do not warn about plaintext management credentials"):
+    List("127.0.0.1", "LOCALHOST").foreach: host =>
+      assertEquals(plaintextWarnings(host), Nil, host)
+
+  test("loopback classification is case-insensitive and covers IPv4, IPv6 and bracketed IPv6"):
+    def loopback(host: String) = HttpApi.isLoopback(Hostname(host).toOption.get)
+    List("localhost", "LOCALHOST", "127.0.0.1", "::1", "[::1]", " localhost ").foreach(host => assert(loopback(host), host))
+    List("0.0.0.0", "::", "192.168.1.10", "relay.example.com").foreach(host => assert(!loopback(host), host))
 
   test("silent connections and incomplete HTTP headers hit a read deadline"):
     withServer(readTimeout = 200.millis): (port, calls) =>
