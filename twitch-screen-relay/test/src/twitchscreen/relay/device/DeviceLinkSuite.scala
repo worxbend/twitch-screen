@@ -1,8 +1,10 @@
 package twitchscreen.relay.device
 
+import java.time.Clock
 import java.util.concurrent.atomic.AtomicInteger
 import ox.{discard, forkDiscard, supervised, timeoutOption}
 import scala.concurrent.duration.DurationInt
+import twitchscreen.relay.bus.EventBus
 import twitchscreen.relay.config.{ChatNotifications, DeviceLinkConfig}
 import twitchscreen.relay.protocol.*
 
@@ -362,6 +364,30 @@ class DeviceLinkSuite extends munit.FunSuite:
         assertEquals(
           byesOf(frames).map(bye => (bye.code, bye.detail.value, bye.retryAfter)),
           List((ByeCode.UnsupportedVersion, 3, 30.seconds))
+        )
+
+  test(
+    "§7/§6.7: a frame with another version byte on an established session gets BYE(1), detail 3, the 30 s floor, stamped with that version"
+  ):
+    supervised:
+      val bus = EventBus(Clock.systemUTC(), queueCapacity = 64)
+      val detaches = bus.subscribe("detach")
+      val (_, port) = TestRelay.start(bus = bus)
+      withDevice(port): device =>
+        device.hello("roundlcd-01", lastSeq = 0)
+        device.receiveMany(2).discard
+        // A well-framed v2 PING after WELCOME: the established-session site of the shared version refusal, not the handshake one.
+        device.send(DeviceMessage.Ping(Token.fromWire(5L)), ProtocolVersion.fromWire(2.toByte))
+        val frames = device.drain()
+        assertEquals(frames.map(_.header.version.value), List(2), "one BYE, stamped with the version byte that provoked it")
+        assertEquals(
+          byesOf(frames),
+          List(RelayMessage.Bye(ByeCode.UnsupportedVersion, ByeDetail.of(3), 30.seconds, "relay speaks v3 only"))
+        )
+        assertEquals(device.receive(), None, "the relay closes right after the BYE")
+        assertEquals(
+          TestRelay.detachReason(detaches, PongBudget),
+          Some(DisconnectReason.ProtocolViolation("frame carried version 2").describe)
         )
 
   test("§11.1 rule 2: the handshake timeout is a deadline from accept — a HELLO trickled a byte at a time does not stretch it"):

@@ -102,3 +102,43 @@ class HubResilienceSuite extends munit.FunSuite:
       device.send(DeviceMessage.Ping(Token.fromWire(9)))
       assert(blocked.await(2, TimeUnit.SECONDS))
       assert(timeoutOption(2.seconds)(server.join()).isDefined)
+
+  test("K-057: a failed PONG write ends the session with WriteFailed promptly, not at the idle timeout"):
+    supervised:
+      val failing = AtomicBoolean(false)
+      class PongFailingSocket extends java.net.Socket:
+        override def getOutputStream: OutputStream =
+          val underlying = super.getOutputStream
+          new OutputStream:
+            private def guard(): Unit = if failing.get() then throw IOException("peer gone")
+            override def write(value: Int): Unit =
+              guard()
+              underlying.write(value)
+            override def write(bytes: Array[Byte], offset: Int, length: Int): Unit =
+              guard()
+              underlying.write(bytes, offset, length)
+            override def flush(): Unit =
+              guard()
+              underlying.flush()
+      class Listener extends java.net.ServerSocket(0):
+        def accepted(): PongFailingSocket =
+          val socket = PongFailingSocket()
+          implAccept(socket)
+          socket
+      val listener = useCloseableInScope(Listener())
+      val clock = Clock.systemUTC()
+      val bus = EventBus(clock, 64)
+      val events = bus.subscribe("detach")
+      // Neither the heartbeat nor the idle timer can end the session inside the budget below: only the PONG path can.
+      val config = TestRelay.config.copy(idleTimeout = 60.seconds, pingInterval = 30.seconds)
+      val hub = DeviceHub.start(config, ChatNotifications.Show, clock, bus)
+      val server = fork(DeviceSession.run(listener.accepted(), config, hub, clock))
+      val device = useCloseableInScope(TestDevice(listener.getLocalPort))
+      device.hello("roundlcd-01", lastSeq = 0)
+      assertEquals(device.receiveMany(2).size, 2, "WELCOME and STATS reach the device before the stream fails")
+      failing.set(true)
+      device.send(DeviceMessage.Ping(Token.fromWire(7)))
+      assertEquals(TestRelay.detachReason(events, 2.seconds), Some(DisconnectReason.WriteFailed.describe))
+      assert(timeoutOption(2.seconds)(server.join()).isDefined, "the session ends without waiting for the 60 s idle timeout")
+      assertEquals(device.drain(), Nil, "no PONG reaches the device, and the connection ends")
+      assertEquals(hub.links, Nil)

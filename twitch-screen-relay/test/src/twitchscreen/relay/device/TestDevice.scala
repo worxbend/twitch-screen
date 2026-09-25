@@ -3,9 +3,10 @@ package twitchscreen.relay.device
 import java.io.{BufferedInputStream, OutputStream}
 import java.net.Socket
 import java.time.Clock
-import ox.Ox
-import scala.concurrent.duration.DurationInt
-import twitchscreen.relay.bus.EventBus
+import ox.{timeoutOption, Ox}
+import ox.channels.Source
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
+import twitchscreen.relay.bus.{BusEvent, EventBus, RelayEvent}
 import twitchscreen.relay.config.{ChatNotifications, DeviceLinkConfig, Hostname, Port}
 import twitchscreen.relay.protocol.*
 
@@ -80,6 +81,14 @@ private[device] object TestDevice:
   val AsciiOnlyCaps: Capabilities = Capabilities.Ack | Capabilities.Generic
 
 private[device] object TestRelay:
+  /** Waits up to `budget` for the first `DeviceDisconnected` on `events` and returns its reason, skipping every other event. */
+  def detachReason(events: Source[BusEvent], budget: FiniteDuration): Option[String] =
+    timeoutOption(budget):
+      Iterator
+        .continually(events.receive())
+        .collectFirst { case BusEvent(_, RelayEvent.DeviceDisconnected(_, _, reason)) => reason }
+        .get
+
   val config: DeviceLinkConfig = DeviceLinkConfig(
     host = Hostname("127.0.0.1").toOption.get,
     port = Port(1).toOption.get, // replaced per test by `start`, which binds an OS-assigned port
@@ -93,13 +102,16 @@ private[device] object TestRelay:
     maxFrameLength = Tsb3.MaxFrame
   )
 
-  /** Starts a hub and listener on a free port, returning both. Everything stops when the enclosing scope ends. */
+  /** Starts a hub and listener on a free port, returning both. Pass `bus` to observe the hub's events, such as a detach reason. Everything
+    * stops when the enclosing scope ends.
+    */
   def start(
       config: DeviceLinkConfig = config,
       chat: ChatNotifications = ChatNotifications.Show,
-      sessionIdSource: () => Long = DeviceHub.RandomSessionId
+      sessionIdSource: () => Long = DeviceHub.RandomSessionId,
+      bus: EventBus = EventBus(Clock.systemUTC(), queueCapacity = 64)
   )(using Ox): (DeviceHub, Int) =
     val clock = Clock.systemUTC()
-    val hub = DeviceHub.start(config, chat, clock, EventBus(clock, queueCapacity = 64), sessionIdSource)
+    val hub = DeviceHub.start(config, chat, clock, bus, sessionIdSource)
     val listener = DeviceLinkServer.startOnPort(config, hub, clock, 0)
     (hub, listener.getLocalPort)
