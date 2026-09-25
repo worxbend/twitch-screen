@@ -115,3 +115,50 @@ The existing masking tests ("the rendered configuration masks every secret" and 
 | `./mill --no-daemon test` | SUCCESS. 37 suites, 431 tests, 0 failed. |
 | `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
 | `git diff --check` | clean |
+
+## K-017: No idle/read timeout on HTTP listener (slowloris)
+
+- Severity: Medium-bug. Area: relay-twitch.
+- **Disposition: fixed.** It closes the `[partial]` gap: the whole-request deadline. `RequestReadTimeout` sits after the codec, so every decoded body chunk reset it. A body trickled 1 byte (or one `1\r\nA\r\n` chunk) every 29 s could hold a connection for up to about 64 Ki x 30 s, and 128 such connections exhausted the listener. That included a body still being drained after an early 401.
+
+### Change
+
+- New `twitch-screen-relay/src/twitchscreen/relay/http/RequestDeadline.scala`: a per-connection `ChannelInboundHandlerAdapter`.
+  - On an `HttpRequest` with no timer pending, it schedules a close on the channel's event loop after the deadline.
+  - On a `LastHttpContent` it cancels the timer. The check is separate, so a `FullHttpRequest` starts and cancels at once.
+  - A plain `HttpContent` never reschedules or extends the timer.
+  - The timer is cancelled in `channelInactive` and `handlerRemoved`, so none leaks. The close is quiet, like `RequestReadTimeout`.
+  - The state is a plain `var`, touched only on the event loop; a comment says so.
+- `HttpApi.scala`:
+  - Added the fixed limit `HttpApi.WholeRequestTimeout = 30.seconds`. It is not a config knob, like `MaxConnections`, `MaxBodyBytes` and `ReadTimeout`.
+  - `startOnPort` takes `requestDeadline` (defaulting to that limit) so tests can use a small one.
+  - Pipeline: codec, then `requestDeadline`, then `requestReadTimeout`, then `requestBodyLimit`. The deadline comes before the body limit, so it also covers chunks the body limit drops after a 413. The pipeline comment is updated.
+- `docs/reference/relay-configuration.md`: the fixed-limits paragraph now also describes the 30-second whole-request deadline, from decoded headers to the final body chunk, which a trickled body cannot extend. It stays in the list of limits that are not deployment knobs.
+
+### Tests (`ManagementAuthSuite.scala`, 2 new)
+
+- `withServer` takes a `requestDeadline` and passes it to `startOnPort`. The new raw-socket helper `trickleUntilClosed` writes the head, then a forked writer sends a piece every interval. The main thread reads until EOF or reset, with a 5 s cap that turns a hang into a failure.
+- "a slowly trickled body cannot extend the whole-request deadline": `readTimeout = 400ms`, `requestDeadline = 1s`, 100 ms trickle. The trickle is shorter than `readTimeout`, so the read deadline alone never fires. There are three cases:
+  - authenticated `Content-Length: 1000`, one byte at a time;
+  - authenticated `Transfer-Encoding: chunked`, `1\r\nA\r\n` at a time;
+  - unauthenticated `Content-Length: 1000`, where Tapir may answer 401 early and the rest of the body is drained.
+
+  Each case must close with elapsed time >= 800 ms and < 3 s, and `calls == 0`.
+- "the whole-request deadline restarts for each keep-alive request and ends with the body": `requestDeadline = 500ms`. Two POSTs go over one keep-alive socket, with 900 ms idle between them, and both return 200. This proves the timer is cancelled on `LastHttpContent` and restarts per request.
+- "silent connections and incomplete HTTP headers hit a read deadline" is unchanged and still green.
+
+### Red, then green
+
+- Red, compile: `startOnPort ... does not have a parameter requestDeadline`.
+- Red, behaviour: I added the `requestDeadline` parameter to `startOnPort` temporarily unused, with no handler. `==> X ... a slowly trickled body cannot extend the whole-request deadline 5.043s` failed with `authenticated fixed-length: a trickled body held the connection open past the cap`. ManagementAuthSuite: 1 failed, 11 total. The keep-alive sanity test passed, as expected, since it guards against over-closing.
+- Green: `./mill --no-daemon test.testOnly twitchscreen.relay.http.ManagementAuthSuite`: 11 tests, 0 failed.
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly twitchscreen.relay.http.ManagementAuthSuite` | SUCCESS. 11 tests (9 + 2), 0 failed. |
+| `./mill --no-daemon compile` | SUCCESS, with `-Werror`, no warnings |
+| `./mill --no-daemon test` | SUCCESS. 38 suites, 439 tests, 0 failed. |
+| `./mill --no-daemon mill.scalalib.scalafmt/` then `mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
+| `git diff --check` | clean |

@@ -47,7 +47,8 @@ final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenT
   private[http] def startOnPort(
       port: Int,
       afterBind: Int => Unit = _ => (),
-      readTimeout: FiniteDuration = HttpApi.ReadTimeout
+      readTimeout: FiniteDuration = HttpApi.ReadTimeout,
+      requestDeadline: FiniteDuration = HttpApi.WholeRequestTimeout
   )(using Ox): NettySyncServerBinding =
     if !Set("localhost", "127.0.0.1", "::1", "[::1]").contains(config.host.value.toLowerCase(java.util.Locale.ROOT)) then
       logger.warn(
@@ -61,8 +62,10 @@ final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenT
         (pipeline, handler) =>
           NettyConfig.defaultInitPipeline(settings)(pipeline, handler)
           val codec = pipeline.context(classOf[HttpServerCodec]).name()
-          // After the codec: partial header bytes cannot indefinitely reset this deadline.
-          pipeline.addAfter(codec, "requestReadTimeout", RequestReadTimeout(readTimeout)).discard
+          // Both deadlines sit after the codec, so partial header bytes cannot reset them. The whole-request deadline comes first so it
+          // also sees the body chunks RequestBodyLimit drops after a rejection; decoded body chunks never extend it.
+          pipeline.addAfter(codec, "requestDeadline", RequestDeadline(requestDeadline)).discard
+          pipeline.addAfter("requestDeadline", "requestReadTimeout", RequestReadTimeout(readTimeout)).discard
           pipeline.addAfter("requestReadTimeout", "requestBodyLimit", RequestBodyLimit(HttpApi.MaxBodyBytes)).discard
     NettySyncServer(serverOptions, netty)
       .addEndpoints(apiEndpoints ++ docEndpoints)
@@ -75,6 +78,9 @@ object HttpApi:
   private[http] val MaxConnections: Int = 128
   private[http] val MaxBodyBytes: Long = 65536
   private[http] val ReadTimeout: FiniteDuration = 30.seconds
+
+  /** Headers plus body, however slowly the body arrives. */
+  private[http] val WholeRequestTimeout: FiniteDuration = 30.seconds
 
 /** An expected slow/incomplete request closes quietly instead of producing an exception stack trace per connection. */
 private final class RequestReadTimeout(timeout: FiniteDuration) extends ReadTimeoutHandler(timeout.toMillis, TimeUnit.MILLISECONDS):

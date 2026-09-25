@@ -145,7 +145,7 @@ This disables the no-device duration rule and retains 1000 log records. Explicit
 
 Polling, simulation, aggregation and alert evaluation intervals must be at least 1 ms; statistics and failure-rate windows must be at least 1 second. TCP accept backlog is bounded to 1–1024.
 
-Additional fixed limits in code include 64 simultaneous TCP sessions, 128 HTTP connections, 65536-byte HTTP request bodies, and list `pageSize` values of 1–500. They are not deployment knobs in this version. HTTP connections also have a 30-second decoded-read deadline, including incomplete headers; Tapir bounds response production and idle connections. Non-loopback plaintext HTTP emits a startup warning: use a trusted TLS proxy and restrict direct access.
+Additional fixed limits in code include 64 simultaneous TCP sessions, 128 HTTP connections, 65536-byte HTTP request bodies, and list `pageSize` values of 1–500. They are not deployment knobs in this version. HTTP connections also have a 30-second decoded-read deadline, including incomplete headers, and each request has a 30-second whole-request deadline from its decoded headers to its final body chunk that a slowly trickled body cannot extend; Tapir bounds response production and idle connections. Non-loopback plaintext HTTP emits a startup warning: use a trusted TLS proxy and restrict direct access.
 
 ## OpenTelemetry and JVM options 📊
 

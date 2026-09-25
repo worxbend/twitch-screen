@@ -14,7 +14,7 @@ import sttp.shared.Identity
 import sttp.tapir.*
 import sttp.tapir.server.ServerEndpoint
 import twitchscreen.relay.config.*
-import scala.concurrent.duration.{DurationInt, FiniteDuration}
+import scala.concurrent.duration.{DurationInt, DurationLong, FiniteDuration}
 
 class ManagementAuthSuite extends munit.FunSuite:
   ox.logback.InheritableMDC.init
@@ -27,7 +27,9 @@ class ManagementAuthSuite extends munit.FunSuite:
   private val auth = HttpAuthConfig("operator", Sensitive(hash), Sensitive(token))
   private val basic = "Basic " + Base64.getEncoder.encodeToString(s"operator:$password".getBytes(UTF_8))
 
-  private def withServer(readTimeout: FiniteDuration = 30.seconds)(test: (Int, AtomicInteger) => Unit): Unit = supervised:
+  private def withServer(readTimeout: FiniteDuration = 30.seconds, requestDeadline: FiniteDuration = 30.seconds)(
+      test: (Int, AtomicInteger) => Unit
+  ): Unit = supervised:
     val calls = AtomicInteger()
     val api = new ServerEndpoints:
       override val endpoints: List[ServerEndpoint[Any, Identity]] = List(
@@ -48,7 +50,8 @@ class ManagementAuthSuite extends munit.FunSuite:
         Http.baseEndpoint.get.in("failure").out(stringBody).handleSuccess(_ => throw IllegalStateException("private exception detail"))
       )
     val config = HttpConfig(Hostname("127.0.0.1").toOption.get, Port(8080).toOption.get, auth)
-    val binding = HttpApi(List(api), config, OpenTelemetry.noop()).startOnPort(0, readTimeout = readTimeout)
+    val binding =
+      HttpApi(List(api), config, OpenTelemetry.noop()).startOnPort(0, readTimeout = readTimeout, requestDeadline = requestDeadline)
     test(binding.port, calls)
 
   private def request(
@@ -70,6 +73,62 @@ class ManagementAuthSuite extends munit.FunSuite:
     val client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build()
     try client.send(builder.build(), HttpResponse.BodyHandlers.ofString())
     finally client.close()
+
+  /** Writes `head`, then `piece` every `interval` until the server closes the socket or `cap` passes. Returns the time the server took to
+    * close the connection, or None if it never did within `cap`.
+    */
+  private def trickleUntilClosed(
+      port: Int,
+      head: String,
+      piece: String,
+      interval: FiniteDuration,
+      cap: FiniteDuration = 5.seconds
+  ): Option[FiniteDuration] =
+    val socket = Socket("127.0.0.1", port)
+    try
+      socket.setSoTimeout(cap.toMillis.toInt)
+      val started = System.nanoTime()
+      socket.getOutputStream.write(head.getBytes(UTF_8))
+      val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+      val writer = Thread
+        .ofVirtual()
+        .start: () =>
+          try
+            while !stop.get() && System.nanoTime() - started < cap.toNanos do
+              Thread.sleep(interval.toMillis)
+              socket.getOutputStream.write(piece.getBytes(UTF_8))
+              socket.getOutputStream.flush()
+          catch case _: java.io.IOException | _: InterruptedException => ()
+      val closed =
+        try
+          val in = socket.getInputStream
+          while in.read() != -1 do ()
+          true
+        catch
+          case _: java.net.SocketTimeoutException => false
+          case _: java.io.IOException             => true
+      val elapsed = (System.nanoTime() - started).nanos
+      stop.set(true)
+      writer.join()
+      Option.when(closed)(elapsed)
+    finally socket.close()
+
+  /** Reads one HTTP/1.1 response with a Content-Length body from a raw socket and returns its status code and body. */
+  private def readResponse(in: java.io.InputStream): (Int, String) =
+    val head = StringBuilder()
+    while !head.endsWith("\r\n\r\n") do
+      val byte = in.read()
+      assert(byte != -1, s"connection closed while reading a response: $head")
+      head.append(byte.toChar).discard
+    val lines = head.toString.split("\r\n").toList
+    val status = lines.head.split(" ")(1).toInt
+    val length = lines
+      .collectFirst {
+        case line if line.toLowerCase(java.util.Locale.ROOT).startsWith("content-length:") =>
+          line.drop("content-length:".length).trim.toInt
+      }
+      .getOrElse(0)
+    (status, String(in.readNBytes(length), UTF_8))
 
   test("both credential alternatives independently authorize before management logic"):
     withServer(): (port, calls) =>
@@ -171,6 +230,48 @@ class ManagementAuthSuite extends munit.FunSuite:
           assertEquals(socket.getInputStream.read(), -1)
         finally socket.close()
       assertEquals(calls.get(), 0)
+
+  test("a slowly trickled body cannot extend the whole-request deadline"):
+    // The trickle interval is shorter than readTimeout, so the read deadline alone would never fire.
+    withServer(readTimeout = 400.millis, requestDeadline = 1.second): (port, calls) =>
+      def head(authorization: Option[String], framing: String) =
+        s"POST /api/v1/protected HTTP/1.1\r\nHost: 127.0.0.1:$port\r\n" +
+          authorization.fold("")(value => s"Authorization: $value\r\n") + s"Content-Type: text/plain\r\n$framing\r\n\r\n"
+      val cases = List(
+        "authenticated fixed-length" -> (head(Some(s"Bearer $token"), "Content-Length: 1000"), "A"),
+        "authenticated chunked" -> (head(Some(s"Bearer $token"), "Transfer-Encoding: chunked"), "1\r\nA\r\n"),
+        "unauthenticated fixed-length" -> (head(None, "Content-Length: 1000"), "A")
+      )
+      cases.foreach:
+        case (name, (requestHead, piece)) =>
+          trickleUntilClosed(port, requestHead, piece, 100.millis) match
+            case None => fail(s"$name: a trickled body held the connection open past the cap")
+            case Some(elapsed) =>
+              assert(elapsed >= 800.millis, s"$name closed after $elapsed, before the whole-request deadline")
+              assert(elapsed < 3.seconds, s"$name closed after $elapsed, well past the whole-request deadline")
+      assertEquals(calls.get(), 0)
+
+  test("the whole-request deadline restarts for each keep-alive request and ends with the body"):
+    withServer(readTimeout = 5.seconds, requestDeadline = 500.millis): (port, calls) =>
+      val socket = Socket("127.0.0.1", port)
+      try
+        socket.setSoTimeout(3000)
+        val out = socket.getOutputStream
+        val in = socket.getInputStream
+        def send(body: String) =
+          out.write(
+            s"POST /api/v1/protected HTTP/1.1\r\nHost: 127.0.0.1:$port\r\nAuthorization: Bearer $token\r\nContent-Length: ${body.length}\r\n\r\n$body"
+              .getBytes(UTF_8)
+          )
+          out.flush()
+        send("first")
+        assertEquals(readResponse(in), (200, "first"))
+        // Idle for longer than the whole-request deadline: a completed request must not leave its timer running.
+        Thread.sleep(900)
+        send("second")
+        assertEquals(readResponse(in), (200, "second"))
+      finally socket.close()
+      assertEquals(calls.get(), 2)
 
   test("Basic compares usernames without skipping password work and accepts host case differences"):
     val checked = AtomicInteger()
