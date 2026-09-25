@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scala Code Quality"
+  short_description: "Scala 3 standards and domain design for the relay"
+  default_prompt: "Use $scala-code-quality for the requested twitch-screen-relay Scala task."

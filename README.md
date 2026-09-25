@@ -54,6 +54,28 @@ build. The firmware and simulator can run together without the Scala relay.
 - **CAD:** exported designs are included for inspection and printing. Rebuilding
   them requires the tools listed in the [CAD guide](twitch-screen-cad-design/README.md).
 
+## Scala agent skills
+
+Shared project skills live in [`.agents/skills/`](.agents/skills) and apply to
+`twitch-screen-relay/`:
+
+| Skill | Use |
+|---|---|
+| [`scala-code-quality`](.agents/skills/scala-code-quality/SKILL.md) | Scala 3 style, domain types, total functions, FP/OOP, and clean code |
+| [`scala-fowler-refactoring`](.agents/skills/scala-fowler-refactoring/SKILL.md) | Fowler's refactorings, code smells, and behavior preservation |
+| [`scala-vss-backend`](.agents/skills/scala-vss-backend/SKILL.md) | [VirtusLab Scala Stack](https://vss.virtuslab.com/), Ox, Tapir, and project integrations |
+| [`scala-quality-tooling`](.agents/skills/scala-quality-tooling/SKILL.md) | Mill, Scalafmt, tests, and Scalafix/WartRemover integration policy |
+
+Each skill has relative symlinks in `.claude/skills/`, `.kimi/skills/`,
+`.kimi-code/skills/`, and `.codex/skills/`; edit the `.agents/skills/` source once.
+Both Kimi directory names are provided for CLI versions using either convention.
+Codex discovers the canonical `.agents/skills/` directory directly.
+
+Invoke a skill explicitly with `$scala-code-quality` in Codex,
+`/scala-code-quality` in Claude Code, or `/skill:scala-code-quality` in Kimi.
+The descriptions also support automatic selection. The linting skill distinguishes
+checks already configured in the build from integrations that still need adding.
+
 ## Versioned files
 
 Source, plans, reference images, firmware assets and CAD deliverables are
