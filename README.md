@@ -121,7 +121,7 @@ The device connection is **plain TCP without device authentication**. Keep port 
 | [`twitch-screen-cad-design/`](twitch-screen-cad-design/README.md) | Parametric enclosure, print files, renders | FreeCAD · Blender |
 | [`docs/`](docs/README.md) | Tutorials, setup guides, configuration and API references | GitHub Markdown |
 
-Run each project’s commands from its own directory. There is no shared root build. The old [`demo-server/`](demo-server) entry point is retired: its NDJSON v2 format is incompatible with the current TSB/3 firmware. Use the Scala simulator above.
+Run each project’s commands from its own directory. There is no shared root build. The old Python demo server has been removed: its NDJSON v2 format is incompatible with the current TSB/3 firmware. Use the [Scala simulator](docs/guides/first-simulated-stream.md).
 
 ## 🧰 Commands you’ll actually use
 

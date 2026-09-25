@@ -1,7 +1,7 @@
 # Consolidated review remediation
 
 Baseline: `a66a052`, including the existing Twitch OAuth work. Input:
-[`REVIEW_CONSOLIDATED.md`](../REVIEW_CONSOLIDATED.md). Original source reports
+[the archived consolidated review](https://github.com/worxbend/twitch-screen/blob/7063e51/REVIEW_CONSOLIDATED.md). Original source reports
 referenced by the input are not present in this checkout.
 
 ## Workflow

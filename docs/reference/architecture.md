@@ -54,7 +54,7 @@ flowchart LR
 | Firmware → LCD | LVGL → TFT_eSPI → SPI | Render the local idle screen and notification cards. |
 | CAD source → deliverables | `parameters.json` and Python geometry pipeline | Generate and validate enclosure solids, printable meshes, assemblies, and previews. |
 
-The HTTP API and TSB/3 are separate interfaces. JSON sent to `/api/v1/notifications` is a management request, not a device wire frame. The device does not use HTTP or Twitch credentials. The former Python `demo-server` is a retirement notice for incompatible NDJSON v2; it is not another supported source of TSB/3 events.
+The HTTP API and TSB/3 are separate interfaces. JSON sent to `/api/v1/notifications` is a management request, not a device wire frame. The device does not use HTTP or Twitch credentials. The former Python `demo-server` and its retirement notice have been removed; use the Scala relay's simulated mode for TSB/3 events.
 
 ## Relay assembly and lifetime
 
