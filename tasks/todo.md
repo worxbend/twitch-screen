@@ -15,3 +15,28 @@ All 121 findings are accounted for in [review-status.md](review-status.md).
 Independent verdicts and integrated verification are in [review-judge.md](review-judge.md).
 The push and remote commit are verified by the orchestrator; GitHub Actions
 results are available from the branch run linked in the judge report.
+
+## Round 2
+
+Round 2 work was committed directly to `main`. Evidence is in
+[review-round2-relay.md](review-round2-relay.md) and
+[review-round2-firmware.md](review-round2-firmware.md), and each finding's
+disposition is in [review-status.md](review-status.md).
+
+- [x] Relay: RLY-03, RLY-11, RLY-08, RLY-43, PROTO-03, PROTO-14/16, PROTO-18,
+      RLY-25/16, RLY-21, RLY-41, RLY-12/37, RLY-55. Each was implemented and independently reviewed.
+- [x] Firmware/protocol: FW-01, FW-09, PROTO-09, FW-08/24. Each was implemented and independently reviewed.
+- [x] Integrated validation on `origin/main` f9132c8:
+  - Relay compile with `-Werror` passed. Two full test runs: 33 suites and 371 tests passed on the rerun. The first run had one failure, in the known load-sensitive LifecycleOrderingSuite flake (RLY-50). scalafmt check passed.
+  - Firmware native and ASan/UBSan suites passed 10/10. The ESP32 build passed (67,248 B RAM, 1,151,877 B flash).
+  - All 20 golden vectors matched. Tool tests passed 7/7.
+  - Dependency audit: 181 coordinates, 2 advisories, both covered by exceptions, 0 unexcepted.
+  - Docker build and the 512 MiB container smoke passed.
+  - actionlint was not run because it is not installed on this host, and there were no workflow changes in this round. CAD checks were not run because FreeCAD is not available and there were no CAD changes.
+- [ ] User decision, left unchanged: RLY-42, RLY-58, FW-10, FW-18, PROTO-02,
+      PROTO-10, PROTO-11, REPO-06.
+- [ ] Follow-ups: the RLY-50 LifecycleOrderingSuite/port flake; the RLY-25 idle-timeout
+      15 s limit; the RLY-12 JSON 400 body check through the real server; the
+      possible parallel-suite flake in the ApiSuite pageSize test; RLY-08 does not clear
+      pushedEndStartedAt.
+- [x] Agent instruction to always commit and push to `main` is in AGENTS.md.
