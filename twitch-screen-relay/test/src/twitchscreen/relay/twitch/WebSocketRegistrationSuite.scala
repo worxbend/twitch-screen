@@ -7,7 +7,7 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
   private val credential = OAuth2Credential("twitch", "user-token")
   private val subscriptions = EventSubWebhookApi.unscopedSubscriptions("123") ++ EventSubWebhookApi.scopedSubscriptions("123")
   private val Follow = "moderator:read:followers"
-  private val AwaitingGrant = ("eventsub-connection", Some("awaiting broadcaster authorization and follow scope"))
+  private val AwaitingGrant = ("eventsub-connection", Some("awaiting broadcaster authorization"))
 
   /** One interleaved log, so the order of observations, register calls and connect is asserted as a whole. */
   private final class Harness(rejected: Set[String] = Set.empty):
@@ -25,10 +25,9 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
     ): WebSocketStep =
       WebSocketRegistration.step(
         token,
-        missing,
         registeredGrant,
         credential,
-        subscriptions,
+        subscriptions.filterNot((kind, _) => missing.contains(Follow) && kind.getName == "channel.follow"),
         (_, subscription) =>
           val kind = subscription.getType.getName
           registered += kind
@@ -41,8 +40,8 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
           log += "connect"
         ,
         (kind, failure) =>
-          observations += kind -> failure
-          log += s"observe $kind ${failure.getOrElse("ok")}"
+          observations += kind.label -> failure
+          log += s"observe ${kind.label} ${failure.getOrElse("ok")}"
       )
 
   test("no broadcaster token awaits authorization without registering"):
@@ -52,12 +51,11 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
     assertEquals(harness.connects, 0)
     assertEquals(harness.observations.toList, List(AwaitingGrant))
 
-  test("missing moderator:read:followers awaits without registering"):
+  test("missing follow scope still registers unscoped stream subscriptions"):
     val harness = Harness()
-    assertEquals(harness.step(token = Some("a"), missing = List(Follow)), WebSocketStep.Await)
-    assertEquals(harness.registered.toList, Nil)
-    assertEquals(harness.connects, 0)
-    assertEquals(harness.observations.toList, List(AwaitingGrant))
+    assertEquals(harness.step(token = Some("a"), missing = List(Follow)), WebSocketStep.Connected("a"))
+    assertEquals(harness.registered.toList, List("stream.online", "stream.offline", "channel.update"))
+    assertEquals(harness.connects, 1)
 
   test("a rejected registration reports it, registers all, requests restart and skips connect"):
     val harness = Harness(rejected = Set("channel.update"))
@@ -96,8 +94,8 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
     assertEquals(harness.connects, 0)
     assertEquals(harness.observations.toList, Nil)
 
-  test("a lost follow scope or grant after registration requests restart and reports awaiting"):
-    List(Some("a") -> List(Follow), None -> Nil).foreach: (token, missing) =>
+  test("a lost grant after registration requests restart and reports awaiting"):
+    List(None -> Nil).foreach: (token, missing) =>
       val harness = Harness()
       assertEquals(harness.step(token = token, missing = missing, registeredGrant = Some("a")), WebSocketStep.Restart, clue(token))
       assertEquals(harness.registered.toList, Nil)

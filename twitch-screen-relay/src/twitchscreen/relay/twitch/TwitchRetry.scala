@@ -1,17 +1,23 @@
 package twitchscreen.relay.twitch
 
+import java.util.concurrent.ThreadLocalRandom
+import scala.annotation.tailrec
 import scala.concurrent.duration.{DurationLong, FiniteDuration}
 
-/** Infinite supervised retries with bounded delay; interruption of pause propagates to the owning application scope. */
+/** Bounded exponential retries with jitter; interruption of pause propagates to the owning application scope. */
 private[twitch] object TwitchRetry:
-  def untilReady[A](attempt: () => Either[String, A], failed: String => Unit, pause: FiniteDuration => Unit): A =
-    var retry = 0
-    var result = attempt()
-    while result.isLeft do
-      result.left.foreach(failed)
-      pause((1L << math.min(retry, 6)).min(60L).seconds)
-      retry = math.min(retry + 1, 6)
-      result = attempt()
-    result match
+  def untilReady[A](
+      attempt: () => Either[String, A],
+      failed: String => Unit,
+      pause: FiniteDuration => Unit,
+      jitter: Long => Long = upper => ThreadLocalRandom.current().nextLong(upper + 1)
+  ): A =
+    @tailrec def loop(retry: Int): A = attempt() match
       case Right(value) => value
-      case Left(_)      => throw IllegalStateException("retry loop exited before success")
+      case Left(reason) =>
+        failed(reason)
+        val ceiling = (1L << math.min(retry, 6)).min(60L) * 1000L
+        val half = ceiling / 2
+        pause((half + math.max(0L, math.min(half, jitter(half)))).millis)
+        loop(math.min(retry + 1, 6))
+    loop(0)

@@ -32,15 +32,23 @@ private[twitch] object LiveTwitchSource:
     val authApi = TwitchAuthApi(auth)
     val tracker = ChannelStateTracker(config.channel, clock, pollInterval = config.pollInterval)
     val webhook =
-      EventSubWebhookApi.create(config, bus, tracker, filter, clock, (kind, failure) => health.observe(s"eventsub-$kind", failure))
+      Option.when(config.eventSub.transport == EventSubTransport.Webhook)(
+        EventSubWebhookApi.create(config, bus, tracker, filter, clock, health.observeSubscription)
+      )
 
     new TwitchSource:
       override def status: TwitchStatus = health.status
       override def endpoints: List[ServerEndpoint[Any, Identity]] =
-        authApi.endpoints ++ (if config.eventSub.transport == EventSubTransport.Webhook then webhook.endpoints else Nil)
+        authApi.endpoints ++ webhook.toList.flatMap(_.endpoints)
       override def startIngestion()(using Ox): Unit =
         forkDiscard:
-          superviseSessions(() => attempt(build(config)), _.close(), reason => health.observe("startup", Some(reason)), sleep): client =>
+          superviseSessions(
+            () => attempt(build(config)),
+            _.close(),
+            reason => health.observe(HealthComponent.Startup, Some(reason)),
+            sleep
+          ): client =>
+            health.resetSession()
             TwitchEventHandlers.registerChat(client.getEventManager, bus, filter)
             TwitchEventHandlers.registerEventSub(client.getEventManager, bus, tracker, filter, config.channel)
             val restartRequested = AtomicBoolean(false)
@@ -50,29 +58,20 @@ private[twitch] object LiveTwitchSource:
               observeSocket(client, health, restartRequested, acceptingCallbacks)
             val broadcasterId = TwitchRetry.untilReady(
               () => resolveBroadcasterId(client.getHelix, config),
-              reason => health.observe("startup", Some(reason)),
+              reason => health.observe(HealthComponent.Startup, Some(reason)),
               sleep
             )
-            health.observe("authorization", Some("broadcaster authorization required"))
-            health.observe("chat", Some("connecting"))
-            health.observe("streams", Some("awaiting first poll"))
-            health.observe("startup", None)
+            health.observe(HealthComponent.Startup, None)
             TwitchRetry.untilReady(
               () => attempt(client.getChat.joinChannel(config.channel)),
-              reason => health.observe("chat", Some(reason)),
+              reason => health.observe(HealthComponent.Chat, Some(reason)),
               sleep
             )
             // The streams poll uses the application token in both transports, so it is the WebSocket transport's rebuild trigger too.
             HelixPoller.start(
               client.getHelix,
-              config,
-              broadcasterId,
-              scope => authorizedToken(auth, config).filter(_ => auth.current.exists(_.scopes.contains(scope))),
-              tracker,
-              bus,
-              clock,
-              health,
-              () => auth.rejectAccessToken(),
+              PollingContext(config, broadcasterId, tracker, bus, clock, health),
+              TokenProvider.broadcaster(auth, config.channel),
               onAppTokenRejected
             )
             try maintainSubscriptions(client, config, broadcasterId, auth, health, restartRequested, onAppTokenRejected)
@@ -110,7 +109,7 @@ private[twitch] object LiveTwitchSource:
     () =>
       if !reported.getAndSet(true) then
         logger.warn("Twitch rejected the application token; rebuilding client")
-        health.observe("startup", Some("application token rejected; rebuilding client"))
+        health.observe(HealthComponent.Startup, Some("application token rejected; rebuilding client"))
       restart.set(true)
 
   private def build(config: TwitchConfig): TwitchClient =
@@ -124,9 +123,6 @@ private[twitch] object LiveTwitchSource:
       // No default user credential: webhook calls use the application's token; scoped polls pass their user token explicitly.
       .build()
 
-  private def authorizedToken(auth: TwitchAuth, config: TwitchConfig): Option[String] =
-    auth.current.filter(_.login.equalsIgnoreCase(config.channel)).flatMap(_ => auth.accessToken)
-
   private def maintainSubscriptions(
       client: TwitchClient,
       config: TwitchConfig,
@@ -136,56 +132,22 @@ private[twitch] object LiveTwitchSource:
       restartRequested: AtomicBoolean,
       appTokenRejected: () => Unit
   ): Unit =
+    val transport = EventSubTransportStrategy.create(client, config, health, restartRequested, appTokenRejected)
     var registeredGrant = Option.empty[String]
     while !restartRequested.get() do
       try
-        val token = authorizedToken(auth, config)
-        val missing = (auth.missingScopes ++ List("moderator:read:followers", "channel:read:subscriptions").diff(
-          auth.current.toList.flatMap(_.scopes)
-        )).distinct
-        val authorized = token.isDefined
+        val plan = SubscriptionPlan.build(config, broadcasterId, auth.view)
+        health.observe(HealthComponent.Authorization, plan.authorizationFailure)
+        if !config.oauth.scopes.contains(TwitchScopes.Followers) || plan.followFailure.isDefined then
+          health.observe(HealthComponent.EventSubFollow, plan.followFailure)
         health.observe(
-          "authorization",
-          if !authorized then Some("authorize the configured broadcaster or refresh the expired grant")
-          else if missing.nonEmpty then Some(s"missing scopes: ${missing.mkString(", ")}")
-          else None
-        )
-        health.observe(
-          "chat",
+          HealthComponent.Chat,
           if client.getChat.getState == WebsocketConnectionState.CONNECTED then None else Some("disconnected; reconnecting")
         )
-        config.eventSub.transport match
-          case EventSubTransport.Webhook =>
-            val subscriptions = EventSubWebhookApi.unscopedSubscriptions(broadcasterId) ++
-              (if authorized && !missing.contains("moderator:read:followers") then EventSubWebhookApi.scopedSubscriptions(broadcasterId)
-               else Nil)
-            if !authorized || missing.contains("moderator:read:followers") then
-              health.observe("eventsub-channel.follow", Some("awaiting broadcaster follow scope"))
-            EventSubWebhookApi.reconcileSubscriptions(
-              client.getHelix,
-              config,
-              subscriptions,
-              (kind, failure) => health.observe(s"eventsub-$kind", failure),
-              appTokenRejected
-            )
-          case EventSubTransport.WebSocket =>
-            WebSocketRegistration.step(
-              token,
-              missing,
-              registeredGrant,
-              auth.credential,
-              EventSubWebhookApi.unscopedSubscriptions(broadcasterId) ++ EventSubWebhookApi.scopedSubscriptions(broadcasterId),
-              (credential, subscription) => client.getEventSocket.register(credential, subscription),
-              granted =>
-                registeredGrant = Some(granted)
-                client.getEventSocket.connect()
-              ,
-              (kind, failure) => health.observe(kind, failure)
-            ) match
-              case WebSocketStep.Restart                                                      => restartRequested.set(true)
-              case WebSocketStep.Await | WebSocketStep.Unchanged | WebSocketStep.Connected(_) => ()
-        health.observe("subscription-maintenance", None)
-      catch case NonFatal(error) => health.observe("subscription-maintenance", Some(s"${error.getClass.getSimpleName}; retrying"))
+        registeredGrant = transport.maintain(plan, registeredGrant)
+        health.observe(HealthComponent.SubscriptionMaintenance, None)
+      catch
+        case NonFatal(error) => health.observe(HealthComponent.SubscriptionMaintenance, Some(s"${error.getClass.getSimpleName}; retrying"))
       sleep(30.seconds)
 
   /** A failed subscription rebuilds the client on the next maintenance pass. Twitch4J may discard permanent failures from its pool, so
@@ -203,7 +165,7 @@ private[twitch] object LiveTwitchSource:
         event =>
           if acceptingCallbacks.get() then
             health.observe(
-              "eventsub-connection",
+              HealthComponent.EventSubConnection,
               if event.getState == WebsocketConnectionState.CONNECTED then None else Some("disconnected; reconnecting")
             )
       )
@@ -222,11 +184,11 @@ private[twitch] object LiveTwitchSource:
       .discard
 
   private[twitch] def subscriptionFailed(health: TwitchRuntimeHealth, restart: AtomicBoolean, kind: String): Unit =
-    health.observe(s"eventsub-$kind", Some("subscription rejected; rebuilding connection"))
+    health.observeSubscription(kind, Some("subscription rejected; rebuilding connection"))
     restart.set(true)
 
   private[twitch] def subscriptionSucceeded(health: TwitchRuntimeHealth, kind: String): Unit =
-    health.observe(s"eventsub-$kind", None)
+    health.observeSubscription(kind, None)
 
   /** A 401 here is not retried against the same client: it throws [[ApplicationTokenRejected]] so the session ends and the next one builds
     * a client with a fresh application token.
@@ -244,13 +206,7 @@ private[twitch] object LiveTwitchSource:
       catch case NonFatal(error) if HelixPoller.isUnauthorized(error) => throw ApplicationTokenRejected()
     ).flatMap(_.toRight(s"Twitch has no channel named '${config.channel}'"))
 
-  private def attempt[A](call: => A): Either[String, A] =
-    try Right(call)
-    catch
-      case rejected: ApplicationTokenRejected => throw rejected
-      case NonFatal(error) =>
-        logger.warn(s"Twitch startup call failed: ${error.getClass.getSimpleName}")
-        Left(s"Twitch unavailable (${error.getClass.getSimpleName}); retrying")
+  private def attempt[A](call: => A): Either[String, A] = TwitchCall.attempt("contact Twitch")(call).left.map(_.message)
 
 /** Carries no cause or provider text, so nothing token-derived can reach logs or health. */
 private[twitch] final class ApplicationTokenRejected extends RuntimeException("Twitch rejected the application token", null, false, false)

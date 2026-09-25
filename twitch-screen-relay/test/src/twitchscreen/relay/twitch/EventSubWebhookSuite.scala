@@ -58,14 +58,14 @@ class EventSubWebhookSuite extends munit.FunSuite:
     supervised:
       val bus = EventBus(clock, queueCapacity = 16)
       val health = TwitchRuntimeHealth(config, bus)
-      health.observe("startup", None)
+      health.observe(HealthComponent.Startup, None)
       val api = EventSubWebhookApi.create(
         config,
         bus,
         ChannelStateTracker(config.channel, clock),
         BotFilter.from(notifications),
         clock,
-        (kind, failure) => health.observe(s"eventsub-$kind", failure)
+        (kind, failure) => health.observeSubscription(kind, failure)
       )
       body(TapirSyncStubInterpreter().whenServerEndpointsRunLogic(api.endpoints).backend(), bus.subscribe("test"))
 

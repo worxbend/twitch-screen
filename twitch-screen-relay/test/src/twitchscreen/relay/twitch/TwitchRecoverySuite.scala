@@ -72,7 +72,12 @@ class TwitchRecoverySuite extends munit.FunSuite:
         if calls < 3 then throw IllegalStateException("temporarily unavailable")
         mapper.readValue("""{"data":[{"id":"123","login":"channel"}]}""", classOf[UserList])
     val id =
-      TwitchRetry.untilReady(() => LiveTwitchSource.resolveBroadcasterId(client, config), _ => (), duration => delays = delays :+ duration)
+      TwitchRetry.untilReady(
+        () => LiveTwitchSource.resolveBroadcasterId(client, config),
+        _ => (),
+        duration => delays = delays :+ duration,
+        identity
+      )
     assertEquals(id, "123")
     assertEquals(calls, 3)
     assertEquals(delays, List(1.second, 2.seconds))
@@ -175,20 +180,17 @@ class TwitchRecoverySuite extends munit.FunSuite:
       val userRejected = AtomicBoolean(false)
       HelixPoller.poll(
         streamsFailing(unauthorizedCause("streams")),
-        config,
-        "123",
-        _ => Some("user-token"),
-        ChannelStateTracker(config.channel, Clock.systemUTC()),
-        bus,
-        Clock.systemUTC(),
-        health,
-        () => userRejected.set(true),
+        PollingContext(config, "123", ChannelStateTracker(config.channel, Clock.systemUTC()), bus, Clock.systemUTC(), health),
+        new TokenProvider:
+          override def tokenFor(scope: String): Option[String] = Some("user-token")
+          override def reject(token: String): Unit = userRejected.set(true)
+        ,
         () => appRejected.set(true)
       )
       assert(appRejected.get())
       assert(!userRejected.get(), "an application-token 401 must never withhold the broadcaster grant")
-      assert(health.failure("streams").isDefined)
-      assertEquals(health.failure("followers"), None)
+      assert(health.failure(HealthComponent.Streams).isDefined)
+      assertEquals(health.failure(HealthComponent.Followers), None)
       assertEquals(health.status.health, TwitchHealth.Degraded)
 
   test("a user-token rejection withholds the grant without rebuilding the client"):
@@ -205,19 +207,16 @@ class TwitchRecoverySuite extends munit.FunSuite:
           case other                 => fail(s"unexpected method $other")
       HelixPoller.poll(
         client,
-        config,
-        "123",
-        _ => Some("user-token"),
-        ChannelStateTracker(config.channel, Clock.systemUTC()),
-        bus,
-        Clock.systemUTC(),
-        health,
-        () => userRejected.set(true),
+        PollingContext(config, "123", ChannelStateTracker(config.channel, Clock.systemUTC()), bus, Clock.systemUTC(), health),
+        new TokenProvider:
+          override def tokenFor(scope: String): Option[String] = Some("user-token")
+          override def reject(token: String): Unit = userRejected.set(true)
+        ,
         () => appRejected.set(true)
       )
       assert(userRejected.get())
       assert(!appRejected.get(), "a user-token 401 must never rebuild the client")
-      assertEquals(health.failure("streams"), None)
+      assertEquals(health.failure(HealthComponent.Streams), None)
 
   test("a streams failure unrelated to authorization does not request a rebuild"):
     supervised:
@@ -234,7 +233,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
         () => appRejected.set(true)
       )
       assert(!appRejected.get())
-      assert(health.failure("streams").isDefined)
+      assert(health.failure(HealthComponent.Streams).isDefined)
 
   test("an application-token rejection sets the session restart flag and reports why"):
     supervised:
@@ -244,7 +243,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
       rejected()
       rejected()
       assert(restart.get())
-      assert(health.failure("startup").exists(_.contains("application token rejected")))
+      assert(health.failure(HealthComponent.Startup).exists(_.contains("application token rejected")))
 
   test("a session ended by an application-token rejection is closed and a fresh client is built"):
     var restartRequests = List.empty[Boolean]
@@ -317,9 +316,9 @@ class TwitchRecoverySuite extends munit.FunSuite:
       val bus = EventBus(Clock.systemUTC(), 256)
       val events = bus.subscribe("health-test")
       val health = TwitchRuntimeHealth(config, bus)
-      health.observe("startup", None)
-      (1 to 20).map(index => fork(health.observe("poll", if index % 2 == 0 then None else Some("outage")))).foreach(_.join())
-      health.observe("poll", None)
+      health.observe(HealthComponent.Startup, None)
+      (1 to 20).map(index => fork(health.observe(HealthComponent.Poll, if index % 2 == 0 then None else Some("outage")))).foreach(_.join())
+      health.observe(HealthComponent.Poll, None)
       val observed = Iterator.continually(events.tryReceive()).takeWhile(_.isDefined).flatten.map(_.event).toList
       assertEquals(health.status.health, TwitchHealth.Connected)
       assert(
@@ -328,8 +327,8 @@ class TwitchRecoverySuite extends munit.FunSuite:
           .last
           .isInstanceOf[RelayEvent.TwitchLinkUp]
       )
-      health.observe("poll", Some("same failure"))
-      health.observe("poll", Some("same failure"))
+      health.observe(HealthComponent.Poll, Some("same failure"))
+      health.observe(HealthComponent.Poll, Some("same failure"))
       val failures = Iterator.continually(events.tryReceive()).takeWhile(_.isDefined).flatten.map(_.event).toList
       assertEquals(failures.count(_.isInstanceOf[RelayEvent.RelayFailure]), 1)
       assertEquals(health.status.health, TwitchHealth.Degraded)
@@ -344,6 +343,8 @@ class TwitchRecoverySuite extends munit.FunSuite:
           duration =>
             pauses = pauses :+ duration
             if pauses.size == 10 then throw InterruptedException("stop")
+          ,
+          identity
         )
         false
       catch case _: InterruptedException => true
@@ -367,5 +368,110 @@ class TwitchRecoverySuite extends munit.FunSuite:
       LiveTwitchSource.subscriptionFailed(health, restart, "channel.follow")
       LiveTwitchSource.subscriptionSucceeded(health, "stream.online")
       assert(restart.get())
-      assert(health.failure("eventsub-channel.follow").isDefined)
-      assertEquals(health.failure("eventsub-stream.online"), None)
+      assert(health.failure(HealthComponent.EventSubFollow).isDefined)
+      assertEquals(health.failure(HealthComponent.EventSubOnline), None)
+
+  test("resetting session health records unknown state without publishing synthetic failures"):
+    supervised:
+      val bus = EventBus(Clock.systemUTC(), 16)
+      val health = TwitchRuntimeHealth(config, bus)
+      health.observe(HealthComponent.Startup, None)
+      val events = bus.subscribe("reset")
+      health.resetSession()
+      assertEquals(health.status.health, TwitchHealth.Connecting)
+      assert(events.tryReceive().isEmpty)
+      List(HealthComponent.Startup, HealthComponent.Authorization, HealthComponent.Chat, HealthComponent.Streams).foreach(
+        health.observe(_, None)
+      )
+      assertEquals(health.status.health, TwitchHealth.Connecting)
+      assert(events.tryReceive().isEmpty)
+      List(HealthComponent.EventSubOnline, HealthComponent.EventSubOffline, HealthComponent.EventSubUpdate).foreach(health.observe(_, None))
+      assertEquals(events.receive().event, RelayEvent.TwitchLinkUp("channel channel"))
+      assert(events.tryReceive().isEmpty)
+
+  test("link-down cards include a sanitized failure reason"):
+    supervised:
+      val bus = EventBus(Clock.systemUTC(), 16)
+      val health = TwitchRuntimeHealth(config, bus)
+      health.observe(HealthComponent.Startup, None)
+      val events = bus.subscribe("reason")
+      health.observe(HealthComponent.Streams, Some("HTTP\nBearer top-secret"))
+      events.receive().discard
+      val event = events.receive().event
+      assertEquals(event, RelayEvent.TwitchLinkDown("streams: HTTP Bearer [redacted]"))
+
+  test("reconciliation reads later pages and deletes old callbacks and duplicates while preserving unrelated broadcasters"):
+    var cursors = List.empty[Option[String]]
+    var deleted = List.empty[String]
+    var creations = 0
+    val old = "https://old-tunnel.example/api/v1/twitch/eventsub"
+    def subscription(id: String, broadcaster: String, callback: String): String =
+      s"""{"id":"$id","status":"enabled","type":"stream.online","version":"1","condition":{"broadcaster_user_id":"$broadcaster"},"transport":{"method":"webhook","callback":"$callback"}}"""
+    val client = helix: (method, arguments) =>
+      method match
+        case "getEventSubSubscriptions" =>
+          command:
+            val cursor = Option(arguments(4)).map(_.toString)
+            cursors = cursors :+ cursor
+            val body =
+              if cursor.isEmpty then
+                s"""{"data":[${subscription("stale", "123", old)},${subscription("other", "456", old)}],"pagination":{"cursor":"page-2"}}"""
+              else
+                s"""{"data":[${subscription("keep", "123", config.eventSub.callbackUrl)},${subscription(
+                    "duplicate",
+                    "123",
+                    config.eventSub.callbackUrl
+                  )}]}"""
+            mapper.readValue(body, classOf[EventSubSubscriptionList])
+        case "deleteEventSubSubscription" =>
+          command:
+            deleted = deleted :+ arguments(1).toString
+            null
+        case "createEventSubSubscription" =>
+          command:
+            creations += 1
+            mapper.readValue(emptySubscriptions, classOf[EventSubSubscriptionList])
+        case other => fail(s"unexpected method $other")
+    EventSubWebhookApi.reconcileSubscriptions(
+      client,
+      config,
+      EventSubWebhookApi.unscopedSubscriptions("123").take(1),
+      (_, failure) => assertEquals(failure, None),
+      () => ()
+    )
+    assertEquals(cursors, List(None, Some("page-2")))
+    assertEquals(deleted, List("stale", "duplicate"))
+    assertEquals(creations, 0)
+
+  test("retry jitter stays within half to full capped delay"):
+    def delays(jitter: Long => Long): List[FiniteDuration] =
+      var remaining = 10
+      var seen = List.empty[FiniteDuration]
+      TwitchRetry.untilReady(
+        () =>
+          remaining -= 1
+          if remaining == 0 then Right(()) else Left("offline")
+        ,
+        _ => (),
+        pause => seen = seen :+ pause,
+        jitter
+      )
+      seen
+    assertEquals(delays(_ => 0).takeRight(2), List(30.seconds, 30.seconds))
+    assertEquals(delays(identity).takeRight(2), List(60.seconds, 60.seconds))
+
+  test("provider exception text cannot cross the Twitch call boundary"):
+    val result = TwitchCall.attempt("refresh token")(throw IllegalArgumentException("Bearer secret-token\nrefresh_token=secret"))
+    assertEquals(result.left.map(_.message), Left("could not refresh token (IllegalArgumentException)"))
+
+  test("OAuth HTTP rejection retains status without exposing provider response text"):
+    val response = new okhttp3.Response.Builder()
+      .request(new okhttp3.Request.Builder().url("https://id.twitch.tv/oauth2/token").build())
+      .protocol(okhttp3.Protocol.HTTP_1_1)
+      .code(400)
+      .message("Bad Request")
+      .body(okhttp3.ResponseBody.create("refresh_token=secret", okhttp3.MediaType.get("application/json")))
+      .build()
+    val result = TwitchCall.attempt("refresh token")(TwitchOAuthClient.checkTokenResponse(response))
+    assert(result.left.exists(_.rejectedGrant))
+    assert(result.left.exists(error => !error.message.contains("secret")))
