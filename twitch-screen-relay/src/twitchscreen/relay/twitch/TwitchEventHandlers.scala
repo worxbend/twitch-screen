@@ -91,10 +91,10 @@ private[twitch] object TwitchEventHandlers:
     on[StreamOnlineEvent](events): event =>
       tracker
         // stream.online carries no title or category (event.getType is "live", not a game); the tracker fills both in.
-        .wentLive(title = "", game = "", startedAt = Option(event.getStartedAt))
-        .foreach(bus.publish)
+        .wentLive(title = "", game = "", startedAt = Option(event.getStartedAt), publish = bus.publish)
+        .discard
 
-    on[StreamOfflineEvent](events)(_ => tracker.wentOffline().foreach(bus.publish))
+    on[StreamOfflineEvent](events)(_ => tracker.wentOffline(bus.publish).discard)
 
     on[ChannelUpdateV2Event](events): event =>
       tracker.channelInfo(event.getTitle, event.getCategoryName)

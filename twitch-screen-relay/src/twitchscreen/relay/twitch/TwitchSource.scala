@@ -17,7 +17,10 @@ import twitchscreen.relay.http.ServerEndpoints
 private[relay] trait TwitchSource extends ServerEndpoints:
   def status: TwitchStatus
 
-  /** Endpoints this source needs mounted. Only the EventSub webhook transport has any; everything else returns none. */
+  /** Called after the HTTP callback and device listeners are bound. */
+  def startIngestion()(using Ox): Unit = ()
+
+  /** Live sources mount OAuth management/callback routes and, for webhook transport, the EventSub callback. */
   override def endpoints: List[ServerEndpoint[Any, Identity]]
 
 private[relay] object TwitchSource:
@@ -25,4 +28,4 @@ private[relay] object TwitchSource:
   def start(config: TwitchConfig, bus: EventBus, filter: BotFilter, clock: Clock)(using Ox): TwitchSource = config.mode match
     case TwitchMode.Disabled  => DisabledTwitchSource(config)
     case TwitchMode.Simulated => SimulatedTwitchSource.start(config, bus, filter, clock)
-    case TwitchMode.Live      => LiveTwitchSource.start(config, bus, filter, clock)
+    case TwitchMode.Live      => LiveTwitchSource.create(config, bus, filter, clock)

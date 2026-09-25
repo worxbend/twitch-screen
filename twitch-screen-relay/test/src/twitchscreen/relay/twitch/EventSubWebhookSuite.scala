@@ -62,7 +62,16 @@ class EventSubWebhookSuite extends munit.FunSuite:
   private def withWebhook(body: (SyncBackend, Source[BusEvent]) => Unit): Unit =
     supervised:
       val bus = EventBus(clock, queueCapacity = 16)
-      val api = EventSubWebhookApi.create(config, bus, ChannelStateTracker(config.channel, clock), BotFilter.from(notifications), clock)
+      val health = TwitchRuntimeHealth(config, bus)
+      health.observe("startup", None)
+      val api = EventSubWebhookApi.create(
+        config,
+        bus,
+        ChannelStateTracker(config.channel, clock),
+        BotFilter.from(notifications),
+        clock,
+        (kind, failure) => health.observe(s"eventsub-$kind", failure)
+      )
       body(TapirSyncStubInterpreter().whenServerEndpointsRunLogic(api.endpoints).backend(), bus.subscribe("test"))
 
   test("a correctly signed verification request is answered with the challenge"):
@@ -123,7 +132,9 @@ class EventSubWebhookSuite extends munit.FunSuite:
       given SyncBackend = backend
       val body = """{"subscription":{"type":"channel.follow","status":"authorization_revoked"}}"""
       assertEquals(post("revocation", body).code, StatusCode.Ok)
-      assert(events.receive().event.isInstanceOf[RelayEvent.TwitchLinkDown], "expected the revocation to be reported")
+      assert(events.receive().event.isInstanceOf[RelayEvent.RelayFailure])
+      assert(events.receive().event.isInstanceOf[RelayEvent.TwitchLinkDown], "expected the shared health model to report revocation")
+      assert(events.tryReceive().isEmpty, "revocation must publish one shared link transition")
 
   test("a body that is not JSON is a bad request"):
     withWebhook: (backend, _) =>
@@ -152,3 +163,25 @@ class EventSubWebhookSuite extends munit.FunSuite:
       assert(events.receive().event.isInstanceOf[RelayEvent.ChannelUpdated])
       assertEquals(post("notification", """{"subscription":{"type":"stream.online"},"event":{}}""").code, StatusCode.Ok)
       assertEquals(events.receive().event, RelayEvent.StreamStarted("somechannel", "Build night", "Science", Some(now)))
+
+  test("future signed timestamp cannot outlive its deduplication entry while still fresh"):
+    class Movable extends Clock:
+      var current = now
+      override def instant(): Instant = current
+      override def getZone = ZoneOffset.UTC
+      override def withZone(zone: java.time.ZoneId): Clock = this
+    supervised:
+      val moving = Movable()
+      val bus = EventBus(moving, queueCapacity = 16)
+      val api = EventSubWebhookApi.create(config, bus, ChannelStateTracker(config.channel, moving), BotFilter.from(notifications), moving)
+      given SyncBackend = TapirSyncStubInterpreter().whenServerEndpointsRunLogic(api.endpoints).backend()
+      val events = bus.subscribe("skew-test")
+      val body = """{"subscription":{"type":"channel.follow"},"event":{"user_name":"once"}}"""
+      val sent = now.plusSeconds(600).toString
+      assertEquals(post("notification", body, timestamp = sent, messageId = "future").code, StatusCode.Ok)
+      assertEquals(events.receive().event, RelayEvent.Followed("once"))
+      moving.current = now.plusSeconds(600)
+      assertEquals(post("notification", body, timestamp = sent, messageId = "future").code, StatusCode.Ok)
+      moving.current = now.plusSeconds(1200)
+      assertEquals(post("notification", body, timestamp = sent, messageId = "future").code, StatusCode.Ok)
+      assert(events.tryReceive().isEmpty)

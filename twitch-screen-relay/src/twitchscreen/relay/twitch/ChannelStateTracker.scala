@@ -1,10 +1,10 @@
 package twitchscreen.relay.twitch
 
 import java.time.{Clock, Duration as JDuration, Instant}
-import java.util.concurrent.atomic.AtomicReference
-import scala.annotation.tailrec
 import scala.concurrent.duration.{FiniteDuration, SECONDS}
 import twitchscreen.relay.bus.RelayEvent
+import ox.{Ox, tap}
+import ox.channels.{Actor, ActorRef}
 
 private[twitch] enum ChannelLiveness:
   case Unobserved
@@ -22,12 +22,11 @@ private final case class ChannelObservation(
 /** Push transitions take precedence for a grace period; a later offline poll requires two consecutive absences. Initial live observations
   * intentionally initialize statistics and announce the stream, preserving the established startup behavior.
   */
-private[twitch] final class ChannelStateTracker(channel: String, clock: Clock, pushGrace: JDuration = JDuration.ofSeconds(60)):
-  private val state = AtomicReference(ChannelObservation())
+private final class ChannelTrackerState(channel: String, clock: Clock, pushGrace: JDuration):
+  private var state = ChannelObservation()
 
   def channelInfo(title: String, game: String): Unit =
-    state.updateAndGet(_.copy(title = Option(title).getOrElse(""), game = Option(game).getOrElse("")))
-    ()
+    state = state.copy(title = Option(title).getOrElse(""), game = Option(game).getOrElse(""))
 
   def wentLive(title: String, game: String, startedAt: Option[Instant] = None): Option[RelayEvent] =
     observeLive(title, game, startedAt, push = true)
@@ -78,7 +77,23 @@ private[twitch] final class ChannelStateTracker(channel: String, clock: Clock, p
       case _ => None
     before.copy(liveness = ChannelLiveness.Offline) -> event
 
-  @tailrec private def change(transition: ChannelObservation => (ChannelObservation, Option[RelayEvent])): Option[RelayEvent] =
-    val before = state.get()
-    val (after, event) = transition(before)
-    if state.compareAndSet(before, after) then event else change(transition)
+  private def change(transition: ChannelObservation => (ChannelObservation, Option[RelayEvent])): Option[RelayEvent] =
+    val (after, event) = transition(state)
+    state = after
+    event
+
+/** The actor owns both state transitions and publication, so concurrent push/poll callbacks cannot publish END before START. */
+private[twitch] final class ChannelStateTracker private (state: ActorRef[ChannelTrackerState]):
+  def channelInfo(title: String, game: String): Unit = state.ask(_.channelInfo(title, game))
+  def wentLive(title: String, game: String, startedAt: Option[Instant] = None, publish: RelayEvent => Unit = _ => ()): Option[RelayEvent] =
+    state.ask(_.wentLive(title, game, startedAt).tap(_.foreach(publish)))
+  def observedLive(title: String, game: String, startedAt: Option[Instant], publish: RelayEvent => Unit = _ => ()): Option[RelayEvent] =
+    state.ask(_.observedLive(title, game, startedAt).tap(_.foreach(publish)))
+  def wentOffline(publish: RelayEvent => Unit = _ => ()): Option[RelayEvent] =
+    state.ask(_.wentOffline().tap(_.foreach(publish)))
+  def observedOffline(publish: RelayEvent => Unit = _ => ()): Option[RelayEvent] =
+    state.ask(_.observedOffline().tap(_.foreach(publish)))
+
+private[twitch] object ChannelStateTracker:
+  def apply(channel: String, clock: Clock, pushGrace: JDuration = JDuration.ofSeconds(60))(using Ox): ChannelStateTracker =
+    new ChannelStateTracker(Actor.create(ChannelTrackerState(channel, clock, pushGrace)))

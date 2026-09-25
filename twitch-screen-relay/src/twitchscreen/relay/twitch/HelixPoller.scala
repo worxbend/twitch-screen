@@ -24,38 +24,48 @@ private[twitch] object HelixPoller:
       helix: TwitchHelix,
       config: TwitchConfig,
       broadcasterId: String,
-      userToken: () => Option[String],
+      userToken: String => Option[String],
       tracker: ChannelStateTracker,
       bus: EventBus,
-      clock: Clock
+      clock: Clock,
+      health: TwitchRuntimeHealth,
+      unauthorized: () => Unit
   )(using Ox): Unit =
     logger.info(s"Polling Helix for '${config.channel}' every ${config.pollInterval}")
     forkDiscard:
       forever:
         // Polled before the first sleep, so a freshly started relay has real numbers to show immediately.
-        try poll(helix, config, broadcasterId, userToken(), tracker, bus, clock)
+        try poll(helix, config, broadcasterId, userToken, tracker, bus, clock, health, unauthorized)
         catch
           case NonFatal(error) =>
-            logger.warn("Helix poll failed", error)
-            bus.publish(RelayEvent.RelayFailure("twitch-poll", Option(error.getMessage).getOrElse(error.getClass.getSimpleName)))
+            health.observe("poll", Some(error.getClass.getSimpleName))
         sleep(config.pollInterval)
 
   private def poll(
       helix: TwitchHelix,
       config: TwitchConfig,
       broadcasterId: String,
-      userToken: Option[String],
+      userToken: String => Option[String],
       tracker: ChannelStateTracker,
       bus: EventBus,
-      clock: Clock
+      clock: Clock,
+      health: TwitchRuntimeHealth,
+      unauthorized: () => Unit
   ): Unit =
-    pollStream(helix, config, tracker, bus, clock)
-    userToken.foreach: token =>
-      pollFollowers(helix, token, broadcasterId, bus)
-      pollSubscribers(helix, token, broadcasterId, bus)
+    pollStream(helix, config, tracker, bus, clock, health)
+    userToken("moderator:read:followers").foreach(token => pollFollowers(helix, token, broadcasterId, bus, health, unauthorized))
+    userToken("channel:read:subscriptions").foreach(token => pollSubscribers(helix, token, broadcasterId, bus, health, unauthorized))
+    health.observe("poll", None)
 
-  private def pollStream(helix: TwitchHelix, config: TwitchConfig, tracker: ChannelStateTracker, bus: EventBus, clock: Clock): Unit =
-    attempt("twitch-streams", bus):
+  private def pollStream(
+      helix: TwitchHelix,
+      config: TwitchConfig,
+      tracker: ChannelStateTracker,
+      bus: EventBus,
+      clock: Clock,
+      health: TwitchRuntimeHealth
+  ): Unit =
+    attempt("streams", health):
       helix.getStreams(null, null, null, 1, null, null, null, List(config.channel).asJava).execute()
     .foreach: streams =>
       streams.getStreams.asScala.headOption match
@@ -67,31 +77,49 @@ private[twitch] object HelixPoller:
             .observedLive(
               Option(stream.getTitle).getOrElse(""),
               Option(stream.getGameName).getOrElse(""),
-              Option(stream.getStartedAtInstant)
+              Option(stream.getStartedAtInstant),
+              publish = bus.publish
             )
-            .foreach(bus.publish)
+            .discard
           bus.publish(RelayEvent.ViewersObserved(Count.clamp(intOr(stream.getViewerCount)), uptimeOf(stream.getStartedAtInstant, clock)))
-        case None => tracker.observedOffline().foreach(bus.publish)
+        case None => tracker.observedOffline(bus.publish).discard
 
-  private def pollFollowers(helix: TwitchHelix, userToken: String, broadcasterId: String, bus: EventBus): Unit =
-    attempt("twitch-followers", bus):
+  private def pollFollowers(
+      helix: TwitchHelix,
+      userToken: String,
+      broadcasterId: String,
+      bus: EventBus,
+      health: TwitchRuntimeHealth,
+      unauthorized: () => Unit
+  ): Unit =
+    attempt("followers", health, unauthorized):
       helix.getChannelFollowers(userToken, broadcasterId, null, 1, null).execute()
     .foreach(followers => bus.publish(RelayEvent.FollowersObserved(Count.clamp(intOr(followers.getTotal)))))
 
-  private def pollSubscribers(helix: TwitchHelix, userToken: String, broadcasterId: String, bus: EventBus): Unit =
-    attempt("twitch-subscribers", bus):
+  private def pollSubscribers(
+      helix: TwitchHelix,
+      userToken: String,
+      broadcasterId: String,
+      bus: EventBus,
+      health: TwitchRuntimeHealth,
+      unauthorized: () => Unit
+  ): Unit =
+    attempt("subscribers", health, unauthorized):
       helix.getSubscriptions(userToken, broadcasterId, null, null, 1).execute()
     .foreach(subscriptions => bus.publish(RelayEvent.SubscribersObserved(Count.clamp(intOr(subscriptions.getTotal)))))
 
   /** One Helix endpoint failing must not cost the others their poll — a missing `moderator:read:followers` scope should not hide the viewer
     * count. This is the boundary where twitch4j's exceptions become values.
     */
-  private def attempt[T](source: String, bus: EventBus)(call: => T): Option[T] =
-    try Some(call)
+  private def attempt[T](source: String, health: TwitchRuntimeHealth, unauthorized: () => Unit = () => ())(call: => T): Option[T] =
+    try
+      val result = call
+      health.observe(source, None)
+      Some(result)
     catch
       case NonFatal(error) =>
-        logger.warn(s"$source failed: ${error.getMessage}")
-        bus.publish(RelayEvent.RelayFailure(source, Option(error.getMessage).getOrElse(error.getClass.getSimpleName)))
+        if isUnauthorized(error) then unauthorized()
+        health.observe(source, Some(error.getClass.getSimpleName))
         None
 
   private def uptimeOf(startedAt: java.time.Instant, clock: Clock): FiniteDuration =
@@ -99,3 +127,14 @@ private[twitch] object HelixPoller:
     else FiniteDuration(math.max(0L, JDuration.between(startedAt, clock.instant()).toSeconds), SECONDS)
 
   private def intOr(value: Integer): Int = if value == null then 0 else value.intValue
+
+  private[twitch] def isUnauthorized(error: Throwable): Boolean =
+    Iterator
+      .iterate(Option(error))(_.flatMap(cause => Option(cause.getCause)))
+      .take(10)
+      .takeWhile(_.isDefined)
+      .flatten
+      .exists:
+        case _: com.github.twitch4j.common.exception.UnauthorizedException => true
+        case failure: feign.FeignException                                 => failure.status() == 401
+        case _                                                             => false

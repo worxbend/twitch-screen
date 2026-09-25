@@ -1,7 +1,7 @@
 package twitchscreen.relay
 
 import com.softwaremill.macwire.{autowire, autowireMembersOf}
-import java.time.Clock
+import java.time.{Clock, Instant}
 import ox.{Ox, discard}
 import twitchscreen.relay.activity.ActivityLog
 import twitchscreen.relay.alerts.{AlertMonitor, AlertRule, AlertStore}
@@ -18,12 +18,11 @@ private[relay] final case class Dependencies(httpApi: HttpApi, hub: DeviceHub, t
 
 /** The relay's assembly, in one place and in dependency order.
   *
-  * Everything is started into the caller's scope, which is the application scope: when it ends — on SIGTERM, through `OxApp` — the listener
-  * stops accepting, every device session is interrupted, the Twitch client is closed and the background folds unwind, in reverse order of
-  * construction. There is no shutdown flag anywhere in the codebase.
+  * Workers belong to the caller's application scope. Main binds HTTP before starting ingestion; ApplicationLifetime drains device shutdown
+  * messages before scope cancellation closes the listeners, Twitch client and background consumers.
   */
 private[relay] object Dependencies:
-  def create(config: Config, clock: Clock)(using Ox): Dependencies =
+  def create(config: Config, clock: Clock, startedAt: Instant)(using Ox): Dependencies =
     LogBuffer.resize(config.observability.logBufferSize)
     val otel = Otel.initialize()
 
@@ -32,8 +31,8 @@ private[relay] object Dependencies:
     val hub = DeviceHub.start(config.deviceLink, config.notifications.chat, clock, bus)
 
     val activityLog = ActivityLog.start(config.activity, bus)
-    val alertStore = AlertMonitor.start(config.alerts, config.twitch.mode, bus, hub, clock)
     val alertRules = AlertRule.from(config.alerts, config.twitch.mode)
+    val alertStore = AlertMonitor.start(config.alerts, alertRules, bus, hub, clock)
     RelayMetrics.start(otel, bus, hub).discard
 
     // Consumers before producers, so no event is published into a bus nobody is listening to yet.
@@ -48,6 +47,7 @@ private[relay] object Dependencies:
     val apis = autowire[Apis](
       autowireMembersOf(config),
       clock,
+      startedAt,
       bus,
       hub,
       activityLog,

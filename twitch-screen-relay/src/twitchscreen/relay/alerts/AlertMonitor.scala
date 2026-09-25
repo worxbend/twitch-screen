@@ -5,7 +5,7 @@ import org.slf4j.LoggerFactory
 import ox.*
 import ox.flow.Flow
 import twitchscreen.relay.bus.{BusEvent, EventBus}
-import twitchscreen.relay.config.{AlertsConfig, TwitchMode}
+import twitchscreen.relay.config.AlertsConfig
 import twitchscreen.relay.device.DeviceHub
 
 /** What drives one step of the monitor: an event to fold in, or the moment to evaluate every rule. */
@@ -22,9 +22,8 @@ private enum MonitorInput:
 private[relay] object AlertMonitor:
   private val logger = LoggerFactory.getLogger(getClass)
 
-  def start(config: AlertsConfig, twitchMode: TwitchMode, bus: EventBus, hub: DeviceHub, clock: Clock)(using Ox): AlertStore =
+  def start(config: AlertsConfig, rules: List[AlertRule], bus: EventBus, hub: DeviceHub, clock: Clock)(using Ox): AlertStore =
     val store = AlertStore(config.bufferSize)
-    val rules = AlertRule.from(config, twitchMode)
     if rules.isEmpty then logger.info("No alert rules are enabled")
     else logger.info(s"Evaluating ${rules.size} alert rules every ${config.evaluationInterval}: ${rules.map(_.name).mkString(", ")}")
 

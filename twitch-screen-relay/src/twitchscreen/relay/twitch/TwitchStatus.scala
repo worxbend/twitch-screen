@@ -13,6 +13,9 @@ enum TwitchHealth:
 
   case Connected
 
+  /** Some integration paths are usable, while others await consent or recovery. */
+  case Degraded
+
   /** Configured, but not currently usable — the detail says why. */
   case Disconnected
 

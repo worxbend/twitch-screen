@@ -2,6 +2,8 @@ package twitchscreen.relay.twitch
 
 import com.github.plokhotnyuk.jsoniter_scala.core.{JsonReaderException, readFromString}
 import com.github.twitch4j.eventsub.condition.EventSubCondition
+import com.github.twitch4j.eventsub.EventSubSubscriptionStatus
+import scala.jdk.CollectionConverters.*
 import com.github.twitch4j.eventsub.subscriptions.{SubscriptionType, SubscriptionTypes}
 import com.github.twitch4j.helix.TwitchHelix
 import java.nio.charset.StandardCharsets.UTF_8
@@ -24,15 +26,16 @@ import twitchscreen.relay.http.{Fail, Http, ServerEndpoints}
 /** The EventSub webhook transport: Twitch posts here instead of the relay holding a WebSocket open.
   *
   * The endpoint is unauthenticated by design — Twitch cannot present a credential — so the HMAC signature over (message id + timestamp +
-  * body) *is* the authentication, and a body that fails it never reaches the bus. Replays are rejected on the timestamp, as Twitch's own
-  * guidance requires.
+  * body) *is* the authentication, and a body that fails it never reaches the bus. Authenticated IDs are retained through their entire
+  * allowed timestamp window, so concurrent delivery and clock skew cannot publish the same event twice.
   */
 private[twitch] final class EventSubWebhookApi(
     config: TwitchConfig,
     bus: EventBus,
     tracker: ChannelStateTracker,
     filter: BotFilter,
-    clock: Clock
+    clock: Clock,
+    observeSubscription: (String, Option[String]) => Unit
 ) extends ServerEndpoints:
   import EventSubWebhookApi.*
 
@@ -52,17 +55,18 @@ private[twitch] final class EventSubWebhookApi(
       body: String
   ): Either[Fail, String] =
     for
-      _ <- verifyFreshness(timestamp)
+      sent <- verifyFreshness(timestamp)
       _ <- verifySignature(messageId, timestamp, signature, body)
       envelope <- parse(body)
       fresh <-
-        if messageType == "notification" || messageType == "revocation" then deduplication.claim(messageId, clock.instant())
+        if messageType == "notification" || messageType == "revocation" then
+          deduplication.claim(messageId, clock.instant(), sent.plus(ReplayWindow).plusNanos(1))
         else Right(true)
       response <- if fresh then dispatch(messageType, envelope) else Right("")
     yield response
 
   /** Twitch replays are valid signatures on stale bodies; ten minutes is the window Twitch documents. */
-  private def verifyFreshness(timestamp: String): Either[Fail, Unit] =
+  private def verifyFreshness(timestamp: String): Either[Fail, Instant] =
     Instant
       .parse(timestamp)
       .catching[DateTimeParseException]
@@ -72,7 +76,6 @@ private[twitch] final class EventSubWebhookApi(
         sent => java.time.Duration.between(sent, clock.instant()).abs().compareTo(ReplayWindow) <= 0,
         Fail.Unauthorized("Twitch-Eventsub-Message-Timestamp is outside the replay window")
       )
-      .map(_ => ())
 
   private def verifySignature(messageId: String, timestamp: String, signature: String, body: String): Either[Fail, Unit] =
     val expected = "sha256=" + hmacSha256(config.eventSub.secret.value, messageId + timestamp + body)
@@ -93,6 +96,7 @@ private[twitch] final class EventSubWebhookApi(
       envelope.challenge
         .toRight(Fail.IncorrectInput("verification payload carried no challenge"))
         .tapRight: _ =>
+          observeSubscription(envelope.subscription.kind, None)
           logger.info(s"Twitch verified the EventSub callback for ${envelope.subscription.kind}")
 
     case "notification" =>
@@ -104,7 +108,7 @@ private[twitch] final class EventSubWebhookApi(
     case "revocation" =>
       val reason = envelope.subscription.status.getOrElse("revoked")
       logger.warn(s"Twitch revoked the ${envelope.subscription.kind} subscription: $reason")
-      bus.publish(RelayEvent.TwitchLinkDown(s"${envelope.subscription.kind} subscription $reason"))
+      observeSubscription(envelope.subscription.kind, Some(s"subscription $reason"))
       Right("")
 
     case unknown =>
@@ -116,8 +120,18 @@ private[twitch] final class EventSubWebhookApi(
     val payload = envelope.event.getOrElse(EventSubPayload(None, None, None, None, None, None, None, None, None, None, None))
     envelope.subscription.kind match
       case "stream.online" =>
-        tracker.wentLive(payload.title.getOrElse(""), payload.categoryName.getOrElse(""), payload.startedAt.flatMap(parseInstant)).toList
-      case "stream.offline" => tracker.wentOffline().toList
+        tracker
+          .wentLive(
+            payload.title.getOrElse(""),
+            payload.categoryName.getOrElse(""),
+            payload.startedAt.flatMap(parseInstant),
+            publish = event => filter.publish(bus, event)
+          )
+          .discard
+        Nil
+      case "stream.offline" =>
+        tracker.wentOffline(event => filter.publish(bus, event)).discard
+        Nil
       case "channel.follow" => payload.userName.map(RelayEvent.Followed.apply).toList
       case "channel.update" =>
         tracker.channelInfo(payload.title.getOrElse(""), payload.categoryName.getOrElse(""))
@@ -133,8 +147,6 @@ private[twitch] final class EventSubWebhookApi(
         Nil
 
 private[twitch] object EventSubWebhookApi:
-  private val logger = LoggerFactory.getLogger(getClass)
-
   /** Twitch sends RFC 3339; an unparseable value degrades to "not reported" rather than failing a notification. */
   private def parseInstant(raw: String): Option[Instant] = Instant.parse(raw).catching[DateTimeParseException].toOption
   private val ReplayWindow = java.time.Duration.ofMinutes(10)
@@ -153,8 +165,15 @@ private[twitch] object EventSubWebhookApi:
         "Called by Twitch, not by operators. Authenticated by the HMAC signature over the message id, timestamp and body."
       )
 
-  def create(config: TwitchConfig, bus: EventBus, tracker: ChannelStateTracker, filter: BotFilter, clock: Clock): EventSubWebhookApi =
-    EventSubWebhookApi(config, bus, tracker, filter, clock)
+  def create(
+      config: TwitchConfig,
+      bus: EventBus,
+      tracker: ChannelStateTracker,
+      filter: BotFilter,
+      clock: Clock,
+      observeSubscription: (String, Option[String]) => Unit = (_, _) => ()
+  ): EventSubWebhookApi =
+    EventSubWebhookApi(config, bus, tracker, filter, clock, observeSubscription)
 
   /** The subscriptions Twitch grants any application, with no user's consent behind them. */
   def unscopedSubscriptions(broadcasterId: String): List[(SubscriptionType[?, ?, ?], EventSubCondition)] = List(
@@ -168,25 +187,43 @@ private[twitch] object EventSubWebhookApi:
     SubscriptionTypes.CHANNEL_FOLLOW_V2 -> EventSubFactory.follow(broadcasterId, broadcasterId)
   )
 
-  /** Asks Twitch to start calling us. Webhook subscriptions are created with the application's own token — Helix falls back to it because
-    * the client carries no user token — and hold for as long as the user's consent does. Unlike the WebSocket transport they outlive the
-    * process, so Twitch may already hold them; a duplicate is reported by Helix and logged rather than failing startup.
+  /** Reconcile only this callback and broadcaster's subscriptions. Application credentials are selected by the client with no default user
+    * token.
     */
-  def createSubscriptions(
+  def reconcileSubscriptions(
       helix: TwitchHelix,
       config: TwitchConfig,
-      subscriptions: List[(SubscriptionType[?, ?, ?], EventSubCondition)]
+      subscriptions: List[(SubscriptionType[?, ?, ?], EventSubCondition)],
+      observe: (String, Option[String]) => Unit
   ): Unit =
-    val callback = config.eventSub.callbackUrl
-    val secret = config.eventSub.secret.value
-    subscriptions.foreach: (subscriptionType, condition) =>
+    subscriptions.foreach: (kind, condition) =>
       try
-        helix
-          .createEventSubSubscription(null, EventSubFactory.webhookSubscription(subscriptionType, condition, callback, secret))
+        val existing = helix
+          .getEventSubSubscriptions(null, null, kind, null, null, 100)
           .execute()
-          .discard
-        logger.info(s"Registered the ${subscriptionType.getName} webhook subscription")
-      catch case NonFatal(error) => logger.warn(s"Could not register ${subscriptionType.getName}: ${error.getMessage}")
+          .getSubscriptions
+          .asScala
+          .find(sub => sub.getCondition == condition && sub.getTransport.getCallback == config.eventSub.callbackUrl)
+        val usable = existing.filter(sub =>
+          sub.getStatus == EventSubSubscriptionStatus.ENABLED ||
+            sub.getStatus == EventSubSubscriptionStatus.WEBHOOK_CALLBACK_VERIFICATION_PENDING
+        )
+        if usable.isEmpty then
+          existing.foreach(sub => helix.deleteEventSubSubscription(null, sub.getId).execute().discard)
+          val created = helix
+            .createEventSubSubscription(
+              null,
+              EventSubFactory.webhookSubscription(kind, condition, config.eventSub.callbackUrl, config.eventSub.secret.value)
+            )
+            .execute()
+          val enabled = created.getSubscriptions.asScala.exists(_.getStatus == EventSubSubscriptionStatus.ENABLED)
+          observe(kind.getName, if enabled then None else Some("awaiting callback verification"))
+        else
+          observe(
+            kind.getName,
+            if usable.exists(_.getStatus == EventSubSubscriptionStatus.ENABLED) then None else Some("awaiting callback verification")
+          )
+      catch case NonFatal(error) => observe(kind.getName, Some(s"registration failed (${error.getClass.getSimpleName}); retrying"))
 
   extension [E, T](either: Either[E, T])
     private def tapRight(effect: T => Unit): Either[E, T] =

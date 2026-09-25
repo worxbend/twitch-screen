@@ -20,8 +20,9 @@ import twitchscreen.relay.observability.SetTraceIdInMDCInterceptor
   */
 final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenTelemetry):
   private val logger = LoggerFactory.getLogger(getClass)
+  private val managementAuth = ManagementAuth(config.auth)
 
-  private val apiEndpoints: List[ServerEndpoint[Any, Identity]] = apis.flatMap(_.endpoints).map(ManagementAuth(config.auth).protect)
+  private val apiEndpoints: List[ServerEndpoint[Any, Identity]] = apis.flatMap(_.endpoints).map(managementAuth.protect)
 
   private val docEndpoints: List[ServerEndpoint[Any, Identity]] =
     SwaggerInterpreter().fromServerEndpoints[Identity](apiEndpoints, "twitch-screen-relay", RelayVersion.current)
@@ -36,9 +37,9 @@ final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenT
     .options
 
   /** Binds and serves. The server is registered in the enclosing scope and stops with it. */
-  def start()(using Ox): NettySyncServerBinding = startOnPort(config.port.value)
+  def start(afterBind: Int => Unit = _ => ())(using Ox): NettySyncServerBinding = startOnPort(config.port.value, afterBind)
 
-  private[http] def startOnPort(port: Int)(using Ox): NettySyncServerBinding =
+  private[http] def startOnPort(port: Int, afterBind: Int => Unit = _ => ())(using Ox): NettySyncServerBinding =
     val netty = NettyConfig.default
       .host(config.host.value)
       .port(port)
@@ -52,3 +53,4 @@ final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenT
       .start()
       .tap: binding =>
         logger.info(s"Management API on http://${config.host.value}:${binding.port}/docs (${apiEndpoints.size} endpoints)")
+        afterBind(binding.port)

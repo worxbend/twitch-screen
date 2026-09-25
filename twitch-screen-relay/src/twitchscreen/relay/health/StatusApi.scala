@@ -43,9 +43,15 @@ final case class Status_OUT(
 object Status_OUT:
   given JsonValueCodec[Status_OUT] = JsonCodecMaker.make(ApiJson.config)
 
-final class StatusApi(twitch: TwitchSource, hub: DeviceHub, bus: EventBus, activity: ActivityLog, alerts: AlertStore, clock: Clock)
-    extends ServerEndpoints:
-  private val startedAt = clock.instant()
+final class StatusApi(
+    twitch: TwitchSource,
+    hub: DeviceHub,
+    bus: EventBus,
+    activity: ActivityLog,
+    alerts: AlertStore,
+    clock: Clock,
+    startedAt: Instant
+) extends ServerEndpoints:
 
   override val endpoints: List[ServerEndpoint[Any, Identity]] = List(StatusApi.getEndpoint.handleSuccess(_ => status()))
 

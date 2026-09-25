@@ -7,9 +7,10 @@ import java.security.SecureRandom
 import java.time.{Clock, Duration as JDuration, Instant}
 import java.util.Base64
 import java.util.concurrent.{ConcurrentHashMap, CountDownLatch}
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import org.slf4j.LoggerFactory
 import ox.*
+import ox.channels.Actor
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters.*
 import scala.jdk.DurationConverters.*
@@ -35,11 +36,13 @@ private[twitch] final class TwitchAuth(
     bus: EventBus,
     clock: Clock,
     initial: Option[UserToken]
-):
+)(using Ox):
   import TwitchAuth.*
 
   private val logger = LoggerFactory.getLogger(getClass)
   private val token = AtomicReference(initial)
+  private val rejectedToken = AtomicBoolean(false)
+  private val lastFailure = AtomicReference(Option.empty[String])
   private val lastValidated = AtomicReference(Instant.MIN)
   private val pendingStates = ConcurrentHashMap[String, Instant]()
   private val firstToken = CountDownLatch(if initial.isDefined then 0 else 1)
@@ -48,11 +51,17 @@ private[twitch] final class TwitchAuth(
   private val handle =
     OAuth2Credential(TwitchIdentityProvider.PROVIDER_NAME, initial.map(_.accessToken.value).getOrElse(""))
   initial.foreach(updateHandle)
+  private val transitions = Actor.create(CredentialTransitions())
 
   def current: Option[UserToken] = token.get()
 
   /** For Helix calls made per request, which take the token as an argument. */
-  def accessToken: Option[String] = token.get().map(_.accessToken.value)
+  def accessToken: Option[String] =
+    token.get().filter(held => !rejectedToken.get() && held.expiresAt.isAfter(clock.instant())).map(_.accessToken.value)
+
+  def rejectAccessToken(): Unit = rejectedToken.set(true)
+
+  def credential: Option[OAuth2Credential] = accessToken.map(_ => handle)
 
   /** The scopes asked for that the current token was not granted. */
   def missingScopes: List[String] = token.get().fold(config.oauth.scopes)(granted => config.oauth.scopes.diff(granted.scopes))
@@ -66,7 +75,7 @@ private[twitch] final class TwitchAuth(
   def beginAuthorization(): String =
     val now = clock.instant()
     pendingStates.entrySet().removeIf(entry => entry.getValue.isBefore(now))
-    // An unauthenticated caller can mint states at will; the cap keeps that from growing the map without bound.
+    // Bound outstanding authorization requests even if an authenticated operator starts many consent flows.
     while pendingStates.size >= MaxPendingStates do
       pendingStates.entrySet().asScala.minByOption(_.getValue).foreach(oldest => pendingStates.remove(oldest.getKey).discard)
     val state = newState()
@@ -79,7 +88,7 @@ private[twitch] final class TwitchAuth(
       _ <- consumeState(state)
       issued <- client.exchange(code)
     yield
-      install(issued)
+      transitions.ask(_.install(issued))
       logger.info(s"Twitch authorized by '${issued.login}' (${issued.scopes.mkString(" ")})")
       if !issued.login.equalsIgnoreCase(config.channel) then
         logger.warn(s"The token belongs to '${issued.login}', not the broadcaster '${config.channel}'; subscriber totals will be refused")
@@ -88,10 +97,9 @@ private[twitch] final class TwitchAuth(
 
   /** Forgets the token, revokes it at Twitch and deletes the file. `false` when there was nothing to forget. */
   def signOut(): Boolean =
-    token.getAndSet(None) match
+    transitions.ask(_.remove()) match
       case None => false
       case Some(revoked) =>
-        persist(file.delete())
         if !client.revoke(revoked) then logger.warn("Twitch did not confirm the revocation; the token will lapse on its own")
         logger.info(s"Signed out of Twitch as '${revoked.login}'")
         true
@@ -102,11 +110,12 @@ private[twitch] final class TwitchAuth(
       val snapshot = token.get()
       snapshot.foreach: held =>
         val now = clock.instant()
-        if !held.expiresAt.isAfter(now.plus(config.oauth.refreshBefore.toJava)) then refresh(snapshot, held)
+        if rejectedToken.get() || !held.expiresAt.isAfter(now.plus(config.oauth.refreshBefore.toJava)) then refresh(snapshot, held)
         else if JDuration.between(lastValidated.get(), now).compareTo(ValidationInterval) >= 0 then
           client.isValid(held) match
             case Some(false) =>
               logger.warn("Twitch no longer accepts the user token; refreshing it")
+              rejectedToken.set(true)
               refresh(snapshot, held)
             case Some(true) => lastValidated.set(now)
             case None       => () // Twitch unreachable: ask again next round.
@@ -118,17 +127,33 @@ private[twitch] final class TwitchAuth(
     client.refresh(held) match
       case Right(renewed) =>
         // A refresh that loses the race against a new consent or a sign-out must not put the old grant back.
-        if token.compareAndSet(snapshot, Some(renewed)) then
-          afterInstall(renewed)
-          logger.info(s"Refreshed the Twitch user token; valid until ${renewed.expiresAt}")
+        transitions.ask(_.refreshIfCurrent(snapshot, renewed))
       case Left(reason) =>
         fail(s"$reason; if this persists, authorize again at ${AuthorizePath}")
 
-  private def install(issued: UserToken): Unit =
-    token.set(Some(issued))
-    afterInstall(issued)
+  /** All accepted transitions include the foreign credential handle and persisted grant. Network exchanges happen before actor calls, so a
+    * slow Twitch request cannot block sign-out; an obsolete refresh cannot repopulate the handle or file after sign-out/new consent.
+    */
+  private final class CredentialTransitions:
+    def install(issued: UserToken): Unit =
+      token.set(Some(issued))
+      afterInstall(issued)
+
+    def refreshIfCurrent(snapshot: Option[UserToken], renewed: UserToken): Unit =
+      if token.compareAndSet(snapshot, Some(renewed)) then
+        afterInstall(renewed)
+        logger.info(s"Refreshed the Twitch user token; valid until ${renewed.expiresAt}")
+
+    def remove(): Option[UserToken] =
+      val revoked = token.getAndSet(None)
+      handle.setAccessToken("")
+      handle.setRefreshToken("")
+      revoked.foreach(_ => persist(file.delete()))
+      revoked
 
   private def afterInstall(issued: UserToken): Unit =
+    rejectedToken.set(false)
+    lastFailure.set(None)
     lastValidated.set(clock.instant())
     updateHandle(issued)
     persist(file.save(issued))
@@ -151,8 +176,9 @@ private[twitch] final class TwitchAuth(
     catch case NonFatal(error) => fail(s"could not update ${file.location}: ${error.getMessage}")
 
   private def fail(reason: String): Unit =
-    logger.warn(s"Twitch authorization: $reason")
-    bus.publish(RelayEvent.RelayFailure("twitch-oauth", reason))
+    if lastFailure.getAndSet(Some(reason)) != Some(reason) then
+      logger.warn(s"Twitch authorization: $reason")
+      bus.publish(RelayEvent.RelayFailure("twitch-oauth", reason))
 
   private def newState(): String =
     val bytes = new Array[Byte](32)
