@@ -13,6 +13,7 @@ private[relay] enum DisconnectReason:
     */
   case FramingViolation(detail: String)
   case ReadFailed(detail: String)
+  case WriteFailed
 
   /** §6.7 code 9: a new connection claimed this device id, so this one is a corpse left by a half-open socket. */
   case Replaced
@@ -29,6 +30,7 @@ private[relay] object DisconnectReason:
       case HandshakeRejected(detail) => s"handshake rejected: $detail"
       case ProtocolViolation(detail) => s"protocol violation: $detail"
       case FramingViolation(detail)  => detail // ProtocolError.FramingViolation already says "framing violation: …"
+      case WriteFailed               => "writing a frame to the device failed"
       case ReadFailed(detail)        => s"read failed: $detail"
       case Replaced                  => "another connection claimed this device id"
       case RequestedByOperator       => "disconnected through the management API"

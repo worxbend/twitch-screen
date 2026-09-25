@@ -54,6 +54,13 @@ private[device] final class TestDevice(port: Int, soTimeoutMs: Int = 5_000) exte
     try reader.read().toOption
     catch case _: java.io.IOException => None
 
+  def receiveWithin(budget: scala.concurrent.duration.FiniteDuration): Option[Frame] =
+    readWithin(budget).toOption
+
+  def readWithin(budget: scala.concurrent.duration.FiniteDuration): Either[ProtocolError, Frame] =
+    try reader.read(Some(FrameBudget(budget, socket.setSoTimeout)))
+    finally socket.setSoTimeout(soTimeoutMs)
+
   /** The relay's frames as messages, which is how every assertion in the link suite is written. */
   def receiveMessage(): Option[RelayMessage] = receive().flatMap(frame => Tsb3Decoder.fromRelay(frame).toOption)
 

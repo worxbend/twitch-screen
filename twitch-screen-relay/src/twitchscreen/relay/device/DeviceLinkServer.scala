@@ -38,7 +38,8 @@ private[relay] object DeviceLinkServer:
 
   private def acceptLoop(listener: ServerSocket, config: DeviceLinkConfig, hub: DeviceHub, clock: Clock)(using Ox): Unit =
     val sessions = AtomicInteger(0)
-    var failures = 0
+    var failures = 0L
+    var refused = 0L
     repeatWhile:
       accept(listener) match
         case Right(socket) =>
@@ -49,6 +50,9 @@ private[relay] object DeviceLinkServer:
               finally sessions.decrementAndGet().discard
           else
             sessions.decrementAndGet().discard
+            refused += 1
+            if refused == 1 || refused % 100 == 0 then
+              logger.warn(s"Device connection limit ($MaxConnections) reached; refused $refused connections")
             socket.close().catching[IOException].discard
           true
         case Left(_) if listener.isClosed =>
@@ -56,9 +60,9 @@ private[relay] object DeviceLinkServer:
           false
         case Left(error) =>
           // A refused connection must not take the listener down with it.
-          failures = math.min(failures + 1, 31)
+          failures += 1
           if failures == 1 || failures % 10 == 0 then logger.warn("Accepting a device connection failed; retrying with backoff", error)
-          sleep((100 * (1 << math.min(failures - 1, 5))).millis)
+          sleep((100 * (1 << math.min(failures - 1, 5L).toInt)).millis)
           true
 
   private def accept(listener: ServerSocket): Either[IOException, Socket] = listener.accept().catching[IOException]

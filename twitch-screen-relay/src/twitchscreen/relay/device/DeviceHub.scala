@@ -3,7 +3,7 @@ package twitchscreen.relay.device
 import java.io.{Closeable, IOException}
 import java.time.{Clock, Instant}
 import java.util.concurrent.ThreadLocalRandom
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import org.slf4j.LoggerFactory
 import ox.*
 import ox.channels.{Actor, ActorRef, Channel, ChannelClosed}
@@ -19,7 +19,13 @@ import twitchscreen.relay.protocol.*
   * guarantee that makes sequence numbers mean anything. Each session's writer fork encodes with that connection's own text policy, which is
   * also what lets one device be sent UTF-8 verbatim while another is sent a transliteration (§9.3).
   */
-private[device] final case class Outbound(message: RelayMessage, flags: FrameFlags = FrameFlags.Empty)
+private[device] final case class Outbound(message: RelayMessage, flags: FrameFlags = FrameFlags.Empty):
+  // Evaluated by session writers, never the actor; same-policy fan-out shares immutable encoded bytes.
+  private lazy val verbatim = EncodedFrame(message, flags, TextPolicy.Verbatim)
+  private lazy val folded = EncodedFrame(message, flags, TextPolicy.AsciiFolded)
+  def encoded(policy: TextPolicy): EncodedFrame = policy match
+    case TextPolicy.Verbatim    => verbatim
+    case TextPolicy.AsciiFolded => folded
 
 /** §10.1: the `u32` sequence space is spent. The relay never wraps; a restart begins a new sequence space, which is what devices
   * re-baseline on. `latest` is the last seq that was assigned, and remains the high-water mark every `WELCOME` reports.
@@ -30,7 +36,7 @@ private[relay] final case class SequenceExhausted(latest: SeqNo)
 private[device] final case class AttachRequest(
     device: DeviceId,
     remoteAddress: String,
-    protocolVersion: Int,
+    protocolVersion: ProtocolVersion,
     lastSeq: SeqNo,
     /** The effective capability intersection of this connection (§6.1), already negotiated by the session. Replayed and live events are
       * filtered by it identically, so a device without `CAP_CHAT` is not buried in replayed chat on reconnect.
@@ -52,25 +58,33 @@ private[device] final case class AttachRequest(
   * before a later EVENT can cross the gap. Retained notifications remain eligible for best-effort replay; replaceable STATS frames may be
   * dropped.
   */
-private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState], connected: AtomicInteger):
+private[relay] final class DeviceHub private (
+    state: ActorRef[DeviceHubState],
+    connected: AtomicInteger,
+    observed: AtomicReference[HubSnapshot]
+):
+  // Ox's bounded default mailbox admits 16 pending operations. ask confines operation failures to the caller,
+  // while observe refreshes the telemetry snapshot even if an operation fails after changing state.
+  private def command[A](operation: DeviceHubState => A): A = state.ask(_.observe(operation))
+
   /** Sequences an event and pushes it to every attached device whose capabilities allow it. Returns it with its assigned seq and id.
     *
     * Once the `u32` sequence space is spent (§10.1) every publication is refused with [[SequenceExhausted]]. A refusal leaves the actor,
     * the replay rings, `latestSeq`, the observed stats and the attached devices unchanged, and sends no frame; the hub reports the
     * exhaustion to the operator once, itself, so callers may discard the refusal.
     */
-  def publish(request: EventRequest): Either[SequenceExhausted, Notification] = state.ask(_.publish(request))
+  def publish(request: EventRequest): Either[SequenceExhausted, Notification] = command(_.publish(request))
 
   /** A stream lifecycle card together with the stats the transition produced (§6.5). On a refusal the stats are not recorded either; the
     * caller still owes the devices that `STATS`, via [[broadcastStats]].
     */
   def publishTransition(request: EventRequest, stats: StreamStats): Either[SequenceExhausted, Notification] =
-    state.ask(_.publish(request, Some(stats)))
+    command(_.publish(request, Some(stats)))
 
   /** §6.4.3: a posted card keeps its title and body and leaves every numeric field 0, whatever kind it names. */
   def publish(request: NotificationRequest): Either[SequenceExhausted, Notification] = publish(EventRequest.card(request))
 
-  def broadcastStats(stats: StreamStats): Unit = state.tell(_.updateStats(stats))
+  def broadcastStats(stats: StreamStats): Unit = command(_.updateStats(stats))
 
   def latestStats: StreamStats = state.ask(_.latestStats)
 
@@ -81,7 +95,7 @@ private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState], c
   /** Most recent notifications first, out of both replay rings. */
   def recentNotifications(limit: Int): List[Notification] = state.ask(_.recent(limit))
 
-  def snapshot: HubSnapshot = state.ask(_.snapshot)
+  def snapshot: HubSnapshot = observed.get()
 
   /** Safe for telemetry callbacks even after the actor's scope has ended. */
   def connectedCount: Int = connected.get()
@@ -91,7 +105,7 @@ private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState], c
     * application scope starts interrupting the forks that have to write them.
     */
   def shutdown(): Int =
-    val devices = state.ask(_.shutdown())
+    val devices = command(_.shutdown())
     try
       timeoutOption(2.seconds):
         devices.foreach(_.drained.receiveOrClosed().discard)
@@ -100,12 +114,16 @@ private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState], c
     devices.size
 
   /** Closes the socket, which unblocks that session's reader; the session then detaches itself. */
-  def disconnect(connection: ConnectionId): Option[DeviceLink] = state.ask(_.disconnect(connection))
+  def disconnect(connection: ConnectionId): Option[DeviceLink] =
+    command(_.disconnect(connection)).map: device =>
+      try timeoutOption(2.seconds)(device.drained.receiveOrClosed().discard).discard
+      finally device.connection.close().catching[IOException].discard
+      device.link
 
-  private[device] def attach(request: AttachRequest): ConnectionId = state.ask(_.attach(request))
+  private[device] def attach(request: AttachRequest): ConnectionId = command(_.attach(request))
 
   private[device] def detach(connection: ConnectionId, reason: DisconnectReason): Unit =
-    state.tell(_.detach(connection, reason))
+    command(_.detach(connection, reason))
 
 private[relay] object DeviceHub:
   /** Production source of the §6.2 `session_id`: a fresh random value per hub, which is per relay process start. [[SessionId.fromWire]]
@@ -131,7 +149,9 @@ private[relay] object DeviceHub:
   )(using Ox): DeviceHub =
     val connected = AtomicInteger(0)
     val sessionId = SessionId.fromWire(sessionIdSource())
-    new DeviceHub(Actor.create(new DeviceHubState(config, chat, clock, bus, connected, initialSequence, sessionId)), connected)
+    val initial = HubSnapshot(0, 0L, 0L, initialSequence, 0, StreamStats.Unknown, initialSequence.next.isEmpty)
+    val observed = AtomicReference(initial)
+    new DeviceHub(Actor.create(new DeviceHubState(config, chat, clock, bus, connected, initialSequence, sessionId, observed)), connected, observed)
 
 /** The hub's mutable state. The `var`s are safe because every method runs inside the actor that owns this instance; nothing else may hold a
   * reference to it.
@@ -151,49 +171,41 @@ private[device] final class DeviceHubState(
       * by frame as duplicates. The baseline is `last_seq` against `latest_seq` on both sides. This value stays for the device's log, which
       * is where "the relay restarted under me" belongs.
       */
-    sessionId: SessionId
+    sessionId: SessionId,
+    observed: AtomicReference[HubSnapshot]
 ):
   private val logger = LoggerFactory.getLogger(classOf[DeviceHub])
 
   private var lastConnectionId: Long = 0
-  private var latestSequence: SeqNo = initialSequence
+  private val sequences = SequenceAllocator(initialSequence)
+  private def latestSequence: SeqNo = sequences.latest
 
   /** Exhaustion is reported once. The report is a `RelayFailure`, which the router turns into an `Alert` card that this hub then refuses;
     * without the latch that refusal would report again, and so on for ever.
     */
   private var exhaustionReported: Boolean = false
 
-  /** §10.3's two rings. The split exists so that a busy chat cannot evict follows, raids and subs from the buffer; it does not create an
-    * unsequenced or unreplayable kind, because a kind skipped by replay lets a later event hold the high-water mark past a lost durable
-    * one. On greet the two are merged into one ascending `seq` order.
-    */
-  private var durableReplay: Vector[EventRecord] = Vector.empty
-  private var chatReplay: Vector[EventRecord] = Vector.empty
+  private val replay = ReplayBuffers(config.replayBufferSize, DeviceLinkConfig.ChatReplaySize)
+  private val reclaims = ReclaimPolicy()
+
+  def observe[A](operation: DeviceHubState => A): A =
+    try operation(this)
+    finally observed.set(snapshot)
 
   private var attached: Map[ConnectionId, AttachedDevice] = Map.empty
   private var latestObservedStats: StreamStats = StreamStats.Unknown
   private var connectionsAccepted: Long = 0
   private var notificationsPublished: Long = 0
-  private var recentReclaims: Vector[Instant] = Vector.empty
   private var stopping: Boolean = false
 
   def attach(request: AttachRequest): ConnectionId =
     val now = clock.instant()
     val connection = nextConnectionId()
-    recentReclaims = recentReclaims.dropWhile(_.isBefore(now.minusSeconds(60)))
     val replacing = attached.values.exists(_.device == request.device)
-    if stopping then
-      request.outbound
-        .trySendOrClosed(Outbound(RelayMessage.Bye(ByeCode.ServerShutdown, ByeDetail.Zero, 0.seconds, "relay shutting down")))
-        .discard
-      request.outbound.doneOrClosed().discard
-    else if replacing && recentReclaims.size >= 16 then
-      request.outbound
-        .trySendOrClosed(Outbound(RelayMessage.Bye(ByeCode.RateLimit, ByeDetail.Zero, 60.seconds, "reclaim rate exceeded")))
-        .discard
-      request.outbound.doneOrClosed().discard
+    if stopping then queueFinalBye(request.outbound, ByeCode.ServerShutdown, "relay shutting down")
+    else if replacing && !reclaims.allow(request.device, now) then
+      queueFinalBye(request.outbound, ByeCode.RateLimit, "reclaim rate exceeded", 60.seconds)
     else
-      if replacing then recentReclaims = recentReclaims :+ now
       reclaim(request.device)
       val device = AttachedDevice(connection, request, now)
       attached = attached.updated(connection, device)
@@ -220,10 +232,7 @@ private[device] final class DeviceHubState(
         connected.set(attached.size)
         // Queued rather than written here: §10.1 forbids the hub blocking, and this runs on the actor's single thread. The
         // session's writer fork drains the BYE and then closes the socket on `Done`, which is what ends the stale session.
-        stale.outbound
-          .trySendOrClosed(Outbound(RelayMessage.Bye(ByeCode.Replaced, ByeDetail.Zero, 0.seconds, "device id reclaimed")))
-          .discard
-        stale.outbound.doneOrClosed().discard
+        stale.queueFinalBye(ByeCode.Replaced, "device id reclaimed")
         bus.publish(RelayEvent.DeviceDisconnected(device, stale.id, DisconnectReason.Replaced.describe))
 
   def detach(connection: ConnectionId, reason: DisconnectReason): Unit =
@@ -236,11 +245,10 @@ private[device] final class DeviceHubState(
         bus.publish(RelayEvent.DeviceDisconnected(device.device, connection, reason.describe))
 
   def publish(request: EventRequest, transition: Option[StreamStats] = None): Either[SequenceExhausted, Notification] =
-    latestSequence.next match
+    sequences.allocate() match
       case None => Left(refuse())
       case Some(seq) =>
-        latestSequence = seq
-        Right(sequenced(request, transition))
+        Right(sequenced(request, seq, transition))
 
   /** §10.1: never wrap, and never assign past `0xffffffff`. Nothing is mutated and nothing is sent. */
   private def refuse(): SequenceExhausted =
@@ -253,9 +261,9 @@ private[device] final class DeviceHubState(
     else logger.debug(s"EVENT refused: sequence space exhausted at ${latestSequence.value}")
     SequenceExhausted(latestSequence)
 
-  private def sequenced(request: EventRequest, transition: Option[StreamStats]): Notification =
-    val record = request.record(latestSequence, clock.instant())
-    remember(record)
+  private def sequenced(request: EventRequest, seq: SeqNo, transition: Option[StreamStats]): Notification =
+    val record = request.record(seq, clock.instant())
+    replay.remember(record)
     notificationsPublished += 1
     transition.foreach(stats => latestObservedStats = stats)
     broadcast(RelayMessage.Event(record))
@@ -279,7 +287,7 @@ private[device] final class DeviceHubState(
   def link(connection: ConnectionId): Option[DeviceLink] = attached.get(connection).map(_.link)
 
   def recent(limit: Int): List[Notification] =
-    (durableReplay ++ chatReplay).sortBy(_.seq.value).reverse.take(limit).map(Notification.from).toList
+    replay.ordered.reverse.take(limit).map(Notification.from).toList
 
   def snapshot: HubSnapshot =
     HubSnapshot(
@@ -287,22 +295,18 @@ private[device] final class DeviceHubState(
       connectionsAccepted = connectionsAccepted,
       notificationsPublished = notificationsPublished,
       latestSeq = latestSequence,
-      replayBuffered = durableReplay.size + chatReplay.size,
+      replayBuffered = replay.size,
       latestStats = latestObservedStats,
       sequenceExhausted = latestSequence.next.isEmpty
     )
 
-  def disconnect(connection: ConnectionId): Option[DeviceLink] =
+  def disconnect(connection: ConnectionId): Option[AttachedDevice] =
     attached
       .get(connection)
       .map: device =>
         detach(connection, DisconnectReason.RequestedByOperator)
-        device.connection
-          .close()
-          .catching[IOException]
-          .left
-          .foreach(e => logger.debug(s"Closing connection #${connection.value} failed", e))
-        device.link
+        device.queueFinalBye(ByeCode.ServerShutdown, "operator disconnected")
+        device
 
   /** §6.7 code 8. Best effort by definition — `BYE` is advisory and the sender never waits for a reply — but a queued frame on a live
     * socket is drained within a bounded deadline before the facade closes every remaining socket.
@@ -311,19 +315,12 @@ private[device] final class DeviceHubState(
     stopping = true
     val devices = attached.values.toList
     devices.foreach: device =>
-      device.outbound
-        .trySendOrClosed(Outbound(RelayMessage.Bye(ByeCode.ServerShutdown, ByeDetail.Zero, 0.seconds, "relay shutting down")))
-        .discard
-      device.outbound.doneOrClosed().discard
+      device.queueFinalBye(ByeCode.ServerShutdown, "relay shutting down")
       bus.publish(RelayEvent.DeviceDisconnected(device.device, device.id, DisconnectReason.ListenerStopped.describe))
     if devices.nonEmpty then logger.info(s"Told ${devices.size} attached device(s) that the relay is shutting down")
     attached = Map.empty
     connected.set(0)
     devices
-
-  private def remember(record: EventRecord): Unit =
-    if record.kind == NotificationKind.Chat then chatReplay = (chatReplay :+ record).takeRight(DeviceHubState.ChatReplaySize)
-    else durableReplay = (durableReplay :+ record).takeRight(config.replayBufferSize)
 
   /** §11.1's fixed greeting burst: `WELCOME`, then the replayed events in ascending `seq`, then exactly one `STATS`.
     *
@@ -350,26 +347,17 @@ private[device] final class DeviceHubState(
       )
     )
     if lastSeq.isAfter(SeqNo.Zero) && !lastSeq.isAfter(latestSequence) then
-      (durableReplay ++ chatReplay)
-        .filter(_.seq.isAfter(lastSeq))
-        .sortBy(_.seq.value)
+      replay
+        .after(lastSeq)
         .foreach(record => send(device, Outbound(RelayMessage.Event(record), FrameFlags.Replay)))
     send(device, Outbound(RelayMessage.Stats(latestObservedStats, Some(now))))
 
-  private def broadcast(message: RelayMessage): Unit = attached.values.foreach(send(_, Outbound(message)))
-
-  /** §6.1: `CAP_CHAT` and the relay's own `notifications.chat` setting are ANDed, and the device's bit can only narrow, never widen.
-    * Neither switch affects `STATS.msg_total` or `STATS.chat_rate`, which are folded upstream from every non-bot message.
-    */
-  private def wants(device: AttachedDevice, message: RelayMessage): Boolean = message match
-    case RelayMessage.Event(record) if record.kind == NotificationKind.Chat =>
-      chat == ChatNotifications.Show && device.caps.contains(Capabilities.Chat)
-    case RelayMessage.Event(record) if DeviceHubState.GenericKinds.contains(record.kind) =>
-      device.caps.contains(Capabilities.Generic)
-    case _ => true
+  private def broadcast(message: RelayMessage): Unit =
+    val frame = Outbound(message)
+    attached.values.foreach(send(_, frame))
 
   private def send(device: AttachedDevice, frame: Outbound): Unit =
-    if attached.contains(device.id) && wants(device, frame.message) then
+    if attached.contains(device.id) && device.wants(frame.message, chat) then
       device.outbound.trySendOrClosed(frame) match
         case accepted: Boolean =>
           if !accepted then
@@ -388,14 +376,6 @@ private[device] final class DeviceHubState(
     lastConnectionId += 1
     ConnectionId(lastConnectionId)
 
-private[device] object DeviceHubState:
-  /** §5, §10.3: a ring of its own, so that a busy chat cannot evict a follow, a raid or a sub from the durable one. */
-  val ChatReplaySize: Int = DeviceLinkConfig.ChatReplaySize
-
-  /** §6.1's `CAP_GENERIC`: the kinds `0x00`…`0x03` a device may decline to render. */
-  val GenericKinds: Set[NotificationKind] =
-    Set(NotificationKind.Info, NotificationKind.Message, NotificationKind.Warning, NotificationKind.Alert)
-
 private[device] final class AttachedDevice(val id: ConnectionId, request: AttachRequest, val connectedAt: Instant):
   val device: DeviceId = request.device
   val outbound: Channel[Outbound] = request.outbound
@@ -405,4 +385,22 @@ private[device] final class AttachedDevice(val id: ConnectionId, request: Attach
   val drained: Channel[Unit] = request.drained
 
   def link: DeviceLink =
-    DeviceLink(id, device, request.remoteAddress, connectedAt, request.protocolVersion, request.lastSeq.value, counters.traffic)
+    DeviceLink(id, device, request.remoteAddress, connectedAt, request.protocolVersion.value, request.lastSeq.value, counters.traffic)
+
+  def wants(message: RelayMessage, chat: ChatNotifications): Boolean = message match
+    case RelayMessage.Event(record) if !record.kind.isDurable =>
+      chat == ChatNotifications.Show && caps.contains(Capabilities.Chat)
+    case RelayMessage.Event(record) if record.kind.isGeneric => caps.contains(Capabilities.Generic)
+    case _                                                   => true
+
+  def queueFinalBye(code: ByeCode, reason: String): Unit =
+    twitchscreen.relay.device.queueFinalBye(outbound, code, reason)
+
+private def queueFinalBye(
+    outbound: Channel[Outbound],
+    code: ByeCode,
+    reason: String,
+    retry: scala.concurrent.duration.FiniteDuration = 0.seconds
+): Unit =
+  outbound.trySendOrClosed(Outbound(RelayMessage.Bye(code, ByeDetail.Zero, retry, reason))).discard
+  outbound.doneOrClosed().discard

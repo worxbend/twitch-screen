@@ -21,8 +21,23 @@ class LifecycleOrderingSuite extends munit.FunSuite:
       device.hello("test", 0)
       device.receiveMany(2).discard
       bus.publish(RelayEvent.StreamStarted("channel", "title", "game", Some(clock.instant())))
-      assertEquals(device.receiveMessage().collect { case RelayMessage.Event(record) => record.kind }, Some(NotificationKind.StreamStart))
-      assertEquals(device.receiveMessage().collect { case RelayMessage.Stats(stats, _) => stats.state }, Some(StreamState.Live))
+      expectTransition(device, NotificationKind.StreamStart, StreamState.Live)
       bus.publish(RelayEvent.StreamEnded("channel", 30.seconds))
-      assertEquals(device.receiveMessage().collect { case RelayMessage.Event(record) => record.kind }, Some(NotificationKind.StreamEnd))
-      assertEquals(device.receiveMessage().collect { case RelayMessage.Stats(stats, _) => stats.state }, Some(StreamState.Offline))
+      expectTransition(device, NotificationKind.StreamEnd, StreamState.Offline)
+
+  private def expectTransition(device: TestDevice, kind: NotificationKind, state: StreamState): Unit =
+    // Flow.tick emits an initial snapshot on its own scheduling turn. It can legitimately precede either lifecycle card.
+    // Once the card arrives, its post-transition STATS must still be the immediately following frame.
+    val next = timeoutOption(2.seconds):
+      LazyList
+        .continually(device.receiveMessage())
+        .take(8)
+        .dropWhile {
+          case Some(_: RelayMessage.Stats) => true
+          case _                           => false
+        }
+        .headOption
+        .flatten
+    .flatten
+    assertEquals(next.collect { case RelayMessage.Event(record) => record.kind }, Some(kind))
+    assertEquals(device.receiveMessage().collect { case RelayMessage.Stats(stats, _) => stats.state }, Some(state))

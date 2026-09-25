@@ -1,7 +1,7 @@
 package twitchscreen.relay.device
 
 import java.util.concurrent.atomic.AtomicInteger
-import ox.{discard, forkDiscard, supervised}
+import ox.{discard, forkDiscard, supervised, timeoutOption}
 import scala.concurrent.duration.DurationInt
 import twitchscreen.relay.config.{ChatNotifications, DeviceLinkConfig}
 import twitchscreen.relay.protocol.*
@@ -13,6 +13,11 @@ import twitchscreen.relay.protocol.*
   * frame does not kill the link while a malformed stream does, and that a `PONG` is not lost behind a full outbound queue.
   */
 class DeviceLinkSuite extends munit.FunSuite:
+  private val QuiescenceBudget = 200.millis
+  private val PongBudget = 2.seconds
+  private val TrickledHandshakeBudget = 600.millis
+  private val TrickleInterval = 200.millis
+  private val HandshakeSchedulingMargin = 2.seconds
   private def follow(name: String) = EventRequest(NotificationKind.Follow, actor = name, text = "", ttl = 30.seconds)
 
   private def chat(name: String, text: String) = EventRequest(NotificationKind.Chat, actor = name, text = text, ttl = 6.seconds)
@@ -44,6 +49,7 @@ class DeviceLinkSuite extends munit.FunSuite:
         // §6.2: `replay_window` is what this relay actually retains, which is `device-link.replay-buffer-size`
         // and not §5's default. A device told 64 and served 8 has no way to notice the six cards it never got.
         assertEquals(welcomeOf(frames).map(_.replayWindow.value), Some(TestRelay.config.replayBufferSize))
+        assertEquals(device.receiveWithin(QuiescenceBudget), None)
 
   test("§6.2: WELCOME advertises the durable ring this relay was configured with, not the specification's default"):
     supervised:
@@ -137,6 +143,7 @@ class DeviceLinkSuite extends munit.FunSuite:
         assertEquals(events(replayed).map(_.seq.value), List(2L, 3L))
         assert(replayed.forall(_.header.flags.isReplay), "every replayed EVENT must carry flags.REPLAY")
         assertEquals(frames.last.header.typeCode.known, Some(MessageType.Stats), "the burst ends with exactly one STATS")
+        assertEquals(device.receiveWithin(QuiescenceBudget), None)
 
   test("a device whose last_seq is ahead of the relay's gets no replay, because that sequence space no longer exists"):
     supervised:
@@ -145,6 +152,7 @@ class DeviceLinkSuite extends munit.FunSuite:
       withDevice(port): device =>
         device.hello("roundlcd-01", lastSeq = 9_000)
         assertEquals(device.receiveMany(2).map(_.header.typeCode.known), List(Some(MessageType.Welcome), Some(MessageType.Stats)))
+        assertEquals(device.receiveWithin(QuiescenceBudget), None)
 
   test("chat is replayed out of a ring of its own, so a busy chat cannot evict a follow"):
     supervised:
@@ -157,10 +165,10 @@ class DeviceLinkSuite extends munit.FunSuite:
       (1 to 30).foreach(index => hub.publish(chat(s"chatter$index", "hi")).discard) // seqs 3…32, chat ring only
       withDevice(port): device =>
         device.hello("roundlcd-01", lastSeq = 1)
-        val frames = device.receiveMany(2 + 1 + DeviceHubState.ChatReplaySize)
+        val frames = device.receiveMany(2 + 1 + DeviceLinkConfig.ChatReplaySize)
         val replayed = events(frames)
         assert(replayed.exists(_.actor == "newfriend"), "the follow survived thirty chat lines")
-        assertEquals(replayed.count(_.kind == NotificationKind.Chat), DeviceHubState.ChatReplaySize)
+        assertEquals(replayed.count(_.kind == NotificationKind.Chat), DeviceLinkConfig.ChatReplaySize)
         assertEquals(replayed.map(_.seq.value), replayed.map(_.seq.value).sorted, "both rings merged into one ascending order")
         assertEquals(frames.last.header.typeCode.known, Some(MessageType.Stats), "the burst still ends with exactly one STATS")
 
@@ -174,12 +182,12 @@ class DeviceLinkSuite extends munit.FunSuite:
       (1 to 20).foreach(index => hub.publish(chat(s"chatter$index", "hi")).discard) // seqs 7…26, the chat ring keeps the last sixteen
       withDevice(port): device =>
         device.hello("roundlcd-01", lastSeq = 1)
-        val frames = device.receiveMany(1 + replay + DeviceHubState.ChatReplaySize + 1)
-        assertEquals(frames.size, 1 + replay + DeviceHubState.ChatReplaySize + 1, "a dropped EVENT would have closed the link")
+        val frames = device.receiveMany(1 + replay + DeviceLinkConfig.ChatReplaySize + 1)
+        assertEquals(frames.size, 1 + replay + DeviceLinkConfig.ChatReplaySize + 1, "a dropped EVENT would have closed the link")
         assertEquals(frames.head.header.typeCode.known, Some(MessageType.Welcome))
         assertEquals(frames.last.header.typeCode.known, Some(MessageType.Stats), "the trailing STATS was not dropped")
         val replayed = frames.filter(_.header.typeCode.known.contains(MessageType.Event))
-        assertEquals(replayed.size, replay + DeviceHubState.ChatReplaySize)
+        assertEquals(replayed.size, replay + DeviceLinkConfig.ChatReplaySize)
         assert(replayed.forall(_.header.flags.isReplay), "every replayed EVENT must carry flags.REPLAY")
         val seqs = events(replayed).map(_.seq.value)
         assertEquals(seqs, (3L to 6L).toList ++ (11L to 26L).toList, "both rings merged into one strictly ascending order")
@@ -260,12 +268,14 @@ class DeviceLinkSuite extends munit.FunSuite:
         device.receiveMany(2).discard
         (1 to 300).foreach(_ => hub.broadcastStats(StreamStats.Unknown))
         device.send(DeviceMessage.Ping(Token.fromWire(99L)))
-        val pong = LazyList
-          .continually(device.receiveMessage())
-          .take(512)
-          .takeWhile(_.isDefined)
-          .flatten
-          .collectFirst { case RelayMessage.Pong(token) => token.value }
+        val pong = timeoutOption(PongBudget):
+          LazyList
+            .continually(device.receiveMessage())
+            .take(512)
+            .takeWhile(_.isDefined)
+            .flatten
+            .collectFirst { case RelayMessage.Pong(token) => token.value }
+        .flatten
         assertEquals(pong, Some(99L))
 
   test("ACK without the negotiated capability is ignored without rejecting the frame"):
@@ -356,7 +366,7 @@ class DeviceLinkSuite extends munit.FunSuite:
 
   test("§11.1 rule 2: the handshake timeout is a deadline from accept — a HELLO trickled a byte at a time does not stretch it"):
     supervised:
-      val (_, port) = TestRelay.start(TestRelay.config.copy(handshakeTimeout = 600.millis))
+      val (_, port) = TestRelay.start(TestRelay.config.copy(handshakeTimeout = TrickledHandshakeBudget))
       withDevice(port): device =>
         val hello = Tsb3Encoder.toRelay(
           DeviceMessage.Hello(
@@ -370,13 +380,13 @@ class DeviceLinkSuite extends munit.FunSuite:
         forkDiscard:
           try
             hello.foreach { byte =>
-              device.sendBytes(Array(byte)); Thread.sleep(200)
+              device.sendBytes(Array(byte)); Thread.sleep(TrickleInterval.toMillis)
             }
           catch case _: java.io.IOException => () // the relay hung up on us, which is the point
         val started = System.nanoTime()
         assertEquals(byesOf(device.drain()).map(_.code), List(ByeCode.HandshakeTimeout))
         val elapsedMs = (System.nanoTime() - started) / 1_000_000
-        assert(elapsedMs < 2000, s"handshake took $elapsedMs ms, the deadline is 600 ms")
+        assert(elapsedMs < HandshakeSchedulingMargin.toMillis, s"handshake took $elapsedMs ms, budget $TrickledHandshakeBudget")
 
   test("a first frame that is not a HELLO is refused with the type code it actually was"):
     supervised:
@@ -536,12 +546,15 @@ class DeviceLinkSuite extends munit.FunSuite:
         assertEquals(link.map(_.traffic.bytesReceived), Some(68L))
         assertEquals(link.map(_.traffic.bytesSent), Some(72L))
 
-  test("disconnecting through the hub closes the socket"):
+  test("operator disconnect drains queued notifications and its final BYE before closing"):
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
         device.hello("roundlcd-01", lastSeq = 0)
         device.receiveMany(2).discard
         val connection = hub.links.head.connection
+        hub.publish(follow("queued before disconnect")).discard
         assertEquals(hub.disconnect(connection).map(_.device.value), Some("roundlcd-01"))
+        assertEquals(events(device.receiveMany(1)).map(_.actor), List("queued before disconnect"))
+        assertEquals(device.receiveMessage().collect { case bye: RelayMessage.Bye => bye.code }, Some(ByeCode.ServerShutdown))
         assertEquals(device.receive(), None)

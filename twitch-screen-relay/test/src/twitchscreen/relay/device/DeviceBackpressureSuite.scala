@@ -26,7 +26,7 @@ class DeviceBackpressureSuite extends munit.FunSuite:
             AttachRequest(
               DeviceId("test").toOption.get,
               "test",
-              3,
+              Tsb3.Version,
               SeqNo.Zero,
               TestDevice.FullCaps,
               queue,
@@ -65,7 +65,7 @@ class DeviceBackpressureSuite extends munit.FunSuite:
           AttachRequest(
             DeviceId("test").toOption.get,
             "test",
-            3,
+            Tsb3.Version,
             SeqNo.Zero,
             TestDevice.FullCaps,
             queue,
@@ -99,7 +99,7 @@ class DeviceBackpressureSuite extends munit.FunSuite:
           AttachRequest(
             DeviceId("test").toOption.get,
             "test",
-            3,
+            Tsb3.Version,
             SeqNo.Zero,
             TestDevice.FullCaps,
             queue,
@@ -138,7 +138,7 @@ class DeviceBackpressureSuite extends munit.FunSuite:
         AttachRequest(
           DeviceId("test").toOption.get,
           "test",
-          3,
+          Tsb3.Version,
           SeqNo.Zero,
           TestDevice.FullCaps,
           Channel.buffered[Outbound](32),

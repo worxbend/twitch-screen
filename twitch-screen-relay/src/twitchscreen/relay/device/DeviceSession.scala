@@ -1,7 +1,7 @@
 package twitchscreen.relay.device
 
 import java.io.{BufferedInputStream, IOException, OutputStream}
-import java.net.{Socket, SocketTimeoutException}
+import java.net.Socket
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicReference
 import org.slf4j.LoggerFactory
@@ -46,10 +46,12 @@ private[device] object DeviceSession:
         prepare(socket)
         val counters = LinkCounters(clock)
         val sink = FrameSink(socket.getOutputStream, counters)
+        val writeBudget = AtomicReference(config.handshakeTimeout)
         forkDiscard:
           forever:
-            sleep(50.millis)
-            if sink.writeOverdue(config.idleTimeout) then closeQuietly(socket)
+            val limit = writeBudget.get()
+            sleep((limit / 4).min(1.second).max(10.millis))
+            if sink.writeOverdue(limit) then closeQuietly(socket)
         // Buffered so that a 176-byte EVENT does not cost one syscall per field; the reader still accumulates,
         // because a buffered stream short-counts exactly as an unbuffered one does (§2).
         val source = BufferedInputStream(socket.getInputStream, Tsb3.MaxFrame)
@@ -62,7 +64,9 @@ private[device] object DeviceSession:
             logger.info(s"Refused device at $remote: ${refusal.reason.describe}")
             refuse(sink, refusal)
           case Right(accepted) =>
-            serve(socket, reader, budget(config.idleTimeout), sink, accepted, remote, config, hub, clock, counters)
+            writeBudget.set(config.idleTimeout)
+            val io = SessionIo(socket, sink, counters, config, accepted.caps, accepted.text)
+            serve(reader, budget(config.idleTimeout), io, accepted.hello, remote, hub, clock)
       finally
         // Closed here in the scope body rather than through a scope finalizer: a finalizer runs only once the scope
         // has joined its forks, and unblocking those forks is exactly what this close is for.
@@ -74,6 +78,15 @@ private[device] object DeviceSession:
 
   /** The accepted `HELLO`, the capabilities negotiated from it, and the text policy those capabilities imply. */
   private final case class Handshake(hello: DeviceMessage.Hello, caps: Capabilities, text: TextPolicy)
+
+  private final case class SessionIo(
+      socket: Socket,
+      sink: FrameSink,
+      counters: LinkCounters,
+      config: DeviceLinkConfig,
+      caps: Capabilities,
+      text: TextPolicy
+  )
 
   /** Why a device was turned away, and the `BYE` it is owed. `version` is the version byte of the frame that provoked the refusal (§6.7),
     * not this relay's — a device speaking v4 must be able to read the refusal.
@@ -122,15 +135,7 @@ private[device] object DeviceSession:
             )
 
           case Left(error @ ProtocolError.UnsupportedVersion(received, _)) =>
-            Left(
-              Refusal(
-                DisconnectReason.HandshakeRejected(error.describe),
-                // detail is the version THIS relay speaks, so the device can log the gap from both sides (§6.7).
-                Some((ByeCode.UnsupportedVersion, ByeDetail.of(config.protocolVersion))),
-                ProtocolVersion.fromWire(received.toByte),
-                VersionMismatchBackoff
-              )
-            )
+            Left(versionRefusal(ProtocolVersion.fromWire(received.toByte), config, DisconnectReason.HandshakeRejected(error.describe)))
 
           case Left(error) =>
             // Anything else in the handshake window is a bad handshake, whatever §4.3 would have made of it later.
@@ -138,30 +143,28 @@ private[device] object DeviceSession:
             Left(Refusal(DisconnectReason.HandshakeRejected(error.describe), advice, version))
 
   private def serve(
-      socket: Socket,
       reader: FrameReader,
       idle: FrameBudget,
-      sink: FrameSink,
-      handshake: Handshake,
+      io: SessionIo,
+      hello: DeviceMessage.Hello,
       remote: String,
-      config: DeviceLinkConfig,
       hub: DeviceHub,
-      clock: Clock,
-      counters: LinkCounters
+      clock: Clock
   )(using Ox): Unit =
-    val hello = handshake.hello
+    import io.*
     val outbound = Channel.buffered[Outbound](config.outboundQueueCapacity)
     val drained = Channel.buffered[Unit](1)
     val connection = hub.attach(
-      AttachRequest(hello.deviceId, remote, config.protocolVersion, hello.lastSeq, handshake.caps, outbound, counters, socket, drained)
+      AttachRequest(hello.deviceId, remote, Tsb3.Version, hello.lastSeq, caps, outbound, counters, socket, drained)
     )
-    logger.info(s"Device ${hello.deviceId.value} attached as #${connection.value} from $remote (last_seq=${hello.lastSeq.value})")
+    if hub.link(connection).isDefined then
+      logger.info(s"Device ${hello.deviceId.value} attached as #${connection.value} from $remote (last_seq=${hello.lastSeq.value})")
     try
       forkDiscard:
-        try writeLoop(socket, sink, outbound, handshake.text, config, counters)
+        try writeLoop(io, outbound)
         finally drained.doneOrClosed().discard
-      forkDiscard(heartbeat(outbound, config, clock))
-      hub.detach(connection, readLoop(reader, idle, sink, counters, config, handshake.caps))
+      forkDiscard(heartbeat(outbound, config, counters, clock))
+      hub.detach(connection, readLoop(reader, idle, io))
     finally outbound.doneOrClosed().discard
 
   /** Drains the outbound queue onto the socket. A failed write closes the socket, which is what ends the session.
@@ -170,58 +173,42 @@ private[device] object DeviceSession:
     * sequence numbers mean anything, and the text policy is per connection anyway — one device may have a UTF-8 font while another does not
     * (§9.3).
     */
-  private def writeLoop(
-      socket: Socket,
-      sink: FrameSink,
-      outbound: Source[Outbound],
-      text: TextPolicy,
-      config: DeviceLinkConfig,
-      counters: LinkCounters
-  ): Unit =
-    repeatWhile:
-      outbound.receiveOrClosed() match
-        case frame: Outbound =>
-          val encoded = Tsb3Encoder.toDevice(frame.message, frame.flags, text)
-          if encoded.length > config.maxFrameLength then
-            // §5: a sender that cannot fit a message drops it and counts it. It never fragments and never emits a
-            // partial frame. Unreachable while EVENT is 176 bytes against a 256 byte limit, and kept so that it
-            // stays unreachable if either number ever moves.
-            counters.recordDropped()
-            logger.warn(s"Dropped a ${frame.message.messageType} frame of ${encoded.length} bytes, past the ${config.maxFrameLength} limit")
-            true
-          else if (
-              frame.message match
-                case _: RelayMessage.Bye => sink.writeFinal(encoded)
-                case _                   => sink.write(encoded)
-            )
-          then true
-          else
-            closeQuietly(socket)
-            false
-        case ChannelClosed.Done =>
-          // §6.7: the hub closes the queue after queueing a final `BYE` — a device id reclaimed by a newer connection, or the
-          // relay shutting down. Draining it and then closing the socket is what turns that queued frame into a delivered one
-          // and ends this session; without the close the reader would sit here until the 90 s idle timeout.
-          closeQuietly(socket)
-          false
-        case ChannelClosed.Error(cause) => throw cause
+  @tailrec
+  private def writeLoop(io: SessionIo, outbound: Source[Outbound]): Unit =
+    val next = outbound.receiveOrClosed() match
+      case frame: Outbound            => writeFrame(io, frame)
+      case ChannelClosed.Done         => WriteResult.Failed
+      case ChannelClosed.Error(cause) => throw cause
+    next match
+      case WriteResult.Written => writeLoop(io, outbound)
+      case WriteResult.Failed  => closeQuietly(io.socket)
+
+  private def writeFrame(io: SessionIo, frame: Outbound): WriteResult =
+    import io.*
+    val encoded = frame.encoded(text)
+    if encoded.length > config.maxFrameLength then
+      counters.recordDropped()
+      logger.warn(s"Dropped a ${frame.message.messageType} frame of ${encoded.length} bytes, past the ${config.maxFrameLength} limit")
+      frame.message match
+        case _: RelayMessage.Event => WriteResult.Failed // later EVENTs must never cross this gap
+        case _                     => WriteResult.Written // replaceable frames may be skipped
+    else
+      frame.message match
+        case _: RelayMessage.Bye => sink.writeFinal(encoded)
+        case _                   => sink.write(encoded)
 
   /** Both peers ping periodically and answer promptly; either side can detect a half-open connection (§12).
     */
-  private def heartbeat(outbound: Channel[Outbound], config: DeviceLinkConfig, clock: Clock): Unit =
+  private def heartbeat(outbound: Channel[Outbound], config: DeviceLinkConfig, counters: LinkCounters, clock: Clock): Unit =
     forever:
       sleep(config.pingInterval)
-      outbound.trySendOrClosed(Outbound(RelayMessage.Ping(Token.fromWire(clock.instant().getEpochSecond)))).discard
+      outbound.trySendOrClosed(Outbound(RelayMessage.Ping(Token.fromWire(clock.instant().getEpochSecond)))) match
+        case false => counters.recordDropped()
+        case _     => ()
 
   @tailrec
-  private def readLoop(
-      reader: FrameReader,
-      idle: FrameBudget,
-      sink: FrameSink,
-      counters: LinkCounters,
-      config: DeviceLinkConfig,
-      caps: Capabilities
-  ): DisconnectReason =
+  private def readLoop(reader: FrameReader, idle: FrameBudget, io: SessionIo): DisconnectReason =
+    import io.*
     readFrame(reader, idle) match
       case Left(Inbound.Timeout)        => DisconnectReason.IdleTimeout
       case Left(Inbound.Closed(reason)) => reason
@@ -233,23 +220,17 @@ private[device] object DeviceSession:
       case Right(frame) =>
         // §12: any inbound frame of any type resets the idle timer, including one that is about to be skipped.
         counters.recordReceived(frame.header.frameSize)
-        handle(frame, sink, counters, config, caps) match
+        handle(frame, io) match
           case Some(reason) => reason
-          case None         => readLoop(reader, idle, sink, counters, config, caps)
+          case None         => readLoop(reader, idle, io)
 
-  private def handle(
-      frame: Frame,
-      sink: FrameSink,
-      counters: LinkCounters,
-      config: DeviceLinkConfig,
-      caps: Capabilities
-  ): Option[DisconnectReason] =
+  private def handle(frame: Frame, io: SessionIo): Option[DisconnectReason] =
+    import io.*
     if !frame.header.version.isCurrent then
-      val refusal = Refusal(
-        DisconnectReason.ProtocolViolation(s"frame carried version ${frame.header.version.value}"),
-        Some((ByeCode.UnsupportedVersion, ByeDetail.of(config.protocolVersion))),
+      val refusal = versionRefusal(
         frame.header.version,
-        VersionMismatchBackoff
+        config,
+        DisconnectReason.ProtocolViolation(s"frame carried version ${frame.header.version.value}")
       )
       refuse(sink, refusal)
       Some(refusal.reason)
@@ -260,8 +241,9 @@ private[device] object DeviceSession:
           // §6.3: answered as soon as the reader returns, straight onto the socket. Queueing it behind the outbound
           // backlog is how a device that has fallen behind stops getting pongs, declares the link dead, reconnects,
           // and re-triggers the very burst it was behind on.
-          sink.write(Tsb3Encoder.toDevice(RelayMessage.Pong(token))).discard
-          None
+          sink.write(EncodedFrame(RelayMessage.Pong(token))) match
+            case WriteResult.Written => None
+            case WriteResult.Failed  => Some(DisconnectReason.WriteFailed)
 
         case Right(DeviceMessage.Pong(_)) => None // liveness is already recorded by `counters.recordReceived`
 
@@ -278,12 +260,15 @@ private[device] object DeviceSession:
               // §4.3: well-framed but not usable. Discard the payload, count it, keep the link. The resync budget
               // resets too, because the frame was correctly framed.
               counters.recordSkipped(error)
-              logger.debug(s"Skipping an inbound frame: ${error.describe}")
+              if logger.isDebugEnabled then logger.debug(s"Skipping an inbound frame: ${error.describe}")
               None
             case ErrorDisposition.CloseLink | ErrorDisposition.Resynchronize =>
               val refusal = Refusal(DisconnectReason.ProtocolViolation(error.describe), error.byeAdvice, frame.header.version)
               refuse(sink, refusal)
               Some(refusal.reason)
+
+  private def versionRefusal(version: ProtocolVersion, config: DeviceLinkConfig, reason: DisconnectReason): Refusal =
+    Refusal(reason, Some((ByeCode.UnsupportedVersion, ByeDetail.of(config.protocolVersion))), version, VersionMismatchBackoff)
 
   private def duplicateHello(sink: FrameSink, frame: Frame): Option[DisconnectReason] =
     val refusal = Refusal(
@@ -300,7 +285,7 @@ private[device] object DeviceSession:
   private def refuse(sink: FrameSink, refusal: Refusal): Unit =
     refusal.bye.foreach: (code, detail) =>
       val bye = RelayMessage.Bye(code, detail, refusal.retryAfter, reasonFor(code))
-      sink.writeFinal(Tsb3Encoder.toDevice(bye, version = refusal.version)).discard
+      sink.writeFinal(EncodedFrame(bye, version = refusal.version)).discard
 
   /** §6.7: `reason` is for logs only and is never parsed. Twenty-three content bytes, so each of these is written to fit. */
   private def reasonFor(code: ByeCode): String = code match
@@ -327,10 +312,7 @@ private[device] object DeviceSession:
       .read(Some(budget))
       .catching[IOException]
       .fold(
-        {
-          case _: SocketTimeoutException => Left(Inbound.Timeout)
-          case error => Left(Inbound.Closed(DisconnectReason.ReadFailed(Option(error.getMessage).getOrElse(error.getClass.getSimpleName))))
-        },
+        error => Left(Inbound.Closed(DisconnectReason.ReadFailed(Option(error.getMessage).getOrElse(error.getClass.getSimpleName)))),
         {
           case Right(frame)                          => Right(frame)
           case Left(_: ProtocolError.FrameTimeout)   => Left(Inbound.Timeout)
@@ -361,7 +343,7 @@ private enum Inbound:
   * indistinguishable from corruption and would cost the device its resync budget. The monitor protects frame ordering and the final-BYE
   * guard; deadline observation stays outside it.
   */
-private final class FrameSink(target: OutputStream, counters: LinkCounters):
+private[device] final class FrameSink(target: OutputStream, counters: LinkCounters):
   private val logger = LoggerFactory.getLogger(classOf[FrameSink])
 
   /** Set once a `BYE` has been written; guarded by this object's monitor like every write. */
@@ -372,28 +354,32 @@ private final class FrameSink(target: OutputStream, counters: LinkCounters):
   def writeOverdue(limit: FiniteDuration): Boolean =
     writeStarted.get().exists(started => System.nanoTime() - started >= limit.toNanos)
 
-  /** Returns false once the socket is gone, or once a `BYE` has gone out, which is the writer fork's signal to stop. §14: the byte count is
-    * the true one, `8 + length`.
+  /** Returns Failed once the socket is gone, or once a `BYE` has gone out, which is the writer fork's signal to stop. §14: the byte count
+    * is the true one, `8 + length`.
     */
-  def write(frame: Array[Byte]): Boolean = synchronized:
-    if closed then false
+  def write(frame: EncodedFrame): WriteResult = synchronized:
+    if closed then WriteResult.Failed
     else
       try
         writeStarted.set(Some(System.nanoTime()))
-        target.write(frame)
+        frame.writeTo(target)
         target.flush()
         counters.recordSent(frame.length)
-        true
+        WriteResult.Written
       catch
         case error: IOException =>
           logger.debug("Write to a device failed", error)
-          false
+          closed = true
+          WriteResult.Failed
       finally writeStarted.set(None)
 
   /** §6.7: `BYE` is always the last frame on the connection. Every write after this one is refused, so an `EVENT`, `STATS` or `PING` still
     * queued for the writer fork can never follow it onto the wire; the writer then closes the socket, as a refused write always does.
     */
-  def writeFinal(frame: Array[Byte]): Boolean = synchronized:
+  def writeFinal(frame: EncodedFrame): WriteResult = synchronized:
     val written = write(frame)
     closed = true
     written
+
+private[device] enum WriteResult:
+  case Written, Failed
