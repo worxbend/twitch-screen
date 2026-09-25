@@ -208,3 +208,45 @@ The existing masking tests ("the rendered configuration masks every secret" and 
 | `git diff --check` | clean |
 
 Note on the flake: the first parallel package run failed "a slowly trickled body cannot extend the whole-request deadline" (K-017) at `assertEquals(calls.get(), 0)`. So under parallel load, a protected handler ran once during a trickle case. That test and its code path are not touched by K-018: the new tests never call `/protected`, and each `withServer` has its own `calls` counter. It did not reproduce in the next 3 package runs or in the full `test` run. I am recording it as a timing flake that was already in K-017, for integration to follow up.
+
+## K-061: Spurious 'recovered' on first health observation
+
+- Severity: Low. Area: relay-twitch. Location: `TwitchRuntimeHealth.scala:28` at review time.
+- **Disposition: fixed (regression added; the code fix was already on main).** It closes the `[partial]` test gap. `TwitchHealthState.observe` already logs `Twitch <label> recovered` only when `previous.exists { case Failed(_) => true; case _ => false }`, and `resetSession()` seeds `Awaiting`, not `Failed`. The line is log-only (`logger.info`) and never reaches the bus, so before this change no test failed if the guard was removed.
+
+### Change
+
+- Test-only. No production code changed.
+- `twitch-screen-relay/test/src/twitchscreen/relay/twitch/TwitchRecoverySuite.scala`:
+  - New helper `recoveredLines(body)`. It attaches a logback `ListAppender` to the `TwitchHealthState` logger (`classOf[TwitchHealthState]`, same package) and forces the level to INFO, so a `RELAY_LOG_LEVEL=WARN` environment cannot make the negative cases pass vacuously. It runs `body` and returns the INFO messages that end with `recovered`. In `finally`, it detaches and stops the appender and restores the saved level. It needs no sleeps: `observe` is an actor `ask`, so each log call has finished before `ask` returns. The pattern is copied from `ManagementAuthSuite.plaintextWarnings`.
+  - 4 new tests. Each one uses a fresh `TwitchRuntimeHealth(config, EventBus(Clock.systemUTC(), 64))`:
+    - "health does not log 'recovered' for a component's first observation": `observe(Startup, None)` produces `Nil`.
+    - "health does not log 'recovered' for observations after a session reset": `observe(Startup, None)`, `resetSession()`, `observe(Streams, None)`, `observe(Startup, None)` produces `Nil`.
+    - "health logs 'recovered' once when a failed component becomes healthy": `observe(Streams, Some("x"))`, then `observe(Streams, None)` twice, produces exactly `List(s"Twitch ${HealthComponent.Streams.label} recovered")`. The repeated Healthy does not log a second time.
+    - "health does not log 'recovered' when a failed component went back to awaiting first": Failed, then `awaiting(Streams)`, then Healthy produces `Nil`. This held on current main, so it pins that "recovered" means a direct failed-to-healthy transition.
+  - Imports added: logback `Level`, `Logger as LogbackLogger`, `ILoggingEvent`, `ListAppender`, `org.slf4j.LoggerFactory`, `scala.jdk.CollectionConverters.*`. `discard` was already imported from ox.
+
+### Red, then green
+
+- Green on current main: `./mill --no-daemon test.testOnly twitchscreen.relay.twitch.TwitchRecoverySuite`: 24 tests (20 + 4), 0 failed.
+- The code fix was already on main, so the red step is shown by the mutations below.
+
+### Mutation proof (each mutation was reverted with `git checkout -- twitch-screen-relay/src/twitchscreen/relay/twitch/TwitchRuntimeHealth.scala`)
+
+| Mutation | Result |
+|---|---|
+| Guard removed: `case Healthy =>` | 3 failed out of 24, each a `munit.ComparisonFailException: values are not the same`: "first observation" (line 420), "after a session reset" (line 430), "went back to awaiting first" (line 448) |
+| Guard disabled: `case Healthy if false =>` | 1 failed out of 24: "logs 'recovered' once when a failed component becomes healthy" (line 439) |
+
+After the revert, `git diff --stat` showed only `TwitchRecoverySuite.scala` changed (58 insertions), plus this evidence file.
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly twitchscreen.relay.twitch.TwitchRecoverySuite` | SUCCESS. 24 tests, 0 failed. |
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.twitch.*'` | SUCCESS. 10 suites, 109 tests, 0 failed. |
+| `./mill --no-daemon compile` | SUCCESS (`-Werror`) |
+| `./mill --no-daemon test` | SUCCESS. 39 suites, 448 tests (444 + 4), 0 failed. |
+| `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS (160 sources) |
+| `git diff --check` | clean |

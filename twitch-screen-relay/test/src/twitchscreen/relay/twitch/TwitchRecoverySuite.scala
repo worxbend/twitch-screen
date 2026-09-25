@@ -1,5 +1,8 @@
 package twitchscreen.relay.twitch
 
+import ch.qos.logback.classic.{Level, Logger as LogbackLogger}
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import com.fasterxml.jackson.databind.MapperFeature
 import com.fasterxml.jackson.databind.json.JsonMapper
 import com.github.twitch4j.helix.TwitchHelix
@@ -8,8 +11,10 @@ import com.netflix.hystrix.{HystrixCommand, HystrixCommandGroupKey, HystrixComma
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
+import org.slf4j.LoggerFactory
 import ox.{discard, fork, supervised}
 import scala.concurrent.duration.*
+import scala.jdk.CollectionConverters.*
 import twitchscreen.relay.bus.{EventBus, RelayEvent}
 import twitchscreen.relay.config.*
 
@@ -35,6 +40,26 @@ class TwitchRecoverySuite extends munit.FunSuite:
 
   private def command[A](body: => A): HystrixCommand[A] = new HystrixCommand[A](commandSetup):
     override def run(): A = body
+
+  /** Runs `body` and returns the INFO "recovered" lines the health actor logged. The level is forced to INFO so a WARN-only environment
+    * cannot make the negative cases pass vacuously; `observe` is an actor `ask`, so every log call has finished when `body` returns.
+    */
+  private def recoveredLines(body: => Unit): List[String] =
+    val logger = LoggerFactory.getLogger(classOf[TwitchHealthState]).asInstanceOf[LogbackLogger]
+    val level = logger.getLevel
+    val appender = ListAppender[ILoggingEvent]()
+    logger.setLevel(Level.INFO)
+    appender.start()
+    logger.addAppender(appender)
+    try body
+    finally
+      logger.detachAppender(appender).discard
+      appender.stop()
+      logger.setLevel(level)
+    appender.list.asScala.toList
+      .filter(_.getLevel == Level.INFO)
+      .map(_.getFormattedMessage)
+      .filter(_.endsWith("recovered"))
 
   private def helix(call: (String, Array[Object]) => Object): TwitchHelix =
     val handler = new InvocationHandler:
@@ -388,6 +413,39 @@ class TwitchRecoverySuite extends munit.FunSuite:
       List(HealthComponent.EventSubOnline, HealthComponent.EventSubOffline, HealthComponent.EventSubUpdate).foreach(health.observe(_, None))
       assertEquals(events.receive().event, RelayEvent.TwitchLinkUp("channel channel"))
       assert(events.tryReceive().isEmpty)
+
+  test("health does not log 'recovered' for a component's first observation"):
+    supervised:
+      val health = TwitchRuntimeHealth(config, EventBus(Clock.systemUTC(), 64))
+      assertEquals(recoveredLines(health.observe(HealthComponent.Startup, None)), Nil)
+
+  test("health does not log 'recovered' for observations after a session reset"):
+    supervised:
+      val health = TwitchRuntimeHealth(config, EventBus(Clock.systemUTC(), 64))
+      val lines = recoveredLines:
+        health.observe(HealthComponent.Startup, None)
+        health.resetSession()
+        health.observe(HealthComponent.Streams, None)
+        health.observe(HealthComponent.Startup, None)
+      assertEquals(lines, Nil)
+
+  test("health logs 'recovered' once when a failed component becomes healthy"):
+    supervised:
+      val health = TwitchRuntimeHealth(config, EventBus(Clock.systemUTC(), 64))
+      val lines = recoveredLines:
+        health.observe(HealthComponent.Streams, Some("x"))
+        health.observe(HealthComponent.Streams, None)
+        health.observe(HealthComponent.Streams, None)
+      assertEquals(lines, List(s"Twitch ${HealthComponent.Streams.label} recovered"))
+
+  test("health does not log 'recovered' when a failed component went back to awaiting first"):
+    supervised:
+      val health = TwitchRuntimeHealth(config, EventBus(Clock.systemUTC(), 64))
+      val lines = recoveredLines:
+        health.observe(HealthComponent.Streams, Some("x"))
+        health.awaiting(HealthComponent.Streams)
+        health.observe(HealthComponent.Streams, None)
+      assertEquals(lines, Nil)
 
   test("link-down cards include a sanitized failure reason"):
     supervised:
