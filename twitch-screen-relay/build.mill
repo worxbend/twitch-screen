@@ -20,8 +20,10 @@ object Versions {
   val twitch4j = "1.27.0"
   val otel = "1.66.0"
 
-  /** These instrumentation modules retain the currently tested alpha pin; SDK and instrumentation version lines differ. */
-  val otelInstrumentation = "2.9.0-alpha"
+  /** Latest instrumentation release. Its BOM targets SDK 1.65.0; the SDK BOM (1.66.0) is imported before it in `bomMvnDeps`, so the SDK
+    * version wins and every OpenTelemetry artifact resolves to a single version. Re-check when an instrumentation release targets 1.66.
+    */
+  val otelInstrumentation = "2.31.1-alpha"
 
   val logback = "1.6.4"
   val munit = "1.3.6"
@@ -40,8 +42,14 @@ object `package` extends ScalaModule {
     "-Wnonunit-statement"
   )
 
-  // Keep Tapir and all transitive Netty modules on the same patched release.
-  def bomMvnDeps = Seq(mvn"io.netty:netty-bom:${Versions.netty}")
+  // Keep Tapir and all transitive Netty modules on the same patched release. The OpenTelemetry SDK BOMs come before the
+  // instrumentation BOM so the SDK pin, not the instrumentation release's older SDK target, decides the core versions.
+  def bomMvnDeps = Seq(
+    mvn"io.netty:netty-bom:${Versions.netty}",
+    mvn"io.opentelemetry:opentelemetry-bom:${Versions.otel}",
+    mvn"io.opentelemetry:opentelemetry-bom-alpha:${Versions.otel}-alpha",
+    mvn"io.opentelemetry.instrumentation:opentelemetry-instrumentation-bom-alpha:${Versions.otelInstrumentation}"
+  )
 
   def mvnDeps = Seq(
     // Structured concurrency on virtual threads.
@@ -68,9 +76,9 @@ object `package` extends ScalaModule {
     mvn"io.opentelemetry:opentelemetry-exporter-otlp:${Versions.otel}",
     mvn"io.opentelemetry:opentelemetry-exporter-sender-jdk:${Versions.otel}",
     // The runtime-telemetry instrumentation builds its counters through the incubator API, which the SDK does not
-    // pull in on its own; without it RuntimeMetrics.create fails with NoClassDefFoundError at startup.
+    // pull in on its own; without it RuntimeTelemetry.create fails with NoClassDefFoundError at startup.
     mvn"io.opentelemetry:opentelemetry-api-incubator:${Versions.otel}-alpha",
-    mvn"io.opentelemetry.instrumentation:opentelemetry-runtime-telemetry-java17:${Versions.otelInstrumentation}",
+    mvn"io.opentelemetry.instrumentation:opentelemetry-runtime-telemetry:${Versions.otelInstrumentation}",
     mvn"io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0:${Versions.otelInstrumentation}",
     mvn"ch.qos.logback:logback-classic:${Versions.logback}"
   )
@@ -84,7 +92,9 @@ object `package` extends ScalaModule {
     def mvnDeps = Seq(
       mvn"org.scalameta::munit:${Versions.munit}",
       mvn"com.softwaremill.sttp.tapir::tapir-sttp-stub4-server:${Versions.tapir}",
-      mvn"com.softwaremill.sttp.tapir::tapir-sttp-client4:${Versions.tapir}"
+      mvn"com.softwaremill.sttp.tapir::tapir-sttp-client4:${Versions.tapir}",
+      // InMemoryMetricReader and InMemoryLogRecordExporter for OtelLinkageSuite.
+      mvn"io.opentelemetry:opentelemetry-sdk-testing:${Versions.otel}"
     )
   }
 }

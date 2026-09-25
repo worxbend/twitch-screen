@@ -2,7 +2,7 @@ package twitchscreen.relay.observability
 
 import io.opentelemetry.api.OpenTelemetry
 import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender
-import io.opentelemetry.instrumentation.runtimemetrics.java17.RuntimeMetrics
+import io.opentelemetry.instrumentation.runtimetelemetry.RuntimeTelemetry
 import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk
 import org.slf4j.LoggerFactory
 import ox.{ResourceScope, discard, tap, useCloseableInScope}
@@ -32,6 +32,12 @@ private[relay] object Otel:
       .build()
       .getOpenTelemetrySdk
       .tap(sdk => useCloseableInScope(sdk).discard)
-      .tap(sdk => useCloseableInScope(RuntimeMetrics.create(sdk)).discard) // JVM CPU, heap, GC and thread metrics
-      .tap(OpenTelemetryAppender.install) // routes Logback records into the OTLP log exporter
+      .tap(instrument)
       .tap(_ => logger.info("OpenTelemetry initialised; exporters stay off until OTEL_*_EXPORTER is set"))
+
+  /** Links the instrumentation libraries to `otel`. Separate from [[initialize]] so OtelLinkageSuite runs the startup code against an SDK
+    * with in-memory exporters.
+    */
+  private[relay] def instrument(otel: OpenTelemetry)(using ResourceScope): Unit =
+    useCloseableInScope(RuntimeTelemetry.create(otel)).discard // JVM CPU, heap, GC and thread metrics
+    OpenTelemetryAppender.install(otel) // routes Logback records into the OTLP log exporter
