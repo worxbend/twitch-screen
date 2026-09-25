@@ -20,6 +20,11 @@ import twitchscreen.relay.config.{EventSubTransport, TwitchConfig}
   * Startup is deliberately forgiving. If the channel cannot be resolved — bad credentials, Twitch down, no network at boot — the relay logs
   * it, reports itself disconnected and carries on serving devices; a notification relay that refuses to start because Twitch is unreachable
   * is worse than one that says so on its status endpoint.
+  *
+  * No user token is configured. The client starts with the application's credentials alone — enough to resolve the channel, poll viewers
+  * and read chat anonymously — and everything that needs the broadcaster's consent (follows, follower and subscriber totals, every EventSub
+  * WebSocket subscription) starts when [[TwitchAuth]] first holds a token, whether loaded from disk at startup or granted in a browser
+  * later.
   */
 private[twitch] object LiveTwitchSource:
   private val logger = LoggerFactory.getLogger(getClass)
@@ -28,6 +33,8 @@ private[twitch] object LiveTwitchSource:
     val health = AtomicReference(TwitchHealth.Connecting)
     val detail = AtomicReference("connecting")
     val client = useInScope(build(config))(_.close())
+    val auth = TwitchAuth.start(config, TwitchOAuthClient.live(config, clock), bus, clock)
+    val authApi = TwitchAuthApi(auth)
     val tracker = ChannelStateTracker(config.channel, clock)
     val webhook = EventSubWebhookApi.create(config, bus, tracker, filter, clock)
 
@@ -43,17 +50,19 @@ private[twitch] object LiveTwitchSource:
         bus.publish(RelayEvent.TwitchLinkDown(failure))
       case Right(broadcasterId) =>
         joinChat(client, config)
-        subscribeToEvents(client, config, broadcasterId)
-        HelixPoller.start(client.getHelix, config, broadcasterId, tracker, bus, clock)
+        subscribeToEvents(client, config, broadcasterId, auth)
+        HelixPoller.start(client.getHelix, config, broadcasterId, () => auth.accessToken, tracker, bus, clock)
         health.set(TwitchHealth.Connected)
         detail.set(s"broadcaster $broadcasterId, EventSub over ${config.eventSub.transport}")
         logger.info(s"Twitch integration up for '${config.channel}' (broadcaster $broadcasterId)")
         bus.publish(RelayEvent.TwitchLinkUp(s"channel ${config.channel}"))
 
     new TwitchSource:
-      override def status: TwitchStatus = TwitchStatus(config.mode, health.get(), config.channel, detail.get())
+      override def status: TwitchStatus =
+        val authorization = auth.current.fold(s"not authorized, open ${TwitchAuth.AuthorizePath}")(held => s"authorized as ${held.login}")
+        TwitchStatus(config.mode, health.get(), config.channel, s"${detail.get()}; $authorization")
       override def endpoints: List[ServerEndpoint[Any, Identity]] =
-        if config.eventSub.transport == EventSubTransport.Webhook then webhook.endpoints else Nil
+        authApi.endpoints ++ (if config.eventSub.transport == EventSubTransport.Webhook then webhook.endpoints else Nil)
 
   private def build(config: TwitchConfig): TwitchClient =
     val builder = TwitchClientBuilder
@@ -64,10 +73,9 @@ private[twitch] object LiveTwitchSource:
       .withEnableChat(true)
       // The socket is only opened for the WebSocket transport; with a webhook, Twitch calls us instead.
       .withEnableEventSocket(config.eventSub.transport == EventSubTransport.WebSocket)
-    // An anonymous chat connection can read any public channel, which is all the relay needs. A token is only
-    // required to see subscriber-only chat or to send.
-    if config.chatAccessToken.isSet then builder.withChatAccount(OAuth2Credential("twitch", config.chatAccessToken.value)).discard
-    if config.userAccessToken.isSet then builder.withDefaultAuthToken(OAuth2Credential("twitch", config.userAccessToken.value)).discard
+    // No default auth token: Helix then authenticates with an application token minted from the client secret, which is what
+    // webhook subscriptions require, and calls that need the broadcaster pass the user token explicitly. Chat is anonymous,
+    // which reads any public channel — everything the relay needs short of subscriber-only chat.
     builder.build()
 
   private def joinChat(client: TwitchClient, config: TwitchConfig): Unit =
@@ -87,20 +95,37 @@ private[twitch] object LiveTwitchSource:
         .toRight(s"Twitch has no channel named '${config.channel}'")
     catch case NonFatal(error) => Left(s"could not resolve '${config.channel}': ${error.getMessage}")
 
-  private def subscribeToEvents(client: TwitchClient, config: TwitchConfig, broadcasterId: String): Unit =
-    config.eventSub.transport match
-      case EventSubTransport.WebSocket => subscribeOverWebSocket(client.getEventSocket, broadcasterId)
-      case EventSubTransport.Webhook   => EventSubWebhookApi.createSubscriptions(client.getHelix, config, broadcasterId)
-
-  /** Only the events chat and the Helix poll cannot provide. Subscriptions requiring a broadcaster token are skipped when none is
-    * configured, so an app-token-only relay still gets stream start and stop.
+  /** Registers what can be registered now, and forks the rest to wait for the broadcaster's consent. The fork lives in the application
+    * scope, so a relay that is never authorized simply keeps it parked until shutdown.
     */
-  private def subscribeOverWebSocket(socket: IEventSubSocket, broadcasterId: String): Unit =
-    List(
-      EventSubFactory.webSocketSubscription(SubscriptionTypes.STREAM_ONLINE, EventSubFactory.streamOnline(broadcasterId)),
-      EventSubFactory.webSocketSubscription(SubscriptionTypes.STREAM_OFFLINE, EventSubFactory.streamOffline(broadcasterId)),
-      EventSubFactory.webSocketSubscription(SubscriptionTypes.CHANNEL_UPDATE_V2, EventSubFactory.channelUpdate(broadcasterId)),
-      EventSubFactory.webSocketSubscription(SubscriptionTypes.CHANNEL_FOLLOW_V2, EventSubFactory.follow(broadcasterId, broadcasterId))
-    ).foreach(subscription => socket.register(subscription).discard)
-    socket.connect()
-    logger.info("EventSub WebSocket connected")
+  private def subscribeToEvents(client: TwitchClient, config: TwitchConfig, broadcasterId: String, auth: TwitchAuth)(using Ox): Unit =
+    config.eventSub.transport match
+      case EventSubTransport.WebSocket =>
+        // Twitch accepts no WebSocket subscription at all without a user token, not even stream start and stop.
+        if auth.current.isEmpty then logger.info("EventSub waits for Twitch authorization")
+        forkDiscard(subscribeOverWebSocket(client.getEventSocket, auth.awaitCredential(), broadcasterId))
+      case EventSubTransport.Webhook =>
+        val unscoped = EventSubWebhookApi.unscopedSubscriptions(broadcasterId)
+        val scoped = EventSubWebhookApi.scopedSubscriptions(broadcasterId)
+        if auth.current.isDefined then EventSubWebhookApi.createSubscriptions(client.getHelix, config, unscoped ++ scoped)
+        else
+          EventSubWebhookApi.createSubscriptions(client.getHelix, config, unscoped)
+          logger.info("The follow subscription waits for Twitch authorization")
+          forkDiscard:
+            auth.awaitCredential().discard
+            EventSubWebhookApi.createSubscriptions(client.getHelix, config, scoped)
+
+  /** Only the events chat and the Helix poll cannot provide. `credential` is [[TwitchAuth]]'s long-lived handle, so the socket's
+    * resubscriptions after a reconnect carry whichever access token is current by then.
+    */
+  private def subscribeOverWebSocket(socket: IEventSubSocket, credential: OAuth2Credential, broadcasterId: String): Unit =
+    try
+      List(
+        EventSubFactory.webSocketSubscription(SubscriptionTypes.STREAM_ONLINE, EventSubFactory.streamOnline(broadcasterId)),
+        EventSubFactory.webSocketSubscription(SubscriptionTypes.STREAM_OFFLINE, EventSubFactory.streamOffline(broadcasterId)),
+        EventSubFactory.webSocketSubscription(SubscriptionTypes.CHANNEL_UPDATE_V2, EventSubFactory.channelUpdate(broadcasterId)),
+        EventSubFactory.webSocketSubscription(SubscriptionTypes.CHANNEL_FOLLOW_V2, EventSubFactory.follow(broadcasterId, broadcasterId))
+      ).foreach(subscription => socket.register(credential, subscription).discard)
+      socket.connect()
+      logger.info("EventSub WebSocket connected")
+    catch case NonFatal(error) => logger.error(s"EventSub WebSocket subscription failed: ${error.getMessage}")

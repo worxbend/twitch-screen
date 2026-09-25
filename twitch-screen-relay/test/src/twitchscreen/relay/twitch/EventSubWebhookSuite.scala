@@ -28,8 +28,7 @@ class EventSubWebhookSuite extends munit.FunSuite:
     channel = "somechannel",
     clientId = "client",
     clientSecret = Sensitive("secret"),
-    userAccessToken = Sensitive("token"),
-    chatAccessToken = Sensitive.Empty,
+    oauth = TwitchOAuthConfig("http://localhost:8080/api/v1/twitch/callback", Nil, "data/twitch-token.json", 15.minutes),
     eventSub = EventSubConfig(EventSubTransport.Webhook, "https://relay.example/api/v1/twitch/eventsub", Sensitive(secret)),
     pollInterval = 30.seconds,
     simulation = SimulationConfig(10.seconds, 2.seconds)

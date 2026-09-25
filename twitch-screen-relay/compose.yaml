@@ -14,5 +14,10 @@ services:
       # RELAY_TWITCH_CHANNEL: yourchannel
       # RELAY_TWITCH_CLIENT_ID: ...
       # RELAY_TWITCH_CLIENT_SECRET: ...
-      # RELAY_TWITCH_USER_TOKEN: ...
+      # Then open http://localhost:8080/api/v1/twitch/authorize once to grant the broadcaster token.
+    volumes:
+      - relay-data:/home/relay/data   # the granted Twitch token
     restart: unless-stopped
+
+volumes:
+  relay-data:

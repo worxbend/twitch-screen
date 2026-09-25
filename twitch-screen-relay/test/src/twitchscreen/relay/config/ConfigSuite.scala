@@ -36,6 +36,18 @@ class ConfigSuite extends munit.FunSuite:
     val failure = intercept[IllegalArgumentException](deviceLinkConfig(maxFrameLength = 128))
     assert(failure.getMessage.contains("max-frame-length"), failure.getMessage)
 
+  test("the shipped configuration obtains the Twitch user token through the consent flow, never from the environment"):
+    val config = ConfigSource.default.loadOrThrow[Config]
+    assertEquals(config.twitch.oauth.redirectUrl, "http://localhost:8080/api/v1/twitch/callback")
+    assertEquals(config.twitch.oauth.scopes, List("moderator:read:followers", "channel:read:subscriptions"))
+    assert(!ConfigFactory.load().hasPath("twitch.user-access-token"))
+
+  test("a live relay whose redirect URL does not land on the callback path is rejected at load"):
+    val failure = intercept[IllegalArgumentException](
+      liveTwitchConfig(clientId = "abc").copy(oauth = TwitchOAuthConfig("http://localhost:8080/", Nil, "t.json", 15.minutes))
+    )
+    assert(failure.getMessage.contains("redirect-url"), failure.getMessage)
+
   test("a sensitive value does not render itself"):
     assertEquals(Sensitive("hunter2").toString, "***")
 
@@ -85,8 +97,7 @@ class ConfigSuite extends munit.FunSuite:
       channel = "somechannel",
       clientId = clientId,
       clientSecret = Sensitive("secret"),
-      userAccessToken = Sensitive.Empty,
-      chatAccessToken = Sensitive.Empty,
+      oauth = TwitchOAuthConfig("http://localhost:8080/api/v1/twitch/callback", Nil, "data/twitch-token.json", 15.minutes),
       eventSub = EventSubConfig(EventSubTransport.WebSocket, "", Sensitive.Empty),
       pollInterval = 30.seconds,
       simulation = SimulationConfig(10.seconds, 2.seconds)

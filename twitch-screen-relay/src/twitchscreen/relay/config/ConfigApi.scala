@@ -30,8 +30,6 @@ object ConfigApi:
   /** Paths whose values must never be rendered. Kept beside the reader that uses them, not in the HOCON file. */
   private val secretPaths = Set(
     "twitch.client-secret",
-    "twitch.user-access-token",
-    "twitch.chat-access-token",
     "twitch.event-sub.secret"
   )
 

@@ -13,20 +13,27 @@ import twitchscreen.relay.protocol.Count
 
 /** The figures on the idle dashboard. Nothing pushes viewer, follower or subscriber totals, so they are polled.
   *
-  * Each of the three calls is attempted independently: a relay without a broadcaster token still gets viewer counts, and a Helix outage
-  * costs one poll rather than the loop.
+  * Each of the three calls is attempted independently: a relay nobody has authorized yet still gets viewer counts, and a Helix outage costs
+  * one poll rather than the loop.
   */
 private[twitch] object HelixPoller:
   private val logger = LoggerFactory.getLogger(getClass)
 
-  def start(helix: TwitchHelix, config: TwitchConfig, broadcasterId: String, tracker: ChannelStateTracker, bus: EventBus, clock: Clock)(
-      using Ox
-  ): Unit =
+  /** `userToken` is read on every poll, so totals appear from the first poll after consent and follow each refresh. */
+  def start(
+      helix: TwitchHelix,
+      config: TwitchConfig,
+      broadcasterId: String,
+      userToken: () => Option[String],
+      tracker: ChannelStateTracker,
+      bus: EventBus,
+      clock: Clock
+  )(using Ox): Unit =
     logger.info(s"Polling Helix for '${config.channel}' every ${config.pollInterval}")
     forkDiscard:
       forever:
         // Polled before the first sleep, so a freshly started relay has real numbers to show immediately.
-        try poll(helix, config, broadcasterId, tracker, bus, clock)
+        try poll(helix, config, broadcasterId, userToken(), tracker, bus, clock)
         catch
           case NonFatal(error) =>
             logger.warn("Helix poll failed", error)
@@ -37,14 +44,15 @@ private[twitch] object HelixPoller:
       helix: TwitchHelix,
       config: TwitchConfig,
       broadcasterId: String,
+      userToken: Option[String],
       tracker: ChannelStateTracker,
       bus: EventBus,
       clock: Clock
   ): Unit =
     pollStream(helix, config, tracker, bus, clock)
-    if config.userAccessToken.isSet then
-      pollFollowers(helix, config, broadcasterId, bus)
-      pollSubscribers(helix, config, broadcasterId, bus)
+    userToken.foreach: token =>
+      pollFollowers(helix, token, broadcasterId, bus)
+      pollSubscribers(helix, token, broadcasterId, bus)
 
   private def pollStream(helix: TwitchHelix, config: TwitchConfig, tracker: ChannelStateTracker, bus: EventBus, clock: Clock): Unit =
     attempt("twitch-streams", bus):
@@ -61,14 +69,14 @@ private[twitch] object HelixPoller:
           bus.publish(RelayEvent.ViewersObserved(Count.clamp(intOr(stream.getViewerCount)), uptimeOf(stream.getStartedAtInstant, clock)))
         case None => tracker.wentOffline().foreach(bus.publish)
 
-  private def pollFollowers(helix: TwitchHelix, config: TwitchConfig, broadcasterId: String, bus: EventBus): Unit =
+  private def pollFollowers(helix: TwitchHelix, userToken: String, broadcasterId: String, bus: EventBus): Unit =
     attempt("twitch-followers", bus):
-      helix.getChannelFollowers(config.userAccessToken.value, broadcasterId, null, 1, null).execute()
+      helix.getChannelFollowers(userToken, broadcasterId, null, 1, null).execute()
     .foreach(followers => bus.publish(RelayEvent.FollowersObserved(Count.clamp(intOr(followers.getTotal)))))
 
-  private def pollSubscribers(helix: TwitchHelix, config: TwitchConfig, broadcasterId: String, bus: EventBus): Unit =
+  private def pollSubscribers(helix: TwitchHelix, userToken: String, broadcasterId: String, bus: EventBus): Unit =
     attempt("twitch-subscribers", bus):
-      helix.getSubscriptions(config.userAccessToken.value, broadcasterId, null, null, 1).execute()
+      helix.getSubscriptions(userToken, broadcasterId, null, null, 1).execute()
     .foreach(subscriptions => bus.publish(RelayEvent.SubscribersObserved(Count.clamp(intOr(subscriptions.getTotal)))))
 
   /** One Helix endpoint failing must not cost the others their poll — a missing `moderator:read:followers` scope should not hide the viewer

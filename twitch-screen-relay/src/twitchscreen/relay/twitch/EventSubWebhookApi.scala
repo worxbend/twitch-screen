@@ -1,7 +1,8 @@
 package twitchscreen.relay.twitch
 
 import com.github.plokhotnyuk.jsoniter_scala.core.{JsonReaderException, readFromString}
-import com.github.twitch4j.eventsub.subscriptions.SubscriptionTypes
+import com.github.twitch4j.eventsub.condition.EventSubCondition
+import com.github.twitch4j.eventsub.subscriptions.{SubscriptionType, SubscriptionTypes}
 import com.github.twitch4j.helix.TwitchHelix
 import java.nio.charset.StandardCharsets.UTF_8
 import java.security.MessageDigest
@@ -150,18 +151,29 @@ private[twitch] object EventSubWebhookApi:
   def create(config: TwitchConfig, bus: EventBus, tracker: ChannelStateTracker, filter: BotFilter, clock: Clock): EventSubWebhookApi =
     EventSubWebhookApi(config, bus, tracker, filter, clock)
 
-  /** Asks Twitch to start calling us. Unlike the WebSocket transport these subscriptions outlive the process, so Twitch may already hold
-    * them; a duplicate is reported by Helix and logged rather than failing startup.
+  /** The subscriptions Twitch grants any application, with no user's consent behind them. */
+  def unscopedSubscriptions(broadcasterId: String): List[(SubscriptionType[?, ?, ?], EventSubCondition)] = List(
+    SubscriptionTypes.STREAM_ONLINE -> EventSubFactory.streamOnline(broadcasterId),
+    SubscriptionTypes.STREAM_OFFLINE -> EventSubFactory.streamOffline(broadcasterId),
+    SubscriptionTypes.CHANNEL_UPDATE_V2 -> EventSubFactory.channelUpdate(broadcasterId)
+  )
+
+  /** Follows need `moderator:read:followers` granted to this application, so they can only be registered after consent. */
+  def scopedSubscriptions(broadcasterId: String): List[(SubscriptionType[?, ?, ?], EventSubCondition)] = List(
+    SubscriptionTypes.CHANNEL_FOLLOW_V2 -> EventSubFactory.follow(broadcasterId, broadcasterId)
+  )
+
+  /** Asks Twitch to start calling us. Webhook subscriptions are created with the application's own token — Helix falls back to it because
+    * the client carries no user token — and hold for as long as the user's consent does. Unlike the WebSocket transport they outlive the
+    * process, so Twitch may already hold them; a duplicate is reported by Helix and logged rather than failing startup.
     */
-  def createSubscriptions(helix: TwitchHelix, config: TwitchConfig, broadcasterId: String): Unit =
+  def createSubscriptions(
+      helix: TwitchHelix,
+      config: TwitchConfig,
+      subscriptions: List[(SubscriptionType[?, ?, ?], EventSubCondition)]
+  ): Unit =
     val callback = config.eventSub.callbackUrl
     val secret = config.eventSub.secret.value
-    val subscriptions = List(
-      SubscriptionTypes.STREAM_ONLINE -> EventSubFactory.streamOnline(broadcasterId),
-      SubscriptionTypes.STREAM_OFFLINE -> EventSubFactory.streamOffline(broadcasterId),
-      SubscriptionTypes.CHANNEL_UPDATE_V2 -> EventSubFactory.channelUpdate(broadcasterId),
-      SubscriptionTypes.CHANNEL_FOLLOW_V2 -> EventSubFactory.follow(broadcasterId, broadcasterId)
-    )
     subscriptions.foreach: (subscriptionType, condition) =>
       try
         helix

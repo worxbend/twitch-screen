@@ -26,10 +26,13 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# The relay needs no filesystem access of its own, so it runs unprivileged.
+# Unprivileged. Its only writable state is data/, which holds the Twitch token granted through /api/v1/twitch/authorize;
+# created here so a named volume mounted over it inherits the relay user's ownership.
 RUN useradd --system --create-home --uid 10001 relay
 USER relay
 WORKDIR /home/relay
+RUN mkdir -m 700 data
+VOLUME ["/home/relay/data"]
 
 COPY --from=build --chown=relay:relay /src/out/assembly.dest/out.jar relay.jar
 
@@ -42,7 +45,7 @@ ENV RELAY_HTTP_HOST=0.0.0.0 \
     JAVA_OPTS=""
 
 # 8080: management API and Swagger UI. 8099: the firmware's persistent TCP link.
-EXPOSE 8080 8099//
+EXPOSE 8080 8099
 
 # Liveness only, matching GET /api/v1/health: Twitch being down must not restart a relay that is serving devices.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \

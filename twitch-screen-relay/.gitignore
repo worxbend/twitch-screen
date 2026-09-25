@@ -16,3 +16,6 @@ mill-*.log
 .env
 .env.*
 !.env.example
+
+# Twitch user token granted at runtime through /api/v1/twitch/authorize
+data/

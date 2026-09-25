@@ -109,6 +109,10 @@ segment after a colon (`POST /devices/7:disconnect`).
 | `POST` | `/api/v1/alerts/{id}:acknowledge` | Acknowledge an active alert |
 | `GET` | `/api/v1/alertRules` | The rules this relay was configured with |
 | `GET` | `/api/v1/logs` | The relay's own recent log lines, for when it is running headless |
+| `GET` | `/api/v1/twitch/authorize` | Open in a browser: redirects to Twitch's consent screen. `live` mode only |
+| `GET` | `/api/v1/twitch/callback` | Twitch's OAuth redirect target; stores the token it is handed. `live` mode only |
+| `GET` | `/api/v1/twitch/authorization` | Whose Twitch token the relay holds, its scopes and expiry — never the token. `live` mode only |
+| `DELETE` | `/api/v1/twitch/authorization` | Revoke the token at Twitch and forget it. `live` mode only |
 | `POST` | `/api/v1/twitch/eventsub` | Called by Twitch, not by you. Only mounted for the webhook transport |
 
 Every error, including decode failures and unmatched routes, comes back as `{"error": "..."}`.
@@ -125,7 +129,9 @@ variable override, so the container needs no config file. The most useful ones:
 | `RELAY_TWITCH_MODE` | `disabled` | `disabled`, `simulated` or `live` |
 | `RELAY_TWITCH_CHANNEL` | — | Channel login to watch |
 | `RELAY_TWITCH_CLIENT_ID` / `_SECRET` | — | Twitch application credentials |
-| `RELAY_TWITCH_USER_TOKEN` | — | Broadcaster token; without it, follower and subscriber totals are skipped |
+| `RELAY_TWITCH_REDIRECT_URL` | `http://localhost:8080/api/v1/twitch/callback` | OAuth redirect; must be registered on the Twitch application |
+| `RELAY_TWITCH_TOKEN_FILE` | `data/twitch-token.json` | Where the granted user token is kept between restarts |
+| `RELAY_TWITCH_SCOPES` | `moderator:read:followers,channel:read:subscriptions` | Scopes requested on the consent screen |
 | `RELAY_TWITCH_EVENTSUB_TRANSPORT` | `websocket` | `websocket` or `webhook` |
 | `RELAY_NOTIFICATION_TTL` | `8 seconds` | How long the firmware holds a card posted to `/api/v1/notifications` without its own `ttlMs`. Twitch events take their display time per kind from §6.4.1 and are not configurable |
 | `RELAY_CHAT_NOTIFICATIONS` | `hide` | `show` puts every chat message on the screen |
@@ -138,17 +144,37 @@ rejected while the config is being read, and so is a ping interval longer than t
 ## Connecting to Twitch
 
 Set `twitch.mode = live` and give it a client id and secret from
-[dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps). Each transport has one job, so no event arrives
-twice:
+[dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps). Those two are the only Twitch credentials the relay
+is configured with. The broadcaster's user token is obtained at runtime:
+
+1. Register `http://localhost:8080/api/v1/twitch/callback` (or your `RELAY_TWITCH_REDIRECT_URL`) as an OAuth
+   Redirect URL of the application.
+2. Start the relay and open `http://localhost:8080/api/v1/twitch/authorize` in a browser, logged in to Twitch as the
+   broadcaster.
+3. Approve the consent screen. Twitch redirects back to the callback, and the relay exchanges the code for an access
+   and refresh token, writes them to `data/twitch-token.json` (owner-only permissions) and starts EventSub and the
+   follower/subscriber polls straight away. No restart is needed.
+
+The relay refreshes the token before it expires and validates it hourly, so consent is a one-time step per deployment.
+`GET /api/v1/twitch/authorization` shows whose token is held and which scopes are missing, and
+`DELETE /api/v1/twitch/authorization` revokes it. The authorize request carries a single-use `state` that expires
+after ten minutes, so a callback the relay did not start is refused.
+
+Twitch accepts a plain-http redirect only for `localhost`. For a relay on another machine, either tunnel the port
+(`ssh -L 8080:localhost:8080 pi`, then use the localhost URLs above) or serve the relay over HTTPS and set
+`RELAY_TWITCH_REDIRECT_URL` to the public callback URL.
+
+Each transport has one job, so no event arrives twice:
 
 - **chat (IRC)** carries what chat sees: messages, subscriptions, gifted subs, cheers and raids. It connects
-  anonymously, so `RELAY_TWITCH_CHAT_TOKEN` is only needed for subscriber-only chat.
+  anonymously, which reads any public channel but not subscriber-only chat.
 - **EventSub** carries what only Twitch can push: individual follows, stream start and stop, channel updates.
 - **the Helix poll** carries the totals nobody pushes: viewers, followers and subscribers.
 
-Follower and subscriber totals need a broadcaster user token with `moderator:read:followers` and
-`channel:read:subscriptions`. Without one the relay still runs and still reports viewer counts — each Helix call is
-attempted independently, so a missing scope costs one figure rather than the poll.
+Until someone authorizes, the relay still runs: viewer counts, chat and (on the webhook transport) stream start/stop
+work on the application's credentials alone. Follows, follower and subscriber totals, and every EventSub WebSocket
+subscription wait for the token. Each Helix call is attempted independently, so a missing scope costs one figure
+rather than the poll.
 
 `websocket` is the right EventSub transport for a Raspberry Pi: the relay dials out and needs no inbound
 connectivity. `webhook` requires a publicly reachable HTTPS callback and a shared secret; the callback is
@@ -160,7 +186,9 @@ authenticated by its HMAC signature alone, and replays are rejected on the messa
 docker compose up --build       # simulated mode, ports 8080 and 8099
 ```
 
-The image is a Temurin 25 JRE plus one jar, running unprivileged, with a health check on `/api/v1/health`. Note that
+The image is a Temurin 25 JRE plus one jar, running unprivileged, with a health check on `/api/v1/health`. The
+granted Twitch token lives in `/home/relay/data`, which compose mounts as the `relay-data` volume so that consent
+survives rebuilds. Note that
 the assembly is around 73 MB — twitch4j brings a large transitive stack (Jackson, OkHttp, Hystrix, Feign).
 
 ## Observability

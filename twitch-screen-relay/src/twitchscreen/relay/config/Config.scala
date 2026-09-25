@@ -38,6 +38,21 @@ final case class DeviceLinkConfig(
 /** EventSub delivery settings; only the fields of the selected `transport` are read. */
 final case class EventSubConfig(transport: EventSubTransport, callbackUrl: String, secret: Sensitive) derives ConfigReader
 
+/** The browser consent flow that obtains the broadcaster's user token at runtime, so no Twitch token is ever configured.
+  *
+  * `GET /api/v1/twitch/authorize` sends the operator to Twitch; Twitch sends them back to `redirectUrl` with a code, which the relay
+  * exchanges for an access and refresh token pair. The pair is kept in `tokenFile` and refreshed `refreshBefore` it expires, so consent is
+  * given once per deployment rather than once per process.
+  */
+final case class TwitchOAuthConfig(redirectUrl: String, scopes: List[String], tokenFile: String, refreshBefore: FiniteDuration)
+    derives ConfigReader
+
+object TwitchOAuthConfig:
+  /** The path the relay serves its callback on. Twitch redirects to `redirectUrl` verbatim, so it has to land here. */
+  val CallbackPath: String = "/api/v1/twitch/callback"
+
+  private given ConfigReader[List[String]] = StringListReader.listOrCommaSeparated
+
 /** Pacing of the synthetic event generator used by [[TwitchMode.Simulated]]. */
 final case class SimulationConfig(interval: FiniteDuration, chatInterval: FiniteDuration) derives ConfigReader
 
@@ -46,8 +61,7 @@ final case class TwitchConfig(
     channel: String,
     clientId: String,
     clientSecret: Sensitive,
-    userAccessToken: Sensitive,
-    chatAccessToken: Sensitive,
+    oauth: TwitchOAuthConfig,
     eventSub: EventSubConfig,
     pollInterval: FiniteDuration,
     simulation: SimulationConfig
@@ -60,6 +74,15 @@ final case class TwitchConfig(
       require(channel.trim.nonEmpty, "twitch.channel is required when twitch.mode = live")
       require(clientId.trim.nonEmpty, "twitch.client-id is required when twitch.mode = live")
       require(clientSecret.isSet, "twitch.client-secret is required when twitch.mode = live")
+      require(
+        oauth.redirectUrl.startsWith("http://") || oauth.redirectUrl.startsWith("https://"),
+        "twitch.oauth.redirect-url must be an absolute http(s) URL"
+      )
+      require(
+        oauth.redirectUrl.endsWith(TwitchOAuthConfig.CallbackPath),
+        s"twitch.oauth.redirect-url must end in ${TwitchOAuthConfig.CallbackPath}, where the relay serves the callback"
+      )
+      require(oauth.tokenFile.trim.nonEmpty, "twitch.oauth.token-file is required when twitch.mode = live")
       if eventSub.transport == EventSubTransport.Webhook then
         require(eventSub.callbackUrl.trim.nonEmpty, "twitch.event-sub.callback-url is required for the webhook transport")
         require(eventSub.secret.isSet, "twitch.event-sub.secret is required for the webhook transport")
@@ -77,13 +100,8 @@ final case class NotificationsConfig(
 ) derives ConfigReader
 
 object NotificationsConfig:
-  /** §13.1: the list is overridable by environment variable, and HOCON's `${?VAR}` yields a STRING, so accept either a HOCON list or a
-    * comma-separated string (split on `,`, trimmed, empties dropped). In lexical scope of the derived reader, so it applies here only.
-    */
-  private given ConfigReader[List[String]] =
-    ConfigReader[Vector[String]]
-      .map(_.toList)
-      .orElse(ConfigReader[String].map(_.split(',').iterator.map(_.trim).filter(_.nonEmpty).toList))
+  /** §13.1: the list is overridable by environment variable. In lexical scope of the derived reader, so it applies here only. */
+  private given ConfigReader[List[String]] = StringListReader.listOrCommaSeparated
 
   /** §13.1's default list. Each of these ships with its display name equal to its login apart from capitalisation, which is the whole basis
     * on which display-name matching works for them — a property of those particular accounts, not of Twitch.
