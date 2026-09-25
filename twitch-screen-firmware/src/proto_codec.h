@@ -28,20 +28,20 @@ namespace tsb {
 // §3, §5 — framing constants. Every one of these is a number in the spec.
 // ---------------------------------------------------------------------------
 
-static const uint8_t  MAGIC0          = 0xa7;
-static const uint8_t  MAGIC1          = 0x53;
-static const uint8_t  VERSION         = 3;
-static const size_t   HEADER_SIZE     = 8;
-static const uint16_t MAX_PAYLOAD     = 248;   // TSB3_MAX_PAYLOAD
-static const uint16_t MAX_FRAME       = 256;   // TSB3_MAX_FRAME = 8 + 248
-static const uint16_t MIN_RX_MAX      = 256;   // TSB3_MIN_RX_MAX
+constexpr uint8_t  MAGIC0          = 0xa7;
+constexpr uint8_t  MAGIC1          = 0x53;
+constexpr uint8_t  VERSION         = 3;
+constexpr size_t   HEADER_SIZE     = 8;
+constexpr uint16_t MAX_PAYLOAD     = 248;   // TSB3_MAX_PAYLOAD
+constexpr uint16_t MAX_FRAME       = 256;   // TSB3_MAX_FRAME = 8 + 248
+constexpr uint16_t MIN_RX_MAX      = 256;   // TSB3_MIN_RX_MAX
 
 // §4.5 resync budget. Reaching either ends the session.
-static const uint32_t RESYNC_MAX_CANDIDATES = 16;
-static const uint32_t RESYNC_MAX_BYTES      = 4096;
+constexpr uint32_t RESYNC_MAX_CANDIDATES = 16;
+constexpr uint32_t RESYNC_MAX_BYTES      = 4096;
 
 // §3.2 header flags. Unknown bits MUST be ignored, never rejected.
-static const uint8_t FLAG_REPLAY = 0x01;
+constexpr uint8_t FLAG_REPLAY = 0x01;
 
 // §6 message types, partitioned by direction.
 enum MsgType : uint8_t {
@@ -59,25 +59,25 @@ enum MsgType : uint8_t {
 
 // Base payload lengths (§6). `length < base` is a frame error; `length > base`
 // decodes the first `base` bytes and ignores the tail (§16 rule 2).
-static const uint16_t LEN_HELLO   = 60;
-static const uint16_t LEN_WELCOME = 24;
-static const uint16_t LEN_EVENT   = 168;
-static const uint16_t LEN_STATS   = 32;
-static const uint16_t LEN_TOKEN   = 4;   // PING / PONG / ACK
-static const uint16_t LEN_BYE     = 32;
+constexpr uint16_t LEN_HELLO   = 60;
+constexpr uint16_t LEN_WELCOME = 24;
+constexpr uint16_t LEN_EVENT   = 168;
+constexpr uint16_t LEN_STATS   = 32;
+constexpr uint16_t LEN_TOKEN   = 4;   // PING / PONG / ACK
+constexpr uint16_t LEN_BYE     = 32;
 
 // §6.1 capability bits.
-static const uint32_t CAP_ACK       = 0x00000001u;
-static const uint32_t CAP_CHAT      = 0x00000002u;
-static const uint32_t CAP_GENERIC   = 0x00000004u;
-static const uint32_t CAP_UTF8_TEXT = 0x00000008u;
+constexpr uint32_t CAP_ACK       = 0x00000001u;
+constexpr uint32_t CAP_CHAT      = 0x00000002u;
+constexpr uint32_t CAP_GENERIC   = 0x00000004u;
+constexpr uint32_t CAP_UTF8_TEXT = 0x00000008u;
 
 // §6.4 eflags bits. Bit 2 (0x04) and bits 5-7 (0xe0) are reserved: senders MUST
 // set them to 0 and receivers MUST ignore them, so they have no name here.
-static const uint8_t EF_TEXT_TRUNCATED      = 0x01;
-static const uint8_t EF_ACTOR_TRUNCATED     = 0x02;
-static const uint8_t EF_ANONYMOUS           = 0x08;
-static const uint8_t EF_CHAT_COLOUR_PRESENT = 0x10;
+constexpr uint8_t EF_TEXT_TRUNCATED      = 0x01;
+constexpr uint8_t EF_ACTOR_TRUNCATED     = 0x02;
+constexpr uint8_t EF_ANONYMOUS           = 0x08;
+constexpr uint8_t EF_CHAT_COLOUR_PRESENT = 0x10;
 
 // §6.4.1 event kinds.
 enum EventKind : uint8_t {
@@ -107,7 +107,7 @@ enum SubTier : uint8_t {
   TIER_2     = 3,
   TIER_3     = 4
 };
-static const uint8_t TIER_MAX = 4;
+constexpr uint8_t TIER_MAX = 4;
 
 // §6.7 BYE reason codes.
 enum ByeCode : uint16_t {
@@ -126,7 +126,7 @@ enum ByeCode : uint16_t {
 };
 
 // §6.4 ttl_ds — values above 6000 (10 min) SHOULD be clamped by the receiver.
-static const uint16_t TTL_DS_MAX = 6000;
+constexpr uint16_t TTL_DS_MAX = 6000;
 
 // ---------------------------------------------------------------------------
 // Wire records (§15.1). Declared in wire order and asserted at build time.
@@ -254,10 +254,13 @@ enum class DecodeResult : uint8_t {
   InvalidField     // §4.3 — e.g. EVENT.seq == 0
 };
 
-// Encode outcome. Non-negative = bytes written; negative = failure.
-typedef int32_t EncodeResult;
-static const EncodeResult ENC_ERR_CAPACITY = -1;  // destination buffer too small
-static const EncodeResult ENC_ERR_ARG      = -2;  // null pointer or illegal argument
+// Size is data only on success; errors cannot be cast to an enormous size_t.
+enum class EncodeError : uint8_t { None, Capacity, Argument };
+struct EncodeResult {
+  uint16_t size;
+  EncodeError err;
+  bool ok() const { return err == EncodeError::None; }
+};
 
 const char *decodeResultName(DecodeResult r);
 
@@ -345,8 +348,7 @@ DecodeResult decodeInboundPayload(const TsbHeader &header, const uint8_t *payloa
 
 // ---------------------------------------------------------------------------
 // Encoders — device to relay only. Each writes a complete frame (header +
-// payload) into the caller's buffer and returns the byte count, or a negative
-// EncodeResult. Nothing allocates.
+// payload) into the caller's buffer and returns a typed result. Nothing allocates.
 // ---------------------------------------------------------------------------
 
 EncodeResult encodeHello(uint8_t *out, size_t capacity, const TsbHello &hello);

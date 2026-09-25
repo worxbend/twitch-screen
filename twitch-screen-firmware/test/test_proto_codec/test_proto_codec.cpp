@@ -238,8 +238,9 @@ static void test_hello_vectors() {
     uint8_t out[MAX_FRAME];
     memset(out, 0xee, sizeof(out));
     EncodeResult n = encodeHello(out, sizeof(out), built);
-    CHECK_U32(n, e.size);
-    if (n == (EncodeResult)e.size) CHECK_BYTES(out, e.frame, e.size);
+    CHECK(n.ok());
+    CHECK_U32(n.size, e.size);
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
     ++g_vectorsEncoded;
   }
   g_case = "";
@@ -275,8 +276,9 @@ static void test_welcome_vectors() {
     uint8_t out[MAX_FRAME];
     memset(out, 0xee, sizeof(out));
     EncodeResult n = encodeFrame(out, sizeof(out), e.type, e.flags, pay, LEN_WELCOME);
-    CHECK_U32(n, e.size);
-    if (n == (EncodeResult)e.size) CHECK_BYTES(out, e.frame, e.size);
+    CHECK(n.ok());
+    CHECK_U32(n.size, e.size);
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
     ++g_vectorsEncoded;
   }
   g_case = "";
@@ -329,8 +331,9 @@ static void test_event_vectors() {
     uint8_t out[MAX_FRAME];
     memset(out, 0xee, sizeof(out));
     EncodeResult n = encodeFrame(out, sizeof(out), e.type, e.flags, pay, LEN_EVENT);
-    CHECK_U32(n, e.size);
-    if (n == (EncodeResult)e.size) CHECK_BYTES(out, e.frame, e.size);
+    CHECK(n.ok());
+    CHECK_U32(n.size, e.size);
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
     ++g_vectorsEncoded;
   }
   g_case = "V6-V15 EVENT";
@@ -375,8 +378,9 @@ static void test_stats_vectors() {
     uint8_t out[MAX_FRAME];
     memset(out, 0xee, sizeof(out));
     EncodeResult n = encodeFrame(out, sizeof(out), e.type, e.flags, pay, LEN_STATS);
-    CHECK_U32(n, e.size);
-    if (n == (EncodeResult)e.size) CHECK_BYTES(out, e.frame, e.size);
+    CHECK(n.ok());
+    CHECK_U32(n.size, e.size);
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
     ++g_vectorsEncoded;
   }
   // §6.5: msg_total survives a stream ending; the two vectors say so in bytes.
@@ -426,8 +430,9 @@ static void test_token_vectors() {
         break;
       }
     }
-    CHECK_U32(n, e.size);
-    if (n == (EncodeResult)e.size) CHECK_BYTES(out, e.frame, e.size);
+    CHECK(n.ok());
+    CHECK_U32(n.size, e.size);
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
     ++g_vectorsEncoded;
   }
   // §6.3: a PONG echoes the PING's token byte for byte. V16 and V17 are that
@@ -465,8 +470,9 @@ static void test_bye_vector() {
     uint8_t out[MAX_FRAME];
     memset(out, 0xee, sizeof(out));
     EncodeResult n = encodeFrame(out, sizeof(out), e.type, e.flags, pay, LEN_BYE);
-    CHECK_U32(n, e.size);
-    if (n == (EncodeResult)e.size) CHECK_BYTES(out, e.frame, e.size);
+    CHECK(n.ok());
+    CHECK_U32(n.size, e.size);
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
     ++g_vectorsEncoded;
   }
   g_case = "";
@@ -534,8 +540,8 @@ static void test_payload_level_problems() {
   uint8_t pay[16];
   memset(pay, 0x5a, sizeof(pay));
   EncodeResult n = encodeFrame(out, sizeof(out), 0x2f, 0, pay, sizeof(pay));
-  CHECK(n == 24);
-  CHECK(decodeInbound(out, (size_t)n, f) == DecodeResult::UnknownType);
+  CHECK(n.ok() && n.size == 24);
+  CHECK(decodeInbound(out, n.size, f) == DecodeResult::UnknownType);
 
   // A device-to-relay type arriving at the device: WrongDirection.
   CHECK(decodeInbound(gv::HELLO_FRESH_BOOT, sizeof(gv::HELLO_FRESH_BOOT), f)
@@ -545,12 +551,12 @@ static void test_payload_level_problems() {
 
   // length < base: ShortPayload. Build a 16-byte STATS.
   n = encodeFrame(out, sizeof(out), T_STATS, 0, gv::STATS_LIVE + HEADER_SIZE, 16);
-  CHECK(decodeInbound(out, (size_t)n, f) == DecodeResult::ShortPayload);
+  CHECK(decodeInbound(out, n.size, f) == DecodeResult::ShortPayload);
 
   // length == 0 for a type whose base is non-zero: ShortPayload.
   n = encodeFrame(out, sizeof(out), T_EVENT, 0, 0, 0);
-  CHECK(n == 8);
-  CHECK(decodeInbound(out, (size_t)n, f) == DecodeResult::ShortPayload);
+  CHECK(n.ok() && n.size == 8);
+  CHECK(decodeInbound(out, n.size, f) == DecodeResult::ShortPayload);
 
   // EVENT.seq == 0 is fatal to the frame (§6.4), not to the link.
   uint8_t ev[sizeof(gv::EVENT_FOLLOW)];
@@ -576,6 +582,14 @@ static void test_receiver_normalisations() {
   ev[HEADER_SIZE + 19] = 0xff;
   CHECK(decodeInbound(ev, sizeof(ev), f) == DecodeResult::Ok);
   CHECK_U32(f.as.event.ttl_ds, TTL_DS_MAX);
+
+  const uint16_t ttlBoundaries[] = {5999, 6000, 6001};
+  for (uint16_t ttl : ttlBoundaries) {
+    ev[HEADER_SIZE + 18] = ttl & 0xff;
+    ev[HEADER_SIZE + 19] = ttl >> 8;
+    CHECK(decodeInbound(ev, sizeof(ev), f) == DecodeResult::Ok);
+    CHECK_U32(f.as.event.ttl_ds, ttl > TTL_DS_MAX ? TTL_DS_MAX : ttl);
+  }
 
   // ttl_ds == 0 stays 0: §6.4 says that means "use the receiver's per-kind
   // default", which is a renderer decision, not a codec one.
@@ -651,10 +665,11 @@ static void test_forward_compatible_longer_payload() {
   memcpy(pay, gv::EVENT_BITS + HEADER_SIZE, LEN_EVENT);
   memset(pay + LEN_EVENT, 0xa5, 40);      // a v4 appendix
   EncodeResult n = encodeFrame(out, sizeof(out), T_EVENT, 0, pay, sizeof(pay));
-  CHECK_U32(n, HEADER_SIZE + sizeof(pay));
+  CHECK(n.ok());
+    CHECK_U32(n.size, HEADER_SIZE + sizeof(pay));
 
   InboundFrame f;
-  CHECK(decodeInbound(out, (size_t)n, f) == DecodeResult::Ok);
+  CHECK(decodeInbound(out, n.size, f) == DecodeResult::Ok);
   const gv::ExpEvent &e = gv::EVENT_VECTORS[5];   // V11 event_bits
   CHECK_U32(f.as.event.seq, e.seq);
   CHECK_U32(f.as.event.value, e.value);
@@ -699,12 +714,17 @@ static void test_bounds() {
   uint8_t small[MAX_FRAME];
   TsbHello h;
   buildHello(h, 1, CAP_ACK, "roundlcd-01", "1.0.0");
-  CHECK(encodeHello(small, HEADER_SIZE + LEN_HELLO - 1, h) == ENC_ERR_CAPACITY);
-  CHECK(encodeHello(small, HEADER_SIZE + LEN_HELLO, h) == (EncodeResult)(HEADER_SIZE + LEN_HELLO));
-  CHECK(encodePing(small, 11, 1) == ENC_ERR_CAPACITY);
-  CHECK(encodeFrame(small, sizeof(small), 0x00, 0, 0, 0) == ENC_ERR_ARG);
-  CHECK(encodeFrame(small, sizeof(small), T_ACK, 0, 0, 4) == ENC_ERR_ARG);
-  CHECK(encodeFrame(small, sizeof(small), T_ACK, 0, small, MAX_PAYLOAD + 1) == ENC_ERR_ARG);
+  TsbHello sanitized;
+  buildHello(sanitized, 0, 0, "board\n\x1b\x7f", "v\t\xc3\xa9");
+  CHECK(strcmp(sanitized.device_id, "board___") == 0);
+  CHECK(strcmp(sanitized.fw_version, "v___") == 0);
+  CHECK(encodeHello(nullptr, 0, sanitized).err == EncodeError::Argument);
+  CHECK(encodeHello(small, HEADER_SIZE + LEN_HELLO - 1, h).err == EncodeError::Capacity);
+  CHECK(encodeHello(small, HEADER_SIZE + LEN_HELLO, h).size == HEADER_SIZE + LEN_HELLO);
+  CHECK(encodePing(small, 11, 1).err == EncodeError::Capacity);
+  CHECK(encodeFrame(small, sizeof(small), 0x00, 0, 0, 0).err == EncodeError::Argument);
+  CHECK(encodeFrame(small, sizeof(small), T_ACK, 0, 0, 4).err == EncodeError::Argument);
+  CHECK(encodeFrame(small, sizeof(small), T_ACK, 0, small, MAX_PAYLOAD + 1).err == EncodeError::Argument);
   g_case = "";
 }
 
@@ -958,7 +978,7 @@ static void test_reader_counters() {
   uint8_t pay[8];
   memset(pay, 0, sizeof(pay));
   EncodeResult un = encodeFrame(unknown, sizeof(unknown), 0x2e, 0, pay, sizeof(pay));
-  memcpy(s + n, unknown, (size_t)un); n += (size_t)un;
+  memcpy(s + n, unknown, un.size); n += un.size;
   memcpy(s + n, gv::HELLO_FRESH_BOOT, sizeof(gv::HELLO_FRESH_BOOT));
   n += sizeof(gv::HELLO_FRESH_BOOT);
   memcpy(s + n, gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); n += sizeof(gv::STATS_LIVE);

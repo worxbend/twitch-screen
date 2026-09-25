@@ -114,14 +114,10 @@ const char *decodeResultName(DecodeResult r) {
 }
 
 DecodeResult decodeHeader(const uint8_t *frame, size_t length, TsbHeader &out) {
-  if (frame == 0 || length < HEADER_SIZE)       return DecodeResult::Truncated;
+  if (frame == nullptr || length < HEADER_SIZE)       return DecodeResult::Truncated;
   const DecodeResult result = validateHeader(frame);
   if (result != DecodeResult::Ok) return result;
-  const uint16_t len = rdU16(frame + 4);
-  out.version = frame[2];
-  out.type    = frame[3];
-  out.length  = len;
-  out.flags   = frame[6];
+  out = {frame[2], frame[3], rdU16(frame + 4), frame[6]};
   return DecodeResult::Ok;
 }
 
@@ -130,8 +126,8 @@ DecodeResult decodeHeader(const uint8_t *frame, size_t length, TsbHeader &out) {
 // ---------------------------------------------------------------------------
 
 void copyWireString(char *dst, const uint8_t *src, size_t width) {
-  if (dst == 0 || width == 0) return;
-  if (src != 0) {
+  if (dst == nullptr || width == 0) return;
+  if (src != nullptr) {
     memcpy(dst, src, width);
   } else {
     memset(dst, 0, width);
@@ -140,9 +136,9 @@ void copyWireString(char *dst, const uint8_t *src, size_t width) {
 }
 
 bool packWireString(char *field, size_t width, const char *src) {
-  if (field == 0 || width == 0) return false;
+  if (field == nullptr || width == 0) return false;
   memset(field, 0, width);
-  if (src == 0 || width == 1) return false;
+  if (src == nullptr || width == 1) return false;
 
   const size_t cap = width - 1;
   const size_t len = strlen(src);
@@ -168,7 +164,7 @@ bool packWireString(char *field, size_t width, const char *src) {
 // ---------------------------------------------------------------------------
 
 DecodeResult decodeHello(const uint8_t *p, size_t length, TsbHello &out) {
-  if (p == 0)              return DecodeResult::ShortPayload;
+  if (p == nullptr)              return DecodeResult::ShortPayload;
   if (length < LEN_HELLO)  return DecodeResult::ShortPayload;
   out.last_seq  = rdU32(p + 0);
   out.caps      = rdU32(p + 4);
@@ -180,7 +176,7 @@ DecodeResult decodeHello(const uint8_t *p, size_t length, TsbHello &out) {
 }
 
 DecodeResult decodeWelcome(const uint8_t *p, size_t length, TsbWelcome &out) {
-  if (p == 0)               return DecodeResult::ShortPayload;
+  if (p == nullptr)               return DecodeResult::ShortPayload;
   if (length < LEN_WELCOME) return DecodeResult::ShortPayload;
   out.latest_seq      = rdU32(p + 0);
   out.server_time     = rdU32(p + 4);
@@ -194,7 +190,7 @@ DecodeResult decodeWelcome(const uint8_t *p, size_t length, TsbWelcome &out) {
 }
 
 DecodeResult decodeEvent(const uint8_t *p, size_t length, TsbEvent &out) {
-  if (p == 0)             return DecodeResult::ShortPayload;
+  if (p == nullptr)             return DecodeResult::ShortPayload;
   if (length < LEN_EVENT) return DecodeResult::ShortPayload;
 
   const uint32_t seq = rdU32(p + 0);
@@ -223,7 +219,7 @@ DecodeResult decodeEvent(const uint8_t *p, size_t length, TsbEvent &out) {
 }
 
 DecodeResult decodeStats(const uint8_t *p, size_t length, TsbStats &out) {
-  if (p == 0)             return DecodeResult::ShortPayload;
+  if (p == nullptr)             return DecodeResult::ShortPayload;
   if (length < LEN_STATS) return DecodeResult::ShortPayload;
   out.viewers           = rdU32(p + 0);
   out.msg_total         = rdU32(p + 4);
@@ -239,7 +235,7 @@ DecodeResult decodeStats(const uint8_t *p, size_t length, TsbStats &out) {
 }
 
 DecodeResult decodeBye(const uint8_t *p, size_t length, TsbBye &out) {
-  if (p == 0)           return DecodeResult::ShortPayload;
+  if (p == nullptr)           return DecodeResult::ShortPayload;
   if (length < LEN_BYE) return DecodeResult::ShortPayload;
   out.code          = rdU16(p + 0);
   out.detail        = rdU16(p + 2);
@@ -250,7 +246,7 @@ DecodeResult decodeBye(const uint8_t *p, size_t length, TsbBye &out) {
 }
 
 DecodeResult decodeToken(const uint8_t *p, size_t length, TsbToken &out) {
-  if (p == 0)             return DecodeResult::ShortPayload;
+  if (p == nullptr)             return DecodeResult::ShortPayload;
   if (length < LEN_TOKEN) return DecodeResult::ShortPayload;
   out.value = rdU32(p + 0);
   return DecodeResult::Ok;
@@ -285,12 +281,12 @@ DecodeResult decodeInbound(const uint8_t *frame, size_t length, InboundFrame &ou
 
 EncodeResult encodeFrame(uint8_t *out, size_t capacity, uint8_t type, uint8_t flags,
                          const uint8_t *payload, uint16_t length) {
-  if (out == 0)                        return ENC_ERR_ARG;
-  if (type == 0x00)                    return ENC_ERR_ARG;
-  if (length > MAX_PAYLOAD)            return ENC_ERR_ARG;
-  if (length != 0 && payload == 0)     return ENC_ERR_ARG;
+  if (out == nullptr)                        return {0, EncodeError::Argument};
+  if (type == 0x00)                    return {0, EncodeError::Argument};
+  if (length > MAX_PAYLOAD)            return {0, EncodeError::Argument};
+  if (length != 0 && payload == nullptr)     return {0, EncodeError::Argument};
   const size_t total = HEADER_SIZE + (size_t)length;
-  if (capacity < total)                return ENC_ERR_CAPACITY;
+  if (capacity < total)                return {0, EncodeError::Capacity};
 
   out[0] = MAGIC0;
   out[1] = MAGIC1;
@@ -300,7 +296,7 @@ EncodeResult encodeFrame(uint8_t *out, size_t capacity, uint8_t type, uint8_t fl
   out[6] = flags;
   out[7] = headerCheck(out);
   if (length != 0) memcpy(out + HEADER_SIZE, payload, length);
-  return (EncodeResult)total;
+  return {static_cast<uint16_t>(total), EncodeError::None};
 }
 
 EncodeResult encodeHello(uint8_t *out, size_t capacity, const TsbHello &h) {
@@ -346,6 +342,14 @@ void buildHello(TsbHello &hello, uint32_t lastSeq, uint32_t caps,
   hello.reserved0 = 0;
   packWireString(hello.device_id,  sizeof(hello.device_id),  deviceId);
   packWireString(hello.fw_version, sizeof(hello.fw_version), fwVersion);
+  for (char &ch : hello.device_id) {
+    const auto byte = static_cast<uint8_t>(ch);
+    if (byte && (byte < 0x20 || byte > 0x7e)) ch = '_';
+  }
+  for (char &ch : hello.fw_version) {
+    const auto byte = static_cast<uint8_t>(ch);
+    if (byte && (byte < 0x20 || byte > 0x7e)) ch = '_';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +407,7 @@ void FrameReader::shiftWindow() {
 }
 
 size_t FrameReader::feed(const uint8_t *src, size_t n) {
-  if (src == 0) return 0;
+  if (src == nullptr) return 0;
   size_t i = 0;
   while (i < n) {
     if (state_ == Ready || state_ == Fatal) break;
@@ -432,11 +436,7 @@ size_t FrameReader::feed(const uint8_t *src, size_t n) {
         i += take;
         if (held_ < HEADER_SIZE) break;      // still incomplete
 
-        if (headerIsValid(hdr_)) {
-          header_.version = hdr_[2];
-          header_.type    = hdr_[3];
-          header_.length  = rdU16(hdr_ + 4);
-          header_.flags   = hdr_[6];
+        if (decodeHeader(hdr_, HEADER_SIZE, header_) == DecodeResult::Ok) {
           have_ = 0;                          // §4.1: MUST reset before BODY
           need_ = header_.length;
           if (need_ > (uint16_t)sizeof(rx_)) {
