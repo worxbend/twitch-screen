@@ -49,11 +49,16 @@ Run these commands sequentially from `twitch-screen-firmware/`:
 
 ```sh
 ../.venv-pio/bin/pio test -e native
-../.venv-pio/bin/pio test -e native-sanitized
 ../.venv-pio/bin/pio run -e esp32dev
 ```
 
-The sanitizer target is configured for Linux. Once the correct device is connected, upload and inspect it:
+On Linux, also run the sanitizer gate:
+
+```sh
+../.venv-pio/bin/pio test -e native-sanitized
+```
+
+Once the correct device is connected, upload and inspect it:
 
 ```sh
 ../.venv-pio/bin/pio run -e esp32dev -t upload

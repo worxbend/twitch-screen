@@ -101,8 +101,13 @@ Run these from `twitch-screen-firmware/`, one at a time:
 
 ```sh
 ../.venv-pio/bin/pio test -e native
-../.venv-pio/bin/pio test -e native-sanitized
 ../.venv-pio/bin/pio run -e esp32dev
+```
+
+On Linux, also run the sanitizer gate:
+
+```sh
+../.venv-pio/bin/pio test -e native-sanitized
 ```
 
 The `native` target tests codec, session, queue and presentation behavior on the computer. `native-sanitized` repeats the host suites with AddressSanitizer and UndefinedBehaviorSanitizer on Linux. `esp32dev` compiles the actual firmware. Successful commands end with passing test/build results; a firmware build writes `.pio/build/esp32dev/firmware.bin`.
