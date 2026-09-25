@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from check_protocol_vectors import spec_vectors
 
 
 def docker(*args, **kwargs):
@@ -46,10 +47,13 @@ def main():
         ports = json.loads(docker("inspect", "--format", "{{json .NetworkSettings.Ports}}", container))
         base = "http://127.0.0.1:" + ports["8080/tcp"][0]["HostPort"]
 
-        def request(path, credential=None):
+        def request(path, credential=None, payload=None):
             headers = {} if credential is None else {"Authorization": "Bearer " + credential}
+            data = None if payload is None else json.dumps(payload).encode()
+            if data is not None:
+                headers["Content-Type"] = "application/json"
             try:
-                with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers), timeout=3) as response:
+                with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers, data=data), timeout=3) as response:
                     return response.status, response.read()
             except urllib.error.HTTPError as error:
                 return error.code, error.read()
@@ -76,18 +80,25 @@ def main():
             assert status == 200, (path, status)
             assert token.encode() not in body, "Management token leaked in response"
 
-        # Fresh HELLO from normative V1; successful WELCOME proves both listeners are live.
-        hello = bytes.fromhex(
-            "a7 53 03 01 3c 00 00 79 00 00 00 00 07 00 00 00 "
-            "00 01 00 00 72 6f 75 6e 64 6c 63 64 2d 30 31 00 "
-            "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 "
-            "00 00 00 00 31 2e 30 2e 30 00 00 00 00 00 00 00 "
-            "00 00 00 00"
-        )
+        hello = spec_vectors()[1]
         with socket.create_connection(("127.0.0.1", int(ports["8099/tcp"][0]["HostPort"])), timeout=5) as connection:
             connection.sendall(hello)
             kind, payload = read_frame(connection)
             assert kind == 0x20 and len(payload) == 24, "Expected TSB/3 WELCOME"
+            kind, payload = read_frame(connection)
+            assert kind == 0x22 and len(payload) == 32, "Expected greeting STATS"
+            status, body = request("/api/v1/notifications", token,
+                                   {"type": "info", "title": "Smoke", "body": "Container delivery"})
+            assert status == 200, (status, body)
+            sequence = json.loads(body)["seq"]
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                kind, payload = read_frame(connection)
+                if kind == 0x21 and struct.unpack_from("<I", payload)[0] == sequence:
+                    assert len(payload) == 168 and b"Container delivery" in payload, "Wrong EVENT payload"
+                    break
+            else:
+                raise AssertionError("Expected injected EVENT within five seconds")
             docker("kill", "--signal=TERM", container)
             deadline = time.monotonic() + 10
             while kind != 0x25 and time.monotonic() < deadline:
@@ -95,7 +106,7 @@ def main():
             assert kind == 0x25 and struct.unpack_from("<H", payload)[0] == 8, "Expected SERVER_SHUTDOWN BYE"
             assert connection.recv(1) == b"", "BYE must be the final frame"
         subprocess.run(["docker", "wait", container], check=True, timeout=15, stdout=subprocess.DEVNULL)
-        print("Container smoke passed: public/protected HTTP, secret redaction, TSB/3 WELCOME and shutdown BYE (512 MiB limit).")
+        print("Container smoke passed: public/protected HTTP, redaction, WELCOME, STATS, EVENT and shutdown BYE (512 MiB limit).")
     except Exception:
         # The only credential this isolated simulated container knows is generated above.
         print(docker("logs", container, stderr=subprocess.STDOUT).replace(token, "[test-token]"), file=sys.stderr)
