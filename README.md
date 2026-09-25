@@ -41,7 +41,7 @@ Start with a simulated stream on your computer. Add the display when you’re re
 | 🧪 **No stream? Still a vibe.** — try a scripted audience without Twitch credentials | The real relay runs in `simulated` mode |
 | 🔌 **Reconnect and carry on** — bounded replay helps recover recent notifications | Binary TSB/3 over one persistent TCP connection; replay lives in memory |
 | 🖨️ **Print your desk buddy** — curved shell, dark base, rear USB-C | Four printable parts; editable FreeCAD, STEP, STL, and 3MF files included |
-| 🛠️ **Make it yours** — inspect devices, change subscriptions, send test cards | Authenticated HTTP management API with Swagger UI |
+| 🛠️ **Make it yours** — inspect devices, disconnect a session, send test cards | Authenticated HTTP management API with Swagger UI |
 
 Chat cards are hidden by default; chat still contributes to activity stats. No touch controls or on-device setup menu are implemented. Configure Wi-Fi and the relay address before flashing.
 
