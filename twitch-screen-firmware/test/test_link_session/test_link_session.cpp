@@ -6,8 +6,17 @@
 #include "notify_queue.h"
 #include "proto_codec.h"
 #include "vectors.h"
+#include "dns_lookup.h"
 
 namespace {
+constexpr uint32_t SECOND_MS = 1000;
+constexpr uint32_t CONNECT_DEADLINE_MS = 3 * SECOND_MS;
+constexpr uint32_t WELCOME_DEADLINE_MS = 5 * SECOND_MS;
+constexpr uint32_t ACK_COALESCE_MS = 200;
+constexpr uint32_t PING_INTERVAL_MS = 15 * SECOND_MS;
+constexpr uint32_t SILENCE_DEADLINE_MS = 45 * SECOND_MS;
+constexpr uint32_t STABLE_INTERVAL_MS = 60 * SECOND_MS;
+constexpr uint32_t DEFAULT_PAUSE_LIMIT_MS = 180 * SECOND_MS;
 int checks = 0, failures = 0;
 void check(bool pass, const char *what) {
   ++checks;
@@ -76,16 +85,35 @@ void event(FakeTransport &t, uint32_t seq) {
   frame[10] = (seq >> 16) & 255; frame[11] = seq >> 24;
   t.add(frame.data(), frame.size());
 }
+void testDnsGeneration() {
+  DnsLookup lookup;
+  const uint32_t lost = lookup.begin();
+  check(lookup.state() == DnsLookup::State::Pending, "DNS request starts pending");
+  lookup.cancel();
+  lookup.complete(lost, true, 0x01020304);
+  check(lookup.state() == DnsLookup::State::Idle, "late callback cannot revive cancelled DNS");
+  const uint32_t retry = lookup.begin();
+  lookup.complete(lost, false);
+  check(lookup.state() == DnsLookup::State::Pending, "old DNS failure cannot fail a retry");
+  lookup.complete(retry, true, 0x05060708);
+  lookup.complete(lost, true, 0x01020304);
+  check(lookup.state() == DnsLookup::State::Ready && lookup.address() == 0x05060708,
+        "replacement DNS result survives stale success callback");
+  const uint32_t failed = lookup.begin();
+  lookup.complete(failed, false);
+  check(lookup.state() == DnsLookup::State::Failed, "current DNS failure propagates");
+}
+
 void testHandshakeAndTimeouts() {
   FakeTransport t; reset(t);
   t.connecting = LinkTransport::Connect::Pending;
   pump(t);
   check(!linkIsUp() && t.outbound.empty(), "pending connect emits no HELLO");
-  t.time = 3001; pump(t);
+  t.time = CONNECT_DEADLINE_MS + 1; pump(t);
   check(t.closed, "connect deadline closes pending transport");
   t.time += 1000; t.connecting = LinkTransport::Connect::Ready; pump(t);
   check(!t.outbound.empty() && t.outbound[3] == tsb::T_HELLO, "HELLO follows completed connect");
-  t.time += 5001; pump(t); check(t.closed, "missing WELCOME times out");
+  t.time += WELCOME_DEADLINE_MS + 1; pump(t); check(t.closed, "missing WELCOME times out");
 }
 void testWifiEdgeAndBackoff() {
   FakeTransport t; reset(t); greet(t);
@@ -138,10 +166,10 @@ void testWritesAndAck() {
   const size_t before = t.outbound.size();
   event(t, queue.lastSeq() + 1); pump(t, 20);
   check(t.outbound.size() == before, "ACK held until coalescing interval");
-  t.time += 200; pump(t, 10);
+  t.time += ACK_COALESCE_MS; pump(t, 10);
   check(t.outbound.size() == before + 12, "one ACK acknowledges accepted EVENT");
-  t.writeBlocked = true; t.time += 16000; pump(t);
-  t.time += 3001; pump(t);
+  t.writeBlocked = true; t.time += PING_INTERVAL_MS + SECOND_MS; pump(t);
+  t.time += CONNECT_DEADLINE_MS + 1; pump(t);
   check(t.closed && !linkIsUp(), "stalled output closes at write deadline");
 }
 void testBurst() {
@@ -163,7 +191,7 @@ void testPausedQueueTimersAndWrongVersion() {
   for (uint32_t seq = baseline + 1; seq <= baseline + 9; ++seq) event(t, seq);
   pump(t, 40);
   size_t before = t.outbound.size();
-  for (int i = 0; i < 4; ++i) { t.time += 16000; pump(t); }
+  for (int i = 0; i < 4; ++i) { t.time += PING_INTERVAL_MS + SECOND_MS; pump(t); }
   check(linkIsUp() && queue.size() == 8 && queue.lastSeq() == baseline + 8,
         "full queue pauses >heartbeat timeout without changing high-water mark");
   check(t.outbound.size() >= before + 48, "periodic outbound heartbeats continue while input paused");
@@ -192,11 +220,11 @@ void testSessionBoundaries() {
   FakeTransport paused; reset(paused); greet(paused);
   for (unsigned i = 1; i <= 9; ++i) event(paused, queue.lastSeq() + i);
   pump(paused, 40);
-  paused.time += 180000; pump(paused, 1);
+  paused.time += DEFAULT_PAUSE_LIMIT_MS; pump(paused, 1);
   check(paused.closed && !linkIsUp(), "full-queue pause expires after twice relay idle timeout");
 
   FakeTransport busy; reset(busy); busy.available = false;
-  busy.time = 60000; pump(busy, 100);
+  busy.time = STABLE_INTERVAL_MS; pump(busy, 100);
   check(busy.attempts == 0, "busy close worker defers without burning retry attempts");
   busy.available = true; greet(busy); busy.edge = true; pump(busy, 1);
   busy.time += 1000; pump(busy, 1);
@@ -214,7 +242,7 @@ void testHeartbeatCapsAndBye() {
         t.outbound[before + 3] == tsb::T_PONG_DEVICE &&
         t.outbound[before + 8] == 0x78,
         "PING with irrelevant REPLAY receives immediate matching PONG");
-  t.time += 45001; pump(t);
+  t.time += SILENCE_DEADLINE_MS + 1; pump(t);
   check(t.closed && !linkIsUp(), "silent peer reaches heartbeat deadline");
 
   FakeTransport noAck; reset(noAck); pump(noAck);
@@ -222,7 +250,7 @@ void testHeartbeatCapsAndBye() {
   welcomeBytes[28] &= ~tsb::CAP_ACK;
   noAck.add(welcomeBytes.data(), welcomeBytes.size()); pump(noAck);
   const size_t sent = noAck.outbound.size();
-  event(noAck, queue.lastSeq() + 1); pump(noAck); noAck.time += 201; pump(noAck);
+  event(noAck, queue.lastSeq() + 1); pump(noAck); noAck.time += ACK_COALESCE_MS + 1; pump(noAck);
   check(noAck.outbound.size() == sent, "no ACK is emitted without negotiated CAP_ACK");
 
   FakeTransport bye; reset(bye); greet(bye);
@@ -298,7 +326,7 @@ void testRefusalAndInvalidHandshake() {
 }
 }
 int main() {
-  testHandshakeAndTimeouts(); testWifiEdgeAndBackoff(); testProlongedOutage(); testWritesAndAck();
+  testDnsGeneration(); testHandshakeAndTimeouts(); testWifiEdgeAndBackoff(); testProlongedOutage(); testWritesAndAck();
   testBurst(); testRefusalAndInvalidHandshake();
   testHeartbeatCapsAndBye(); testReplacedAndVersionByeJumpToCap(); testStableRecoveryAndWrap();
   testPausedQueueTimersAndWrongVersion(); testSessionBoundaries();

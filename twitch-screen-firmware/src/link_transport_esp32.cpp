@@ -1,4 +1,5 @@
 #include "link_transport.h"
+#include "dns_lookup.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -19,12 +20,7 @@
 namespace {
 // DNS/WiFi callbacks publish atomic state only. Socket I/O and UI stay on loop;
 // descriptor disposal alone transfers to the bounded close worker.
-enum class DnsState : uint8_t { Idle, Pending, Ready, Failed };
-// Low two bits are the state, upper bits identify one DNS attempt.
-// Timed-out callbacks cannot complete replacement requests.
-std::atomic<uint32_t> dnsRequest{0};
-std::atomic<uint32_t> dnsAddress{0};
-constexpr uint32_t DNS_STATE_MASK = 3;
+DnsLookup dnsLookup;
 constexpr uint32_t CLOSE_STACK_BYTES = 3072;
 constexpr uint32_t WIFI_RETRY_MS = 15000;
 std::atomic<bool> wifiDisconnected{false};
@@ -46,17 +42,12 @@ void closeWorker(void *) {
 
 void dnsResult(const char *, const ip_addr_t *address, void *context) {
   const uint32_t request = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(context));
-  uint32_t expected = request;
-  if (dnsRequest.load(std::memory_order_acquire) != request) return;
   const bool found = address && IP_IS_V4(address);
-  if (found) dnsAddress.store(ip4_addr_get_u32(ip_2_ip4(address)), std::memory_order_relaxed);
-  const uint32_t result = (request & ~DNS_STATE_MASK) |
-      static_cast<uint32_t>(found ? DnsState::Ready : DnsState::Failed);
-  dnsRequest.compare_exchange_strong(expected, result, std::memory_order_release);
+  dnsLookup.complete(request, found, found ? ip4_addr_get_u32(ip_2_ip4(address)) : 0);
 }
 void startDns(void *context) {
   const uint32_t request = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(context));
-  if (dnsRequest.load(std::memory_order_acquire) != request) return;
+  if (!dnsLookup.matches(request)) return;
   ip_addr_t address;
   const err_t result = dns_gethostbyname_addrtype(
       SERVER_HOST, &address, dnsResult, context, LWIP_DNS_ADDRTYPE_IPV4);
@@ -104,9 +95,7 @@ class Esp32Transport : public LinkTransport {
   bool startConnect() override {
     if (!readyForConnect()) return false;
     close();
-    const uint32_t generation = (dnsRequest.load(std::memory_order_acquire) & ~DNS_STATE_MASK) + 4u;
-    const uint32_t request = generation | static_cast<uint32_t>(DnsState::Pending);
-    dnsRequest.store(request, std::memory_order_release);
+    const uint32_t request = dnsLookup.begin();
     resolving_ = true;
     if (tcpip_try_callback(startDns, reinterpret_cast<void *>(static_cast<uintptr_t>(request))) != ERR_OK) {
       close();
@@ -116,11 +105,11 @@ class Esp32Transport : public LinkTransport {
   }
   Connect connectStatus() override {
     if (resolving_) {
-      const DnsState status = static_cast<DnsState>(dnsRequest.load(std::memory_order_acquire) & DNS_STATE_MASK);
-      if (status == DnsState::Pending) return Connect::Pending;
+      const DnsLookup::State status = dnsLookup.state();
+      if (status == DnsLookup::State::Pending) return Connect::Pending;
       resolving_ = false;
-      if (status != DnsState::Ready) return Connect::Failed;
-      const uint32_t address = dnsAddress.load(std::memory_order_relaxed);
+      if (status != DnsLookup::State::Ready) return Connect::Failed;
+      const uint32_t address = dnsLookup.address();
       fd_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       if (fd_ < 0) return Connect::Failed;
       int enabled = 1;
@@ -162,7 +151,7 @@ class Esp32Transport : public LinkTransport {
     fd_ = -1;
     resolving_ = false;
     // The session connection timeout deadlines DNS too, including lost callbacks.
-    dnsRequest.fetch_and(~DNS_STATE_MASK, std::memory_order_acq_rel);
+    dnsLookup.cancel();
   }
   int read(uint8_t *data, size_t size) override {
     const int n = ::recv(fd_, data, size, MSG_DONTWAIT);
