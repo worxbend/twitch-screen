@@ -214,3 +214,33 @@ Findings: **K-034** (Medium-smell) Per-kind policy scattered across four matches
 - `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS on the first run, so no reformat was needed.
 - `git diff --check`: PASS.
 - `grep -rnE 'NotificationKind\.(StreamStart|StreamEnd)' src`: the only hits are `device/NotificationRouter.scala:96` and `:104`, where the router builds those events. DeviceHub no longer appears.
+
+## test(relay): pin nested traffic object in device JSON
+
+Findings: **K-037** (Medium-smell) One new counter = five edits in two files. The production fix was already on main. `Device_OUT` (`src/twitchscreen/relay/device/DeviceApi.scala:13-35`) embeds `traffic: LinkTraffic` whole (Preserve Whole Object), and `Device_OUT.from` copies `link.traffic`, so a new counter touches only `LinkCounters.scala`. One gap was left: no test checked the HTTP/JSON shape, which KIMI-D23 (`tasks/review-kimi-device.md`) records as an intentional management API change. ApiSuite covered only the empty list and 404s.
+
+### Change
+
+Test only. No production source changed (`git diff src/` is empty).
+
+### Tests
+
+- NEW `test/src/twitchscreen/relay/device/DeviceApiJsonSuite.scala`, 4 tests. It sits in the `device` package because `ConnectionId.apply` is `private[device]`. It serializes with `writeToString` through the same `given JsonValueCodec[Device_OUT]` / `[Devices_OUT]` that `DeviceApi`'s `jsonBody` outputs use, so it pins the wire shape. The fixture `LinkTraffic` has a distinct non-zero value in every Long field (11..23) and `lastSeenAt = Instant.ofEpochSecond(1790309000L)`.
+  - "K-037: a device's counters are rendered under a nested traffic object": decodes the JSON with test-private probe DTOs. `traffic == Some(TrafficProbe(11, 12, 23, 21, 22, 20, instant))`, and the top-level `framesSent`, `ackedSeq`, `bytesSent` and `lastSeenAt` are all `None`.
+  - "K-037: no LinkTraffic field is flattened onto the device object": cuts out the `"traffic":{...}` slice. For every name in `LinkTraffic.productElementNames`, the key is inside the slice and absent from the rest, so future counters are covered automatically. The six device-level keys are present in the rest.
+  - "K-037: the device list nests traffic per device too": `Devices_OUT` JSON starts with `{"devices":[{`, contains `"traffic":{"framesSent":11,`, and has exactly one `"framesSent":` key.
+  - "K-037: the OpenAPI schema nests traffic as well": the `Schema[Device_OUT]` `SProduct` field names include `traffic` and exclude `framesSent`.
+
+### Revert checks (the files were restored from copies after each check; `git diff src/` was then empty)
+
+1. R1: added a flattened `framesSent: Long` to `Device_OUT`, filled from `link.traffic.framesSent` in `from` and in the test fixture. `test.testOnly twitchscreen.relay.device.DeviceApiJsonSuite`: FAIL, 4 failed / 4. The failures were at `probe.framesSent` (`:63` in the committed file), "framesSent flattened into {...,"baselineSeq":5,"framesSent":11,}" (`:73`), the single-`framesSent` count (`:81`) and the schema `!fields.contains("framesSent")` (`:88`). The reported lines were one higher because of the extra fixture line.
+2. R2: renamed `traffic` to `counters` in `Device_OUT` and `from`. Same command: FAIL, 4 failed / 4. The failures were at `probe.traffic == Some(...)` (`:62`), the missing `"traffic":{` slice (`:54`, from test (b)), the missing `"traffic":{"framesSent":11,` (`:80`) and the schema `fields.contains("traffic")` (`:87`).
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly twitchscreen.relay.device.DeviceApiJsonSuite`: PASS, 4 / 4, 0 failed.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.*'`: PASS, 10 suites / 89 tests, 0 failed.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.http.ApiSuite`: PASS, 28 / 28, 0 failed.
+- `./mill --no-daemon test`: PASS (SUCCESS), 43 suites / 468 tests, 0 failed.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: the first run found 1 misformatted file (the new suite's scaladoc wrap). After `./mill --no-daemon mill.scalalib.scalafmt/`, it PASSED. Only the comment wrap changed, and no assertion line numbers moved.
+- `git diff --check`: PASS. `git status` lists only the new suite and this record.
