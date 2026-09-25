@@ -32,6 +32,22 @@ Live stats, little celebrations, and a front-row seat to the chaos.</p>
 
 Start with a simulated stream on your computer. Add the display when you’re ready. Connect your own Twitch channel after that. The full path is in the **[guidebook](docs/README.md)**.
 
+## 📸 On a real desk
+
+<p align="center">
+  <a href="docs/images/photo_7_2026-09-25_19-29-55.jpg"><img src="docs/images/photo_7_2026-09-25_19-29-55.jpg" width="210" alt="Assembled Twitch Screen showing live viewer stats"></a>
+  <a href="docs/images/photo_4_2026-09-25_19-29-55.jpg"><img src="docs/images/photo_4_2026-09-25_19-29-55.jpg" width="210" alt="Front view of the assembled display showing a follow notification"></a>
+  <a href="docs/images/photo_6_2026-09-25_19-29-55.jpg"><img src="docs/images/photo_6_2026-09-25_19-29-55.jpg" width="210" alt="Assembled display showing a gift subscription notification"></a>
+  <a href="docs/images/photo_8_2026-09-25_19-29-55.jpg"><img src="docs/images/photo_8_2026-09-25_19-29-55.jpg" width="210" alt="Front view of the assembled display showing a raid notification"></a>
+</p>
+<p align="center">
+  <a href="docs/images/photo_1_2026-09-25_19-29-55.jpg"><img src="docs/images/photo_1_2026-09-25_19-29-55.jpg" width="210" alt="Side view of the assembled display on a desk"></a>
+  <a href="docs/images/photo_2_2026-09-25_19-29-55.jpg"><img src="docs/images/photo_2_2026-09-25_19-29-55.jpg" width="210" alt="Angled view of the display enclosure and illuminated side vents"></a>
+  <a href="docs/images/photo_3_2026-09-25_19-29-55.jpg"><img src="docs/images/photo_3_2026-09-25_19-29-55.jpg" width="210" alt="Angled view of the assembled display showing a raid notification"></a>
+  <a href="docs/images/photo_5_2026-09-25_19-29-55.jpg"><img src="docs/images/photo_5_2026-09-25_19-29-55.jpg" width="210" alt="Side view of the enclosure showing the tilted screen and vent pattern"></a>
+</p>
+<p align="center"><sub>Assembled prototype · select a photo to see it full size</sub></p>
+
 ## 👀 Small screen. Main-character energy.
 
 | On your desk | Under the hood |
