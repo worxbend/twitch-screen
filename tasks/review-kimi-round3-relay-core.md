@@ -445,3 +445,28 @@ Each check ran the targeted command from Validation step 2.
 - `./mill --no-daemon test`: PASS (exit 0), 48 suites / 519 tests, 0 failed. The previous full run was 47 / 515, so this unit adds 1 suite and 4 tests. The log has no `[warn]` or `[error]` lines under `-Werror`.
 - `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS. The reformat changed nothing.
 - `git diff --check`: PASS. `git status` lists only `ActivityLog.scala`, `AlertStore.scala`, `ReplayBuffers.scala` and `LogBuffer.scala`, the new `collection/BoundedAppend.scala` and `collection/BoundedAppendSuite.scala`, and this record.
+
+## refactor(relay): apply LogBuffer resize in Main bootstrap, not the composition root
+
+Findings: **K-098** (Low) Global resize in composition root. The earlier record (tasks/review-kimi-root.md:42) kept `LogBuffer.resize` in `Dependencies.create` because the composition root "owns applying deployment configuration". This round treats that as a preference, not a reason: moving the call changes no behaviour or protocol, and afterwards the wiring function no longer mutates process-global Logback state. The decision is reversed and the call now sits in the bootstrap next to the other process-global setup (`InheritableMDC.init`).
+
+### Change
+
+- `src/twitchscreen/relay/Main.scala`: `run` calls `LogBuffer.resize(config.observability.logBufferSize)` right after `Config.log(config)` and before `Dependencies.create(...)`, with a one-line comment that this is process-global Logback state applied in the bootstrap. Added `import twitchscreen.relay.observability.LogBuffer`. Order: clock, startedAt, `Config.load()`, `Config.log`, `LogBuffer.resize`, `Dependencies.create`.
+- `src/twitchscreen/relay/Dependencies.scala`: removed the `LogBuffer.resize` line (`Otel.initialize()` is now the first statement) and dropped `LogBuffer` from the observability import. The object scaladoc now says it only wires objects and that Main applies process-global state such as the LogBuffer capacity before it runs.
+- `src/twitchscreen/relay/observability/LogBuffer.scala`: the scaladoc says `resize` is called exactly once, by `[[twitchscreen.relay.Main]]` during bootstrap (next to `InheritableMDC.init`), to apply `observability.log-buffer-size`.
+
+### Tests
+
+None added. This is a structural move with no behaviour change, and `Main.run` is reachable only by starting the OxApp, so a unit test cannot usefully assert where the call sits. A source-scanning test was deliberately not added. The proof is the grep below plus the existing log suites. No test called `Dependencies.create` to get a resized buffer: the log tests run against LogBuffer's default capacity of 200.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `grep -rn 'LogBuffer.resize' src test`: exactly one call, `src/twitchscreen/relay/Main.scala:29`, plus the scaladoc reference in `observability/LogBuffer.scala:14` (not a call).
+- `grep -n 'LogBuffer' src/twitchscreen/relay/Dependencies.scala`: only the scaladoc link `[[twitchscreen.relay.observability.LogBuffer]]` at line 29. There is no code reference or import.
+- `./mill --no-daemon compile`: PASS. `./mill --no-daemon test.compile`: PASS.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.observability.*' 'twitchscreen.relay.http.*'`: PASS. DiagnosticsSuite 5/5, RelayMetricsSuite 3/3, OtelLinkageSuite 3/3, ApiSuite 28/28, TraceIdMdcSuite 2/2, ManagementRoutesSuite 5/5, ManagementAuthSuite 15/15.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.StartupOrderSuite`: PASS, 1/1.
+- `./mill --no-daemon test`: PASS on the first run (exit 0, SUCCESS), 48 suites / 519 tests, 0 failed. The SequenceExhaustionSuite flake did not show up.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: the first run failed with 1 misformatted file, which was the rewrapped LogBuffer scaladoc. After `reformatAll`, which only rewrapped that comment, the check passed and `compile` passed again.
+- `git diff --check`: PASS. `git status` lists only the three source files and this record.

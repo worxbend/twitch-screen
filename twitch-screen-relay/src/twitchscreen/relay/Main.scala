@@ -5,6 +5,7 @@ import ox.logback.InheritableMDC
 import ox.otel.context.PropagatingVirtualThreadFactory
 import ox.{Ox, OxApp, discard}
 import twitchscreen.relay.config.Config
+import twitchscreen.relay.observability.LogBuffer
 
 /** The relay: a bridge between the Twitch API and the round-display firmware.
   *
@@ -24,6 +25,8 @@ object Main extends OxApp.Simple:
     val startedAt = clock.instant()
     val (config, source) = Config.load()
     Config.log(config)
+    // Process-global Logback state: applied here in the bootstrap, like InheritableMDC.init, not in the object wiring.
+    LogBuffer.resize(config.observability.logBufferSize)
     val dependencies = Dependencies.create(config, source, clock, startedAt)
     dependencies.serve().discard
     () => dependencies.hub.shutdown().discard

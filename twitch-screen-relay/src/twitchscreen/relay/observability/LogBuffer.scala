@@ -11,8 +11,9 @@ import twitchscreen.relay.collection.appendBounded
   * usual home is a headless Raspberry Pi.
   *
   * This is the one piece of global state in the relay, and it is global because Logback constructs its appenders from `logback.xml` and
-  * hands them no context. [[LogBuffer.resize]] is called once at startup to apply the configured capacity; until then the buffer holds a
-  * conservative default so that startup logging is not lost.
+  * hands them no context. [[LogBuffer.resize]] is called exactly once, by [[twitchscreen.relay.Main]] during bootstrap (next to
+  * `InheritableMDC.init`), to apply `observability.log-buffer-size`; until then the buffer holds a conservative default so that startup
+  * logging is not lost.
   */
 private[relay] object LogBuffer:
   private val DefaultCapacity = 200

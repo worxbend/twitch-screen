@@ -11,7 +11,7 @@ import twitchscreen.relay.config.Config
 import com.typesafe.config.{Config as HoconConfig}
 import twitchscreen.relay.device.{DeviceHub, DeviceLinkServer, NotificationRouter}
 import twitchscreen.relay.http.HttpApi
-import twitchscreen.relay.observability.{LogBuffer, Otel, RelayMetrics}
+import twitchscreen.relay.observability.{Otel, RelayMetrics}
 import twitchscreen.relay.stats.StatsAggregator
 import twitchscreen.relay.twitch.{BotFilter, TwitchSource}
 
@@ -25,11 +25,11 @@ private[relay] final case class Dependencies(httpApi: HttpApi, hub: DeviceHub, t
 /** The relay's assembly, in one place and in dependency order.
   *
   * Workers belong to the caller's application scope. Main binds HTTP before starting ingestion; ApplicationLifetime drains device shutdown
-  * messages before scope cancellation closes the listeners, Twitch client and background consumers.
+  * messages before scope cancellation closes the listeners, Twitch client and background consumers. It only wires objects; process-global
+  * state such as the [[twitchscreen.relay.observability.LogBuffer]] capacity is applied by [[Main]] before this runs.
   */
 private[relay] object Dependencies:
   def create(config: Config, source: HoconConfig, clock: Clock, startedAt: Instant)(using Ox): Dependencies =
-    LogBuffer.resize(config.observability.logBufferSize)
     val otel = Otel.initialize()
 
     // The bus first: everything below either publishes to it or subscribes to it, and nothing talks to anything else.
