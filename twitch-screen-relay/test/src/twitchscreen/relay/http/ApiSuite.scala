@@ -1,22 +1,25 @@
 package twitchscreen.relay.http
 
+import com.github.plokhotnyuk.jsoniter_scala.core.readFromString
 import com.typesafe.config.ConfigFactory
+import java.time.format.DateTimeFormatter
 import java.time.{Clock, Instant, ZoneOffset}
+import java.util.UUID
 import ox.supervised
 import pureconfig.ConfigSource
 import scala.concurrent.duration.DurationInt
 import sttp.client4.*
-import sttp.model.StatusCode
+import sttp.model.{StatusCode, Uri}
 import sttp.tapir.client.sttp4.SttpClientInterpreter
 import sttp.tapir.server.stub4.TapirSyncStubInterpreter
-import twitchscreen.relay.activity.{ActivityApi, ActivityLog}
+import twitchscreen.relay.activity.{ActivityApi, ActivityLog, Activity_OUT}
 import twitchscreen.relay.alerts.{AlertRule, AlertStore, AlertsApi}
-import twitchscreen.relay.bus.EventBus
+import twitchscreen.relay.bus.{BusEvent, EventBus, EventCategory, RelayEvent}
 import twitchscreen.relay.config.{ActivityConfig, ChatNotifications, Config, DeviceLinkConfig, Hostname, NotificationsConfig, Port}
 import twitchscreen.relay.device.{DeviceApi, DeviceHub, Notification_IN, NotificationApi}
 import twitchscreen.relay.health.{HealthApi, Health_OUT, HealthStatus, StatusApi}
 import twitchscreen.relay.protocol.{NotificationKind, SeqNo}
-import twitchscreen.relay.observability.LogsApi
+import twitchscreen.relay.observability.{LogBuffer, LogLevel, LogRecord, LogsApi, Logs_OUT}
 import twitchscreen.relay.twitch.{BotFilter, TwitchSource}
 
 /** The management API, exercised in process through Tapir's stub interpreter — no sockets, no ports. */
@@ -220,15 +223,111 @@ class ApiSuite extends munit.FunSuite:
         .send(backend)
       assertEquals(response.body.map(_.rules.map(_.name)), Right(List("no-devices-connected", "failure-rate")))
 
-  test("the activity report names when it was generated and how many entries it covers"):
-    withApi: (backend, _, _) =>
-      val response = SttpClientInterpreter()
+  private val activityEvents = List(
+    RelayEvent.Followed("alice"),
+    RelayEvent.TwitchLinkDown("network"),
+    RelayEvent.RelayFailure("poller", "boom")
+  )
+
+  /** The activity API over a log filled synchronously — one second apart, oldest first — so no bus or fork timing is involved. */
+  private def withActivityApi(events: Seq[RelayEvent])(body: SyncBackend => Unit): Unit =
+    val log = ActivityLog(50)
+    events.zipWithIndex.foreach((event, i) => log.record(BusEvent(clock.instant().plusSeconds(i.toLong), event)))
+    body(TapirSyncStubInterpreter().whenServerEndpointsRunLogic(ActivityApi(log, clock).endpoints).backend())
+
+  private val reportTimestamp = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC)
+
+  test("the activity report names when it was generated, its filter and how many entries it covers"):
+    withActivityApi(activityEvents): backend =>
+      val all = SttpClientInterpreter()
         .toRequestThrowDecodeFailures(ActivityApi.exportEndpoint, basePath)
         .apply((10, None))
         .send(backend)
-      assert(response.body.exists(_.contains("twitch-screen-relay activity report")), response.body.toString)
+        .body
+        .getOrElse(fail("export failed"))
+      assert(all.contains("twitch-screen-relay activity report"), all)
+      assert(all.contains(s"generated  ${reportTimestamp.format(clock.instant())}"), all)
+      assert(all.contains("filter     all categories"), all)
+      assert(all.contains("entries    3"), all)
+      val failures = SttpClientInterpreter()
+        .toRequestThrowDecodeFailures(ActivityApi.exportEndpoint, basePath)
+        .apply((10, Some(EventCategory.Failure)))
+        .send(backend)
+        .body
+        .getOrElse(fail("export failed"))
+      assert(failures.contains("filter     Failure"), failures)
+      assert(failures.contains("entries    1"), failures)
 
-  test("a path that matches no endpoint answers with the same JSON error shape as everything else"):
+  test("the activity list renders id, ISO instant, category name and summary, most recent first"):
+    withActivityApi(activityEvents): backend =>
+      val body = basicRequest.get(uri"http://localhost:8080/api/v1/activity").send(backend).body.getOrElse(fail("list failed"))
+      val failure = RelayEvent.RelayFailure("poller", "boom")
+      val newest =
+        s"""{"id":3,"at":"${clock.instant().plusSeconds(2)}","category":"Failure","summary":"${failure.summary}"}"""
+      assert(body.startsWith(s"""{"entries":[$newest,"""), body)
+      val entries = readFromString[Activity_OUT](body).entries
+      assertEquals(entries.map(_.id), List(3L, 2L, 1L))
+      assertEquals(entries.map(_.category), List(EventCategory.Failure, EventCategory.Twitch, EventCategory.Audience))
+      assertEquals(entries.map(_.summary), activityEvents.reverse.map(_.summary))
+      val instants = """"at":"([^"]+)"""".r.findAllMatchIn(body).map(_.group(1)).toList
+      assertEquals(instants, List(2L, 1L, 0L).map(clock.instant().plusSeconds(_).toString))
+      instants.foreach(at => assert(at.matches("""\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"""), at))
+
+  test("the activity list filters by category and refuses an unknown one"):
+    withActivityApi(activityEvents): backend =>
+      val twitch = basicRequest.get(uri"http://localhost:8080/api/v1/activity?category=Twitch").send(backend)
+      val entries = readFromString[Activity_OUT](twitch.body.getOrElse(fail("list failed"))).entries
+      assertEquals(entries.map(e => (e.category, e.summary)), List(EventCategory.Twitch -> "Twitch link down: network"))
+      val nonsense = basicRequest.get(uri"http://localhost:8080/api/v1/activity?category=Nonsense").send(backend)
+      assertEquals(nonsense.code, StatusCode.BadRequest)
+
+  /** A logger name no other test or relay component uses, so records from the global [[LogBuffer]] can be told apart. */
+  private def logMarker(): String = s"ApiSuite.logs.${UUID.randomUUID()}"
+
+  private def recordLog(marker: String, level: LogLevel, message: String): Unit =
+    LogBuffer.record(LogRecord(clock.instant(), level, marker, "test", message))
+
+  private def logTail(backend: SyncBackend, query: String): List[LogRecord] =
+    val response = basicRequest.get(Uri.unsafeParse(s"http://localhost:8080/api/v1/logs?$query")).send(backend)
+    assertEquals(response.code, StatusCode.Ok, response.body.toString)
+    readFromString[Logs_OUT](response.body.getOrElse(fail("logs failed"))).records
+
+  test("the log tail filters by minimum level, most recent first"):
+    withApi: (backend, _, _) =>
+      val marker = logMarker()
+      List(LogLevel.Info -> "i1", LogLevel.Warn -> "w1", LogLevel.Info -> "i2", LogLevel.Warn -> "w2").foreach((level, message) =>
+        recordLog(marker, level, message)
+      )
+      val warnings = logTail(backend, "minLevel=Warn&pageSize=500").filter(_.logger == marker)
+      assertEquals(warnings.map(_.message), List("w2", "w1"))
+      assert(warnings.forall(_.level == LogLevel.Warn), warnings.toString)
+      // Pinned current behaviour: Tapir's `defaultStringBased` enum codec matches level names case-insensitively.
+      assertEquals(logTail(backend, "minLevel=warn&pageSize=500").filter(_.logger == marker), warnings)
+
+  test("the log tail defaults to Info and above, leaving Debug out"):
+    withApi: (backend, _, _) =>
+      val marker = logMarker()
+      recordLog(marker, LogLevel.Debug, "d1")
+      recordLog(marker, LogLevel.Info, "i1")
+      assertEquals(logTail(backend, "pageSize=500").filter(_.logger == marker).map(_.message), List("i1"))
+
+  test("pageSize truncates the log tail to the most recent records"):
+    withApi: (backend, _, _) =>
+      val marker = logMarker()
+      List("e1", "e2", "e3").foreach(recordLog(marker, LogLevel.Error, _))
+      val tail = logTail(backend, "minLevel=Error&pageSize=2")
+      assertEquals(tail.map(r => (r.logger, r.message)), List(marker -> "e3", marker -> "e2"))
+
+  // The stub has no `defaultHandlers`, so its decode-failure body is Tapir's plain text rather than the production
+  // `{"error":...}` envelope; ManagementAuthSuite pins that envelope through the real HttpApi. Only the status is pinned here.
+  test("an unknown minLevel is a 400"):
+    withApi: (backend, _, _) =>
+      val response = basicRequest.get(uri"http://localhost:8080/api/v1/logs?minLevel=verbose").send(backend)
+      assertEquals(response.code, StatusCode.BadRequest)
+
+  // The stub has no `defaultHandlers`, so it cannot produce the JSON error envelope. ManagementAuthSuite's "/unknown-route"
+  // request asserts the `{"error":` body through the real HttpApi.
+  test("an unmatched path gives 404"):
     withApi: (backend, _, _) =>
       val response = basicRequest.get(uri"http://localhost:8080/api/v1/nonexistent").send(backend)
       assertEquals(response.code, StatusCode.NotFound)

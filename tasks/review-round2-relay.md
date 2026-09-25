@@ -406,3 +406,43 @@ Validation (run from twitch-screen-relay):
 Residuals:
 - No instrumentation release targets SDK 1.66 yet: the 2.31.1 BOM targets 1.65.0, so the SDK BOM override is deliberate and covered by OtelLinkageSuite. Re-check when 2.32 ships.
 - The Hystrix/Archaius legacy exceptions are still tracked in `tasks/review-dependencies.md` and were not changed here.
+
+## RLY-12, RLY-37 — Diagnostics HTTP/MDC tests and honest ApiSuite names
+
+Change (test-only; nothing under `src/` changed):
+- `test/src/twitchscreen/relay/http/ApiSuite.scala`
+  - Logs (RLY-12). The tests record into the global `LogBuffer` under a unique logger (`ApiSuite.logs.<UUID>`) and filter responses by that logger. They cover:
+    - "the log tail filters by minimum level, most recent first": `?minLevel=Warn` returns `w2, w1`, all Warn.
+    - "the log tail defaults to Info and above, leaving Debug out".
+    - "pageSize truncates the log tail to the most recent records": Error `e1..e3`, then `?minLevel=Error&pageSize=2` returns exactly `e3, e2`, unfiltered.
+    - "an unknown minLevel is a 400".
+  - Activity (RLY-12). A new `withActivityApi` helper fills an `ActivityLog(50)` synchronously with Followed, TwitchLinkDown and RelayFailure, one second apart. The tests cover:
+    - "the activity list renders id, ISO instant, category name and summary, most recent first": the raw JSON's first entry is `{"id":3,"at":"<instant+2s>","category":"Failure","summary":"<RelayFailure.summary>"}`, ids are 3,2,1, and each `at` matches `yyyy-MM-ddTHH:mm:ssZ`.
+    - "the activity list filters by category and refuses an unknown one": `?category=Twitch` returns exactly `Twitch link down: network`, and `?category=Nonsense` returns 400.
+  - Honest names (RLY-37).
+    - The export test is now "the activity report names when it was generated, its filter and how many entries it covers". It asserts `generated  <yyyy-MM-dd HH:mm:ss UTC of clock>`, `filter     all categories` and `entries    3`. With `Failure` as the filter, it asserts `filter     Failure` and `entries    1`.
+    - The unmatched-path test is renamed to "an unmatched path gives 404". A comment points to ManagementAuthSuite's `/unknown-route`, which checks the real `{"error":` envelope.
+- `test/src/twitchscreen/relay/http/TraceIdMdcSuite.scala` (new, 2 tests; `InheritableMDC.init`; an SDK tracer provider with W3C propagators, closed in `finally`):
+  - "a request through the real server carries the active span's trace id in the MDC, including in forks": this runs through `HttpApi(...).startOnPort(0)` with a public endpoint. With `traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-...-01`, the handler MDC, the fork MDC (`supervised(fork(...).join())`) and `Span.current()` all equal the incoming id. A second request without `traceparent` gets a valid, non-zero 32-hex id that equals its own span id and differs from the first id, so nothing leaks between requests.
+  - "the trace id is cleared once the request completes": this uses `TapirSyncStubInterpreter(List(SetTraceIdInMDCInterceptor), SyncBackendStub)`, which runs on the calling thread, under a test span made current. The MDC is null before the request. The handler and fork MDC equal the span's trace id. The MDC is null again after the request returns.
+
+Pinned behaviour:
+- Lower-case `?minLevel=warn` is accepted (200) with the same result as `Warn`: Tapir's `defaultStringBased` enum decode ignores case.
+- The stub's 400 body for `?minLevel=verbose` is Tapir's plain text: `Invalid value for: query parameter minLevel (expected value to be one of (Debug, Error, Info, Trace, Warn), but got: "verbose")`. It is not the production `Error_OUT` envelope, so only the status is asserted here.
+
+Mutation checks (sources restored from a backup each time; `sha256sum -c` reported OK):
+- The interceptor puts `traceId.take(0)` (empty). C1 fails because the handler MDC is not the incoming id. C2 fails with "not a valid trace id: ".
+- `unsupervisedWhere` is replaced by a bare `MDC.put` that is never cleared. C1 fails because the fork MDC is not inherited. C2 fails at the check that the MDC is null after the request.
+- `LogBuffer.recent` uses `iterator` instead of `reverseIterator`. "filters by minimum level, most recent first" and "pageSize truncates" fail; the other 24 ApiSuite tests pass.
+
+Validation (run from twitch-screen-relay):
+- `./mill --no-daemon test.testOnly twitchscreen.relay.http.ApiSuite` → 26 tests, 0 failed.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.http.TraceIdMdcSuite` → 2 tests, 0 failed.
+- `./mill --no-daemon test.testOnly` over ApiSuite, TraceIdMdcSuite, ManagementAuthSuite, ManagementRoutesSuite, DiagnosticsSuite and ActivityLogSuite → 26/2/7/4/5/5, 0 failed. Run 3 times, stable each time.
+- `./mill --no-daemon compile` (`-Werror`) → SUCCESS.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` → SUCCESS; `git diff --check` clean.
+- `./mill --no-daemon test` → 33 suites, 369 tests (was 32/361), 0 failed.
+
+Residuals:
+- Suites run in parallel, and `LogBuffer` is global. The unfiltered two-record check in "pageSize truncates" could in principle see an Error logged by another suite in the same microseconds. It was stable in 4 runs.
+- The production `{"error":` body for an invalid `minLevel` or `category` is covered only generically, by ManagementAuthSuite's unmatched route.
