@@ -1,330 +1,178 @@
-# twitch-screen-relay
+<div align="center">
 
-The backend half of the project: it watches a Twitch channel, and pushes what happens there to the ESP32 round
-display over a persistent TCP link. It also serves an HTTP API for managing and monitoring itself.
+# 🛰️ twitch-screen-relay
 
-Written in direct-style Scala 3 on the [VirtusLab Scala Stack](https://vss.virtuslab.com/) — Ox for structured
-concurrency on virtual threads, Tapir on a synchronous Netty server, jsoniter for JSON, PureConfig for configuration,
-MacWire for wiring. No effect system, no `Future`. Built with [Mill](https://mill-build.org); the `./mill` launcher
-downloads the pinned Mill version and a Temurin 25 JDK on first use.
+**Your stream's backstage crew. Your tiny screen's very chatty friend.**
 
-```sh
-./mill test                     # unit, HTTP and real-socket regressions
-export RELAY_HTTP_AUTH_API_TOKEN="$(openssl rand -hex 32)"
-./mill run                      # http://localhost:8080/docs, device link on 8099
-./mill assembly                 # one self-contained jar
-```
+Twitch activity → Scala relay → TSB/3 → ESP32 desk display ✨
 
-## Try it without Twitch
+[🏠 Project overview](../README.md) · [📚 Guidebook](../docs/README.md) · [🎮 Connect Twitch](../docs/guides/twitch-app-setup.md) · [🔌 HTTP API](../docs/reference/http-api.md)
 
-`twitch.mode = simulated` generates a fixed, repeating script of follows, subs, gifts, raids, cheers and chat, so the
-firmware and the enclosure can be worked on without Twitch credentials. This replaces what `demo-server/twitch_server.py`
-used to do, speaking the same protocol through the same code paths as the real integration.
+</div>
+
+The relay watches a Twitch channel, turns activity into notification cards and live stats, and pushes them to ESP32 displays over persistent TCP. It also provides an authenticated management API, a simulator, diagnostics, and Swagger UI.
+
+Built with **Scala 3**, **Ox**, synchronous **Tapir/Netty**, **jsoniter-scala**, **PureConfig**, **MacWire**, and **Twitch4J**. Versions are pinned in [build.mill](build.mill); the stack follows the [VirtusLab Scala Stack](https://vss.virtuslab.com/) approach.
+
+## 🚀 First run: no Twitch account required
+
+From this directory:
 
 ```sh
 export RELAY_HTTP_AUTH_API_TOKEN="$(openssl rand -hex 32)"
 RELAY_TWITCH_MODE=simulated ./mill run
-# In another shell with the same management token:
-curl -X POST localhost:8080/api/v1/notifications \
+```
+
+The launcher downloads the pinned Mill **1.1.9** and Temurin **25** toolchain on first use. Keep the generated management token privately; other terminals must use that same value. Management authentication is required in all modes.
+
+Open **`http://localhost:8080/docs`** for Swagger UI. Check liveness:
+
+```sh
+curl --fail --silent --show-error http://localhost:8080/api/v1/health
+```
+
+Expected: `{"status":"Up"}`. The simulator produces a repeating stream of events, even with no device attached. Set firmware `SERVER_HOST` to this machine's LAN address and `SERVER_PORT` to **8099** to connect the display.
+
+Send your first card from a terminal with the same token:
+
+```sh
+curl --fail --silent --show-error \
   -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"type":"alert","title":"Rack A","body":"78C"}'
+  -H 'Content-Type: application/json' \
+  --data '{"type":"info","title":"Hello, tiny world","body":"The desk lore begins."}' \
+  http://localhost:8080/api/v1/notifications
 ```
 
-Point the firmware's `SERVER_HOST`/`SERVER_PORT` at the machine running this and the screen lights up.
+Want the guided version? Start with [your first simulated stream](../docs/guides/first-simulated-stream.md), then [run the relay](../docs/guides/relay-setup.md).
 
-## How it fits together
+## 🎛️ Pick a mode
 
-```
-      Twitch                                                   ESP32
-  ┌────────────┐                                         ┌───────────────┐
-  │ Helix poll │──┐                                  ┌──▶│ roundlcd-01   │
-  │ chat (IRC) │──┼──▶ TwitchSource ──┐              │   └───────────────┘
-  │ EventSub   │──┘                   │              │
-  └────────────┘                      ▼              │
-                                 ┌─────────┐   ┌───────────┐
-  HTTP POST /notifications ─────▶│EventBus │──▶│ DeviceHub │──▶ TSB/3 binary over TCP :8099
-                                 └─────────┘   └───────────┘
-                                      │
-                    ┌─────────────────┼──────────────────┬───────────────┐
-                    ▼                 ▼                  ▼               ▼
-              NotificationRouter  StatsAggregator   ActivityLog     AlertMonitor
-              (which events           (the idle      (GET /activity) (GET /alerts)
-               become a screen         dashboard)
-               notification)
-```
-
-Producers publish to the bus; consumers subscribe. Neither knows the other exists, which is what lets the Twitch
-source be swapped for a simulator — or removed entirely — without touching anything downstream.
-
-Three pieces are worth knowing about:
-
-**`DeviceHub` is an actor.** It assigns sequence numbers, keeps the 64-frame replay buffer and holds every attached
-device. Running on a single thread is what makes sequence numbers monotonic *on the wire*: two events published at the
-same instant cannot interleave their frames, so a device never sees a lower `seq` after a higher one and never
-advances over a notification dropped from its outbound queue. The actor never blocks: an EVENT enqueue failure
-closes that connection before a later EVENT can cross the gap; STATS may be dropped. Replay is bounded by retained
-history and the current relay process. TSB/3 does not promise durable delivery across relay restarts.
-
-**Each device connection is one virtual thread.** `DeviceLinkServer` accepts, forks a session, and the session's
-reader runs in its own thread with the writer and heartbeat as forks beside it. Blocking socket I/O on a virtual
-thread is interruptible, so ending the application scope ends every session; there is no shutdown flag anywhere in
-the codebase.
-
-**The event bus drops rather than blocks.** Each subscriber has a bounded queue and loses events once it is full,
-reporting the loss through `GET /api/v1/status`. A relay that blocked its Twitch reader because the activity log was
-busy would be dropping the events that matter to preserve the ones that do not.
-
-## The device protocol
-
-TSB/3, specified in [`../twitch-screen-firmware/docs/PROTOCOL.md`](../twitch-screen-firmware/docs/PROTOCOL.md): a
-binary protocol over one long-lived TCP connection, server push, with `seq`-based replay on reconnect. Every frame is
-an 8-byte header — magic `a7 53`, version, type, little-endian length, flags, header check — followed by a
-fixed-offset, fixed-width payload of at most 248 bytes. It replaces the NDJSON v2 wire entirely; the two cannot
-interoperate, and the cutover is a flag day.
-
-Nothing is tolerant twice over: a malformed *frame* is skipped and counted, a malformed *stream* is resynchronised
-one byte at a time until the budget runs out and then closed with a `BYE` saying why. The exact bytes of all twenty
-golden vectors of §18 are pinned by `Tsb3GoldenVectorSuite`, in both directions; `FrameReaderSuite` and
-`Tsb3DecoderSuite` cover framing and payload handling; and `DeviceLinkSuite` exercises the handshake, push, replay,
-heartbeat, refusal and teardown over real sockets.
-
-The relay is deliberately more patient than the firmware: the device gives up after 45 s of silence, the relay after
-90 s, so the device decides when to reconnect rather than racing the server.
-
-## HTTP API
-
-Swagger UI at `/docs`. Resource-oriented and versioned, following AIP-136 — custom methods share the resource's path
-segment after a colon (`POST /devices/7:disconnect`).
-
-| Method | Path | What |
+| Mode | What happens | Twitch credentials |
 |---|---|---|
-| `GET` | `/api/v1/health` | Liveness. Deliberately says nothing about Twitch, so a container health check never restarts a relay that is serving devices |
-| `GET` | `/api/v1/status` | Readiness: Twitch, the device link, bus subscribers, alert and buffer counts |
-| `GET` | `/api/v1/config` | The effective configuration after file, environment and defaults are merged, secrets masked |
-| `GET` | `/api/v1/devices` | Attached devices and their traffic counters |
-| `GET` | `/api/v1/devices/{connection}` | One device |
-| `POST` | `/api/v1/devices/{connection}:disconnect` | Close a device's socket; it reconnects on its own backoff |
-| `GET` | `/api/v1/notifications` | Recently published notifications, out of the replay buffer |
-| `POST` | `/api/v1/notifications` | Push a notification to every attached device |
-| `GET` | `/api/v1/stats` | The stream figures last broadcast to the devices |
-| `GET` | `/api/v1/activity` | Recent relay activity, filterable by category |
-| `POST` | `/api/v1/activity:export` | Download a plain-text activity report |
-| `GET` | `/api/v1/alerts` | Raised alerts |
-| `POST` | `/api/v1/alerts/{id}:acknowledge` | Acknowledge an active alert |
-| `GET` | `/api/v1/alertRules` | The rules this relay was configured with |
-| `GET` | `/api/v1/logs` | The relay's own recent log lines, for when it is running headless |
-| `GET` | `/api/v1/twitch/authorize` | Open in a browser: redirects to Twitch's consent screen. `live` mode only |
-| `GET` | `/api/v1/twitch/callback` | Twitch's OAuth redirect target; stores the token it is handed. `live` mode only |
-| `GET` | `/api/v1/twitch/authorization` | Whose Twitch token the relay holds, its scopes and expiry — never the token. `live` mode only |
-| `DELETE` | `/api/v1/twitch/authorization` | Revoke the token at Twitch and forget it. `live` mode only |
-| `POST` | `/api/v1/twitch/eventsub` | Called by Twitch, not by you. Only mounted for the webhook transport |
+| `disabled` | Manual API notifications and device services | None |
+| `simulated` | Synthetic follows, subs, gifts, raids, Bits, chat, and stream changes | None |
+| `live` | Real Twitch Helix, IRC, and EventSub integration | Client ID/secret, then broadcaster consent |
 
-Every error, including decode failures and unmatched routes, comes back as `{"error": "..."}`.
+The native default is `disabled`; the supplied Compose file uses `simulated`. Chat cards default to **hidden** so follows and raids can have their moment. Accepted chat still contributes to counters.
 
-## Management authentication
+## 🎮 Connect your channel
 
-At least one management credential must be configured, even in simulated mode.
-Either valid Basic credentials or a valid Bearer token authorizes protected routes;
-callers do not need both. Partial Basic configuration and malformed verifiers
-fail startup. There is no default password, token or unauthenticated fallback.
+Use the [complete Twitch setup guide](../docs/guides/twitch-app-setup.md) to register a **Confidential** app, set the exact callback, configure live mode, and grant consent as the broadcaster. The relay resolves the broadcaster's numeric ID from the channel login.
 
-- `RELAY_HTTP_AUTH_API_TOKEN`: random token of at least 32 header-safe ASCII characters. Generate
-  one with `openssl rand -hex 32` and send `Authorization: Bearer <token>`.
-- `RELAY_HTTP_AUTH_BASIC_USERNAME` and `RELAY_HTTP_AUTH_BASIC_PASSWORD_HASH`:
-  configure both for Basic Auth. Run `python3 tools/hash_management_password.py`
-  to generate a salted verifier without storing the plaintext password.
-  The format is `pbkdf2-sha256$600000$<base64 salt>$<base64 key>`; quote it with
-  single quotes in shell assignments so dollar signs remain literal.
+The default callback is `http://localhost:8080/api/v1/twitch/callback`. Start consent at the **management-protected** `/api/v1/twitch/authorize`; use Basic browser login or obtain the redirect with a Bearer-capable client. Tokens are saved in `data/twitch-token.json`, refreshed before expiry, and validated periodically. The ESP32 never stores Twitch credentials.
 
-Health, aggregate stats and documentation remain public. The exact EventSub and
-OAuth callbacks remain public with independent HMAC/timestamp/delivery-ID and
-expiring single-use OAuth state checks. All other operations in the table above
-require management authentication, including OAuth authorize/revoke and reads
-of configuration, logs, history and device diagnostics. Browser Basic actions
-also enforce cross-site request protection; CORS alone is insufficient.
+Default EventSub delivery uses an outbound **WebSocket**, which suits a home LAN. Webhooks are also supported with a public HTTPS callback. Live event sources are deliberately split:
 
-Use HTTPS for credential-bearing network requests, directly or through a trusted
-TLS proxy. Localhost commands are local development examples. Rotate credentials
-by changing the environment and restarting. The verifier and token are masked in
-configuration output. Never place credentials in URLs or commit `.env` files.
-Password verification allows two concurrent derivations per server; additional
-Basic checks receive JSON HTTP 503 and can be retried.
+| Source | Responsibility |
+|---|---|
+| Anonymous IRC | Chat, subscriptions, gifts, Bits, raids |
+| EventSub | Follows, stream online/offline, channel updates |
+| Helix polling | Viewer, follower, and subscriber totals |
 
-Notification POST returns HTTP 200 after publication; retries are **not
-idempotent** and can create another card. A lost response does not prove the first
-request failed. List `pageSize` values must be within 1–500. Device listings are
-bounded by the listener's connection admission limit; the TCP listener trusts
-its LAN and has no device authentication.
+Default scopes are `moderator:read:followers` and `channel:read:subscriptions`. IRC event types are not backed up by EventSub subscriptions in this version. Real-account provider acceptance and sustained recovery still require validation with actual Twitch credentials.
 
-## Configuration
+## 🧠 How it fits together
 
-[`resources/application.conf`](resources/application.conf) is the reference, and every setting has an environment
-variable override, so the container needs no config file. The most useful ones:
+```mermaid
+flowchart LR
+  Twitch["Twitch: IRC / EventSub / Helix"] --> Source["TwitchSource"]
+  Simulator["Simulated source"] --> Source
+  Source --> Bus["EventBus"]
+  Bus --> Router["NotificationRouter"]
+  Bus --> Stats["StatsAggregator"]
+  Bus --> Diagnostics["Activity / alerts / metrics"]
+  Router --> Hub["DeviceHub"]
+  Stats --> Hub
+  API["HTTP notification API"] --> Hub
+  Hub -->|"TSB/3 · TCP 8099"| ESP32["ESP32 displays"]
+```
 
-| Variable | Default | What |
+`DeviceHub` serializes sequence allocation and retains a bounded replay buffer, **64 notifications** by default. A reconnect can replay retained events; relay restarts reset that history. TSB/3 provides best-effort replay, not durable delivery.
+
+Internal consumers have bounded queues so slow diagnostics cannot stall Twitch ingestion. Per-device backpressure protects event ordering: a failed event enqueue closes the affected connection before later events can pass it; stats frames may be dropped. Device sessions and workers live inside the application lifetime managed by Ox.
+
+The binary [TSB/3 specification](../twitch-screen-firmware/docs/PROTOCOL.md) defines the shared contract. NDJSON v2 peers cannot connect. Device TCP trusts the LAN and has **no authentication or TLS**; keep it private.
+
+## 🐳 Docker, persistence, and configuration
+
+From this directory, with your management token exported:
+
+```sh
+docker compose up --build -d
+docker compose logs --tail=100 relay
+```
+
+Compose publishes ports **8080** and **8099**, starts simulated mode, sets a **512 MiB** starting memory budget, and persists the token directory in a named volume. See [relay deployment](../docs/guides/relay-setup.md) for live-mode overrides, private environment files, backups, HTTPS, and headless consent.
+
+Common settings:
+
+| Variable | Default | Purpose |
 |---|---|---|
-| `RELAY_HTTP_AUTH_API_TOKEN` | — | Required unless complete Basic credentials are configured |
-| `RELAY_HTTP_AUTH_BASIC_USERNAME` / `_PASSWORD_HASH` | — | Optional Basic alternative; both fields are required together |
-| `RELAY_HTTP_PORT` | `8080` | Management API |
-| `RELAY_DEVICE_PORT` | `8099` | Device link |
-| `RELAY_TWITCH_MODE` | `disabled` | `disabled`, `simulated` or `live` |
-| `RELAY_TWITCH_CHANNEL` | — | Channel login to watch |
-| `RELAY_TWITCH_CLIENT_ID` / `_SECRET` | — | Twitch application credentials |
-| `RELAY_TWITCH_REDIRECT_URL` | `http://localhost:8080/api/v1/twitch/callback` | OAuth redirect; must be registered on the Twitch application |
-| `RELAY_TWITCH_TOKEN_FILE` | `data/twitch-token.json` | Where the granted user token is kept between restarts |
-| `RELAY_TWITCH_SCOPES` | `moderator:read:followers,channel:read:subscriptions` | Scopes requested on the consent screen |
-| `RELAY_TWITCH_EVENTSUB_TRANSPORT` | `websocket` | `websocket` or `webhook` |
-| `RELAY_NOTIFICATION_TTL` | `8 seconds` | How long the firmware holds a card posted to `/api/v1/notifications` without its own `ttlMs`. Twitch events take their display time per kind from §6.4.1 and are not configurable |
-| `RELAY_CHAT_NOTIFICATIONS` | `hide` | `show` puts every chat message on the screen |
-| `RELAY_IGNORED_DISPLAY_NAMES` | `streamelements,nightbot,moobot,streamlabs,fossabot,sery_bot` | Comma-separated display names whose events are dropped at the source (§13.1); replaces the default list |
-| `RELAY_STATS_INTERVAL` | `5 seconds` | Cadence of the idle dashboard push |
+| `RELAY_HTTP_AUTH_API_TOKEN` | None | Management Bearer credential; Basic is an alternative |
+| `RELAY_HTTP_PORT` | `8080` | Management listener |
+| `RELAY_DEVICE_PORT` | `8099` | ESP32 TCP listener |
+| `RELAY_TWITCH_MODE` | `disabled` | Select source |
+| `RELAY_CHAT_NOTIFICATIONS` | `hide` | Show/hide individual chat cards |
+| `RELAY_NOTIFICATION_TTL` | `8 seconds` | Default duration for manually posted cards |
+| `RELAY_STATS_INTERVAL` | `5 seconds` | Device dashboard push cadence |
 
-Misconfiguration fails at startup rather than at the first API call: `twitch.mode = live` without a client id is
-rejected while the config is being read, and so is a ping interval longer than the idle timeout.
+The [complete configuration reference](../docs/reference/relay-configuration.md) distinguishes environment overrides from advanced HOCON settings. Config is read at startup; authenticated `GET /api/v1/config` shows effective values with secrets masked. OpenTelemetry exports are opt-in through standard `OTEL_*` variables.
 
-## Connecting to Twitch
+## 🔌 Your control room
 
-Set `twitch.mode = live` and give it a client id and secret from
-[dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps). Those two are the only Twitch credentials the relay
-is configured with. The broadcaster's user token is obtained at runtime:
+| Endpoint | Use |
+|---|---|
+| `GET /api/v1/health` | Public HTTP liveness |
+| `GET /api/v1/stats` | Public aggregate stats |
+| `GET /api/v1/status` | Authenticated integration/device readiness |
+| `GET /api/v1/devices` | Device identities and traffic diagnostics |
+| `POST /api/v1/notifications` | Publish a card to all connected displays |
+| `GET /api/v1/activity`, `/alerts`, `/logs` | Recent activity and operational diagnostics |
 
-1. Register `http://localhost:8080/api/v1/twitch/callback` (or your `RELAY_TWITCH_REDIRECT_URL`) as an OAuth
-   Redirect URL of the application.
-2. Configure Basic management credentials for browser use (or request the authorize URL with a Bearer-capable
-   client). Start the relay and open `http://localhost:8080/api/v1/twitch/authorize` in a browser, logged in to Twitch as the
-   broadcaster.
-3. Approve the consent screen. Twitch redirects back to the callback, and the relay exchanges the code for an access
-   and refresh token and writes them to `data/twitch-token.json` (owner-only permissions). EventSub picks up
-   consent on the next 30-second maintenance cycle; scoped totals appear on the next configured poll. No restart is needed.
+Swagger is at `/docs`. The [HTTP API reference](../docs/reference/http-api.md) covers every route, authentication, filters, response contracts, and the current stream-kind JSON spelling limitation. Notification POST returns **200**; retries can publish duplicates.
 
-The relay refreshes the token before it expires and validates it hourly. A revoked grant can require consent again.
-`GET /api/v1/twitch/authorization` shows whose token is held and which scopes are missing, and
-`DELETE /api/v1/twitch/authorization` clears the local token, shared client credential and saved file before attempting
-provider revocation. The authorize request carries a single-use `state` that expires
-after ten minutes, so a callback the relay did not start is refused.
+Use an HTTPS proxy or SSH tunnel for management requests across networks. The relay requires at least one valid Basic or Bearer method; health, stats, documentation, and protocol-validated callbacks remain public.
 
-Twitch accepts a plain-http redirect only for `localhost`. For a relay on another machine, either tunnel the port
-(`ssh -L 8080:localhost:8080 pi`, then use the localhost URLs above) or serve the relay over HTTPS and set
-`RELAY_TWITCH_REDIRECT_URL` to the public callback URL.
+## 🧑‍💻 Developer commands
 
-Each transport handles a different event category:
+Run these from `twitch-screen-relay/`:
 
-- **chat (IRC)** carries what chat sees: messages, subscriptions, gifted subs, cheers and raids. It connects
-  anonymously, which reads any public channel but not subscriber-only chat.
-- **EventSub** carries what only Twitch can push: individual follows, stream start and stop, channel updates.
-- **the Helix poll** carries the totals nobody pushes: viewers, followers and subscribers.
+| Command | Purpose |
+|---|---|
+| `./mill compile` | Compile with warnings treated as errors |
+| `./mill test` | MUnit suites, including HTTP and real-socket regressions |
+| `./mill test.testOnly twitchscreen.relay.http.ApiSuite` | Focused HTTP API suite |
+| `./mill run` | Start with the current environment |
+| `./mill assembly` | Build `out/assembly.dest/out.jar` |
+| `./mill mill.scalalib.scalafmt/` | Format Scala sources |
+| `./mill mill.scalalib.scalafmt/checkFormatAll` | Check formatting |
 
-Until someone authorizes, the relay still runs: viewer counts, chat and (on the webhook transport) stream start/stop
-work on the application's credentials alone. Follows, follower and subscriber totals, and every EventSub WebSocket
-subscription wait for the token. Each Helix call is attempted independently, so a missing scope costs one figure
-rather than the poll.
-
-`websocket` is the right EventSub transport for a Raspberry Pi: the relay dials out and needs no inbound
-connectivity. `webhook` requires a publicly reachable HTTPS callback and a shared secret; the callback is
-authenticated by its HMAC signature and timestamp, with a bounded delivery-ID cache suppressing duplicates.
-
-The device and HTTP listeners bind before ingestion and subscription registration.
-Recoverable startup calls retry after 1, 2, 4, 8, 16, 32, then 60 seconds. Stored-token
-maintenance runs asynchronously and can start earlier. Chat and subscription checks run
-every 30 seconds; a WebSocket subscription failure or grant change rebuilds the scoped
-Twitch client. Expired or rejected user tokens are withheld until refresh succeeds.
-`GET /api/v1/status` reports Connecting, Connected, Degraded or Disconnected from current
-component observations. Initial live observation emits a stream-start card and initializes
-statistics; initial offline observation is silent.
-
-## Docker
+Run repository-wide checks from the repository root:
 
 ```sh
-export RELAY_HTTP_AUTH_API_TOKEN="$(openssl rand -hex 32)"
-docker compose up --build       # simulated mode, ports 8080 and 8099
-```
-
-The image is a Temurin 25 JRE plus one jar, running unprivileged, with a health check on `/api/v1/health`. The
-granted Twitch token lives in `/home/relay/data`, which compose mounts as the `relay-data` volume so that consent
-survives rebuilds. Base images and Mill launcher downloads are pinned by digest. Compose applies a 512 MiB
-starting memory budget; Java uses up to 70% for heap and exits on heap exhaustion. The container smoke tests this
-budget in simulated mode; size it from real stream/device load before production. Note that
-the assembly is around 73 MB — twitch4j brings a large transitive stack (Jackson, OkHttp, Hystrix, Feign).
-
-## Observability
-
-OpenTelemetry is configured entirely from the standard `OTEL_*` environment variables and exports nothing until one
-of them asks it to, so an unconfigured Pi pays nothing:
-
-```sh
-OTEL_TRACES_EXPORTER=otlp OTEL_METRICS_EXPORTER=otlp \
-OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317 ./mill run
-```
-
-Tapir records the standard HTTP server metrics; `RelayMetrics` adds relay-specific counters fed from the event bus,
-so a new producer is instrumented by the fact that it publishes. Trace ids reach log lines through
-`SetTraceIdInMDCInterceptor` and Ox's `InheritableMDC`, which is why `Main` installs
-`PropagatingVirtualThreadFactory` — without it, forked work produces orphaned spans.
-
-## Layout
-
-```
-src/twitchscreen/relay/
-  Main.scala             OxApp entry point
-  Dependencies.scala     the whole assembly, in dependency order
-  Apis.scala             every group of endpoints, collected by MacWire's wireList
-  config/                the typed configuration tree and its primitives
-  protocol/              TSB/3: frame header, encoder, decoder, frame reader, domain types
-  bus/                   RelayEvent and the fan-out
-  device/                the TCP listener, sessions, the hub, and their HTTP API
-  twitch/                the three event sources, twitch4j bridging, EventSub
-  stats/                 the idle dashboard's fold
-  activity/              the in-memory history
-  alerts/                rules, evaluation and the store
-  health/                liveness and readiness
-  http/                  shared endpoint scaffolding and the server
-  observability/         OpenTelemetry, metrics, the log buffer
-test/src/…               MUnit suites; DeviceLinkSuite uses real sockets
-```
-
-One file is not Scala: [`twitch/EventSubFactory.java`](src/twitchscreen/relay/twitch/EventSubFactory.java). twitch4j
-generates its EventSub conditions with Lombok's `@SuperBuilder`, whose recursive generics do not survive Scala's
-wildcard capture — the setters return an unnameable `builder.B`. Small Java factories keep the rest of the
-integration in Scala.
-
-## Working on it
-
-```sh
-./mill compile                                   # must stay at zero warnings
-./mill test
-./mill test.testOnly twitchscreen.relay.http.ApiSuite
-./mill mill.scalalib.scalafmt/                   # format sources
-./mill mill.scalalib.scalafmt/checkFormatAll
-RELAY_HTTP_PORT=8095 ./mill run                   # when 8080 is taken
-```
-
-Adding an endpoint: write it in its feature package using `.handle` / `.handleSuccess` (never `.serverLogic`), have
-the class extend `ServerEndpoints`, and add it as a constructor parameter of `Apis` — `wireList` picks it up, so
-the group is collected automatically. Declare its public, callback or sensitive access using the `Http` endpoint bases;
-unclassified endpoints refuse startup. Protected operations advertise both authentication alternatives in OpenAPI.
-
-The build enables `-Werror` with `-Wunused:all -Wvalue-discard -Wnonunit-statement`. Version numbers live in
-`build.mill`; the relay's own version lives in `RelayVersion.scala`.
-
-From the repository root, `python3 tools/audit_relay_dependencies.py` scans the resolved
-runtime dependencies against OSV and fails on new advisories or incomplete scans. CI runs it too.
-The two exact legacy exceptions expire on 2026-10-25; see the
-[dependency assessment](../tasks/review-dependencies.md) for affected paths and follow-up.
-
-## What has and has not been exercised
-
-Verified here: the protocol bytes against the firmware's specification, the device link over real sockets, the
-management API end to end, the aggregation and alert folds, the EventSub webhook's signature check, and the whole
-relay running in simulated mode with a real TCP client attached and notifications arriving over both paths.
-
-The image also builds and passes an isolated smoke under a 512 MiB limit: public and protected HTTP,
-credential redaction, TSB/3 handshake, and a shutdown BYE followed by EOF on SIGTERM. Run it from the repository root:
-
-```sh
+python3 tools/check_protocol_vectors.py
+python3 tools/audit_relay_dependencies.py
 docker build -t twitch-screen-relay:review twitch-screen-relay
 python3 tools/smoke_container.py
 ```
 
-The `live` Twitch path still needs validation with real account credentials. Scripted adapter tests cannot establish
-provider acceptance or long-running recovery against the real service.
+The dependency audit uses OSV and fails on new advisories or incomplete scans. Existing exact exceptions expire on **2026-10-25**; see the [dependency assessment](../tasks/review-dependencies.md). The container smoke exercises the selected image under its memory budget, HTTP protection/redaction, TSB/3 handshake, and shutdown.
+
+## 🗂️ Find your way around
+
+| Location | Responsibility |
+|---|---|
+| `Main.scala`, `ApplicationLifetime.scala` | Entry point and application lifecycle |
+| `Dependencies.scala`, `Apis.scala` | Dependency and endpoint assembly |
+| `config/` | Typed configuration and validation |
+| `protocol/` | TSB/3 types, frame readers, encoders/decoders |
+| `device/` | TCP listener, sessions, replay hub, notification API |
+| `twitch/` | Live/simulated/disabled sources, OAuth, IRC/EventSub/Helix adapters |
+| `bus/`, `stats/` | Internal events and aggregate stream state |
+| `activity/`, `alerts/`, `health/` | Operational state and diagnostics |
+| `http/`, `observability/` | HTTP infrastructure, authentication, logging, telemetry |
+| `test/src/` | Regression suites |
+
+Paths are under `src/twitchscreen/relay/` unless stated otherwise. One small [Java factory](src/twitchscreen/relay/twitch/EventSubFactory.java) bridges Twitch4J's Lombok-generated builder types; the surrounding integration remains Scala.
+
+Contributors should keep protocol changes coordinated with firmware, preserve direct-style resource ownership, and run relevant suites. Start with the [guidebook](../docs/README.md) and [protocol](../twitch-screen-firmware/docs/PROTOCOL.md). New endpoints declare public, callback, or management access explicitly; unclassified routes fail startup.
