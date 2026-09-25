@@ -40,8 +40,10 @@ private[relay] final class RelayMetrics(otel: OpenTelemetry):
     .setDescription("Recoverable failures reported by any relay component")
     .build()
 
-  private val observations: LongCounter = meter.counterBuilder("relay.twitch.observations").build()
-  private val twitchLinks: LongCounter = meter.counterBuilder("relay.twitch.link.transitions").build()
+  private val observations: LongCounter =
+    meter.counterBuilder("relay.twitch.observations").setDescription("Audience totals observed by polling").build()
+  private val twitchLinks: LongCounter =
+    meter.counterBuilder("relay.twitch.link.transitions").setDescription("Twitch connectivity state changes").build()
 
   private[observability] def observe(event: RelayEvent): Unit = event match
     case _: RelayEvent.NotificationPublished                                                             => notifications.add(1)

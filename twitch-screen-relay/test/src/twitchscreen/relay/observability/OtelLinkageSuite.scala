@@ -46,3 +46,18 @@ class OtelLinkageSuite extends munit.FunSuite:
       LoggerFactory.getLogger("twitchscreen.relay.observability.OtelLinkageSuite").info(marker)
       val bodies = harness.logs.getFinishedLogRecordItems.asScala.flatMap(record => Option(record.getBodyValue)).map(_.asString).toList
       assert(bodies.exists(_.contains(marker)), s"marker $marker not among exported log records: ${bodies.mkString(" | ")}")
+
+  test("instrumentation scope detaches the log appender before the SDK is closed"):
+    val logs = InMemoryLogRecordExporter.create()
+    val sdk = OpenTelemetrySdk
+      .builder()
+      .setLoggerProvider(SdkLoggerProvider.builder().addLogRecordProcessor(SimpleLogRecordProcessor.create(logs)).build())
+      .build()
+    try
+      supervised:
+        Otel.instrument(sdk)
+        LoggerFactory.getLogger("otel-scope-test").info("inside scope")
+      val count = logs.getFinishedLogRecordItems.size()
+      LoggerFactory.getLogger("otel-scope-test").info("after scope")
+      assertEquals(logs.getFinishedLogRecordItems.size(), count)
+    finally sdk.close()

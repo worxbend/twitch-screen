@@ -5,7 +5,7 @@ import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppen
 import io.opentelemetry.instrumentation.runtimetelemetry.RuntimeTelemetry
 import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk
 import org.slf4j.LoggerFactory
-import ox.{ResourceScope, discard, tap, useCloseableInScope}
+import ox.{ResourceScope, discard, tap, useCloseableInScope, useInScope}
 import scala.jdk.CollectionConverters.*
 
 /** OpenTelemetry, configured entirely from the standard `OTEL_*` environment variables — the relay has no telemetry settings of its own.
@@ -40,4 +40,4 @@ private[relay] object Otel:
     */
   private[relay] def instrument(otel: OpenTelemetry)(using ResourceScope): Unit =
     useCloseableInScope(RuntimeTelemetry.create(otel)).discard // JVM CPU, heap, GC and thread metrics
-    OpenTelemetryAppender.install(otel) // routes Logback records into the OTLP log exporter
+    useInScope(OpenTelemetryAppender.install(otel))(_ => OpenTelemetryAppender.install(OpenTelemetry.noop()))

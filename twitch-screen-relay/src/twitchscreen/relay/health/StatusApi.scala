@@ -62,7 +62,7 @@ final class StatusApi(
     Status_OUT(
       version = RelayVersion.current,
       startedAt = startedAt,
-      uptimeSeconds = JDuration.between(startedAt, clock.instant()).toSeconds,
+      uptimeSeconds = math.max(0L, JDuration.between(startedAt, clock.instant()).toSeconds),
       twitch = twitch.status,
       deviceLink = DeviceLink_OUT(
         connectedDevices = snapshot.connectedDevices,
