@@ -81,7 +81,7 @@ with no force pushes. The evidence for each unit is in the lane records:
 | Accepted as-is: deliberately retained in rounds 1-2 | 3 |
 | Fixed this round: production change | 28 |
 | Already fixed: round 3 added only a regression test, docs or a behaviour-preserving extraction | 16 |
-| User decision: owner-level threat-model items | 3 |
+| User decision: owner-level threat-model items | 3 (K-002 since decided: keep trusted LAN) |
 | Skipped: needs hardware or the owner's secrets file | 2 |
 | Rejected | 0 |
 
@@ -115,8 +115,9 @@ Integration needed no fixes.
 
 ### Residual gaps and known flakes
 
-- **Owner decisions still open.** K-002 (H2), K-177 (FW-10) and K-180 (FW-18)
-  are one decision about the threat model. See
+- **Owner decisions.** K-002 (H2) is decided (2026-09-25): keep the
+  trusted-home-LAN model with no device-link authentication. K-177 (FW-10)
+  and K-180 (FW-18) remain open under that model. See
   [ADR-0002](../docs/decisions/0002-device-link-trust-boundary.md).
 - **Hardware and owner actions.** K-109 needs a stack high-water measurement
   on a real board. K-169 is a one-line comment in the owner's git-ignored
@@ -152,7 +153,7 @@ Integration needed no fixes.
 | ID | Severity | Finding | Disposition | Evidence |
 | --- | --- | --- | --- | --- |
 | K-001 | High | H1 Hardcoded scope requirements cripple WebSocket EventSub transport (all registrations gated on follow scope; missing demands unrequested scopes) | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-002 | High | H2 Device link is plaintext and unauthenticated (threat model decision) | User decision | Owner: keep trusted-LAN model or add TLS / pre-shared HELLO token ([ADR-0002](../docs/decisions/0002-device-link-trust-boundary.md)) |
+| K-002 | High | H2 Device link is plaintext and unauthenticated (threat model decision) | Owner decided | 2026-09-25: keep the trusted-home-LAN model; no device-link authentication or TLS ([ADR-0002](../docs/decisions/0002-device-link-trust-boundary.md)) |
 | K-003 | Medium-bug | FrameReader timeout escapes as SocketTimeoutException instead of FrameTimeout value | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-004 | Medium-bug | DeviceHub tell operations can kill the hub actor (Ox 1.0.8 rethrows into fork, fails supervised scope) | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-005 | Medium-bug | Reclaim rate budget is global (16/min hub-wide), not per device id | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |

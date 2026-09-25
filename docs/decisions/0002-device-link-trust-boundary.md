@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted for the Kimi review remediation.
+Accepted for the Kimi review remediation. Reaffirmed by the owner on
+2026-09-25: no device-link authentication (API key/HMAC) or TLS will be added;
+the trusted-home-LAN boundary is the deployment requirement.
 
 ## Date
 

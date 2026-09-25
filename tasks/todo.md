@@ -56,8 +56,10 @@ Round 3 dispositions and integrated validation are in
 - [ ] Weak regression tests: K-011 is proven only by a pure test; K-086 shows
       only as a timing change, because a 2 s backstop still closes the socket;
       K-025/K-107/K-118 display glue is not built on the host.
-- [ ] User decision, left unchanged: K-002 (H2 device-link TLS/auth), K-177
-      (FW-10 BYE retry cap) and K-180 (FW-18 OTA). See
+- [x] Owner decision K-002 (H2): keep the trusted-home-LAN model; no
+      device-link authentication or TLS (decided 2026-09-25).
+- [ ] User decision, left unchanged: K-177 (FW-10 BYE retry cap) and K-180
+      (FW-18 OTA). See
       [ADR-0002](../docs/decisions/0002-device-link-trust-boundary.md).
 - [ ] Owner action: K-169 is a stale comment in the owner's untracked
       `src/credentials.h`.
