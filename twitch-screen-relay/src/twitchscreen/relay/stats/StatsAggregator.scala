@@ -6,7 +6,7 @@ import ox.*
 import ox.flow.Flow
 import twitchscreen.relay.bus.{BusEvent, EventBus, RelayEvent}
 import twitchscreen.relay.config.StatsConfig
-import twitchscreen.relay.device.DeviceHub
+import twitchscreen.relay.device.{DeviceHub, NotificationRouter}
 import twitchscreen.relay.protocol.StreamStats
 
 /** What drives one step of the aggregation: an event to fold in, or the moment to publish what has been folded. */
@@ -31,9 +31,16 @@ private[relay] object StatsAggregator:
         .fromSource(events)
         .map(StatsInput.Observed(_))
         .merge(Flow.tick[StatsInput](config.broadcastInterval, StatsInput.Publish))
-        .mapStateful(StatsState.Initial)(step(config, clock))
-        .collect { case Some(stats) => stats }
-        .runForeach(hub.broadcastStats)
+        .mapStateful(StatsState.Initial): (state, input) =>
+          val (next, stats) = step(config, clock)(state, input)
+          val card = input match
+            case StatsInput.Observed(message) if transitions(message.event) => NotificationRouter.toRequest(message.event)
+            case _                                                          => None
+          (next, stats.map(figures => (figures, card)))
+        .collect { case Some(output) => output }
+        .runForeach:
+          case (stats, Some(card)) => hub.publishTransition(card, stats).discard
+          case (stats, None)       => hub.broadcastStats(stats)
 
   /** Folding an event produces no output; a tick produces the frame every device then receives.
     *

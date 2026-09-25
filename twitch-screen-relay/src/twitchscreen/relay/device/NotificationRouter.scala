@@ -28,14 +28,17 @@ private[relay] object NotificationRouter:
   def start(config: NotificationsConfig, bus: EventBus, hub: DeviceHub)(using Ox): Unit =
     logger.info(s"Routing Twitch events to devices (chat ${config.chat}); display time is per kind, per §6.4.1")
     bus.consume("device-notifications"): message =>
-      toRequest(message.event).foreach(hub.publish(_).discard)
+      message.event match
+        // The statistics fold owns these cards so EVENT and its resulting STATS share one actor operation.
+        case _: (RelayEvent.StreamStarted | RelayEvent.StreamEnded) => ()
+        case event                                                  => toRequest(event).foreach(hub.publish(_).discard)
 
   /** Chat is mapped unconditionally, `notifications.chat` notwithstanding. §10.3 requires every `EVENT` to be sequenced and replayable,
     * including chat: a kind skipped by the sequence space lets a later event hold the high-water mark past a lost durable one, which
     * silently defeats replay exactly when it matters. The relay's chat policy is ANDed with the device's `CAP_CHAT` where §6.1 puts it — at
     * the moment of sending, in [[DeviceHub]] — not by refusing to create the event.
     */
-  private[device] def toRequest(event: RelayEvent): Option[EventRequest] =
+  private[relay] def toRequest(event: RelayEvent): Option[EventRequest] =
     event match
       case RelayEvent.Followed(user) =>
         // §6.4.1 fixes FOLLOW.value at 0: a follower total of 0 would be indistinguishable from "not reported",

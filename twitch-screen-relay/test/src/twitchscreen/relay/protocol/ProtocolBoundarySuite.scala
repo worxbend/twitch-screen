@@ -5,6 +5,11 @@ import java.time.Instant
 import scala.concurrent.duration.DurationInt
 
 class ProtocolBoundarySuite extends munit.FunSuite:
+  test("sequence allocation reaches u32 maximum and then refuses instead of wrapping"):
+    assertEquals(SeqNo.fromWire(0xfffffffeL).next, Some(SeqNo.Max))
+    assertEquals(SeqNo.Max.next, None)
+    assert(SeqNo(0x100000000L).isLeft)
+
   private def decoded(message: RelayMessage): RelayMessage =
     val bytes = Tsb3Encoder.toDevice(message, text = TextPolicy.AsciiFolded)
     val frame = FrameReader(ByteArrayInputStream(bytes)).read().toOption.get

@@ -100,6 +100,7 @@ object DeviceApi:
       .in("devices")
       .out(jsonBody[Devices_OUT])
       .summary("List the devices currently attached to the relay")
+      .description("Returns all attached devices. The TCP listener permits at most 64 simultaneous sessions, including handshakes.")
       .tag("devices")
 
   val getEndpoint: PublicEndpoint[ConnectionId, Fail, Device_OUT, Any] =
@@ -114,5 +115,5 @@ object DeviceApi:
       .in("devices" / path[ConnectionId]("connection:disconnect")(using disconnectTarget))
       .out(jsonBody[Device_OUT])
       .summary("Disconnect a device")
-      .description("Closes the socket. The firmware reconnects on its own backoff schedule and replays what it missed.")
+      .description("Closes the socket. The firmware reconnects on its own backoff schedule; retained events are eligible for best-effort replay.")
       .tag("devices")

@@ -15,7 +15,7 @@ object SeqNo:
   val Max: SeqNo = 0xffffffffL
 
   def apply(value: Long): Either[String, SeqNo] =
-    if value >= 0 then Right(value) else Left(s"Sequence number must not be negative: $value")
+    if value >= 0 && value <= Max then Right(value) else Left(s"Sequence number must fit in a u32: $value")
 
   /** A `u32` read off the TSB/3 wire (§10.1). Every value in that range is a legal sequence number, so this cannot fail: `seq == 0` is
     * meaningful on a `HELLO` ("I have seen nothing") and illegal only on an `EVENT`, where the decoder rejects it as a field error.
@@ -24,7 +24,7 @@ object SeqNo:
 
   extension (seq: SeqNo)
     def value: Long = seq
-    def next: SeqNo = seq + 1
+    def next: Option[SeqNo] = Option.when(seq < Max)(seq + 1)
     def isAfter(other: SeqNo): Boolean = seq > other
 
   given Ordering[SeqNo] = Ordering.Long

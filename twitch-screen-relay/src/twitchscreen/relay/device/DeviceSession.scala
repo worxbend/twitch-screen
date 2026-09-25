@@ -358,7 +358,8 @@ private enum Inbound:
   *
   * Two threads legitimately write to a device: the writer fork draining the outbound queue, and the reader thread answering a `PING` the
   * moment it arrives (§6.3). Without this monitor those two could interleave halfway through a frame, which on a binary wire is
-  * indistinguishable from corruption and would cost the device its resync budget. There is no mutable state here — only the lock.
+  * indistinguishable from corruption and would cost the device its resync budget. The monitor protects frame ordering and the final-BYE
+  * guard; deadline observation stays outside it.
   */
 private final class FrameSink(target: OutputStream, counters: LinkCounters):
   private val logger = LoggerFactory.getLogger(classOf[FrameSink])

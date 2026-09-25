@@ -43,12 +43,15 @@ private[device] final case class AttachRequest(
   * the same moment cannot interleave their `EVENT` frames, so a device never sees a lower seq after a higher one and never silently
   * discards a notification it has not shown.
   *
-  * The actor therefore must never block. Frames are handed to a device with a non-blocking offer: a device whose queue is full loses that
-  * frame — which the replay buffer recovers on its next reconnect — rather than freezing the hub.
+  * The actor therefore must never block. Frames are handed to a device with a non-blocking offer: a full EVENT queue closes that connection
+  * before a later EVENT can cross the gap. Retained notifications remain eligible for best-effort replay; replaceable STATS frames may be
+  * dropped.
   */
 private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState], connected: AtomicInteger):
   /** Sequences an event and pushes it to every attached device whose capabilities allow it. Returns it with its assigned seq and id. */
   def publish(request: EventRequest): Notification = state.ask(_.publish(request))
+
+  def publishTransition(request: EventRequest, stats: StreamStats): Notification = state.ask(_.publish(request, Some(stats)))
 
   /** §6.4.3: a posted card keeps its title and body and leaves every numeric field 0, whatever kind it names. */
   def publish(request: NotificationRequest): Notification = publish(EventRequest.card(request))
@@ -159,8 +162,8 @@ private[device] final class DeviceHubState(
     * After a half-open socket — a Wi-Fi drop with no FIN — the device reconnects long before this relay's 90 s idle timeout notices the
     * corpse. Without this, both sessions sit in `attached` for the rest of that window: `GET /api/v1/devices` shows two rows for one
     * physical screen, every `EVENT` is encoded and written twice, and the dead one's 128-frame outbound queue fills up and starts counting
-    * drops against a device that is working perfectly. The new connection is always the real one, because the device is the only party that
-    * opens connections.
+    * drops against a device that is working perfectly. Device IDs are unauthenticated claims on a trusted LAN; bounded reclaims prevent one
+    * faulty or conflicting identity from replacing sessions indefinitely.
     */
   private def reclaim(device: DeviceId): Unit =
     attached.values
@@ -186,22 +189,19 @@ private[device] final class DeviceHubState(
         logger.info(s"Device ${device.device.value} (#${connection.value}) detached: ${reason.describe}")
         bus.publish(RelayEvent.DeviceDisconnected(device.device, connection, reason.describe))
 
-  def publish(request: EventRequest): Notification =
-    if !SeqNo.Max.isAfter(latestSequence) then
-      // §10.1: the seq MUST NOT wrap past 0xffffffff — a wrapped seq would be 0 (illegal on an EVENT) and then fall below every
-      // device's high-water mark. A restart begins a new sequence space under a new session_id, which is the specified recovery.
+  def publish(request: EventRequest, transition: Option[StreamStats] = None): Notification =
+    latestSequence = latestSequence.next.getOrElse:
       logger.error(s"Sequence space exhausted at ${latestSequence.value}; refusing to publish until the relay is restarted")
       throw IllegalStateException("TSB/3 sequence counter exhausted at 0xffffffff (§10.1); restart the relay")
-    latestSequence = latestSequence.next
     val record = request.record(latestSequence, clock.instant())
     remember(record)
     notificationsPublished += 1
+    transition.foreach(stats => latestObservedStats = stats)
     broadcast(RelayMessage.Event(record))
-    if (record.kind == NotificationKind.StreamStart || record.kind == NotificationKind.StreamEnd) && latestObservedStats != StreamStats.Unknown
+    if (record.kind == NotificationKind.StreamStart || record.kind == NotificationKind.StreamEnd) && (transition.isDefined || latestObservedStats != StreamStats.Unknown)
     then
-      // §6.5: a STATS follows every STREAM_START/STREAM_END so the live flag and the resets land with the card. The aggregator's own
-      // post-transition STATS reaches this actor through a different bus subscriber and may arrive before this EVENT, so the hub re-sends
-      // what it holds right after it; whichever order the two arrived in, the wire shows EVENT then STATS.
+      // The stats fold supplies the lifecycle card and post-transition snapshot in this same actor operation.
+      // Manually posted lifecycle cards leave the observed state unchanged.
       broadcast(RelayMessage.Stats(latestObservedStats, Some(clock.instant())))
     val notification = Notification.from(record)
     bus.publish(RelayEvent.NotificationPublished(notification))
@@ -243,9 +243,7 @@ private[device] final class DeviceHubState(
         device.link
 
   /** §6.7 code 8. Best effort by definition — `BYE` is advisory and the sender never waits for a reply — but a queued frame on a live
-    * socket is overwhelmingly likely to reach the device before the application scope interrupts its writer, and the alternative is §1's
-    * original complaint about v2: silence. A device that is told goes into backoff knowing why; one that is not shows CONNECTING and
-    * guesses.
+    * socket is drained within a bounded deadline before the facade closes every remaining socket.
     */
   def shutdown(): List[AttachedDevice] =
     val devices = attached.values.toList
