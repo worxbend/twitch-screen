@@ -129,4 +129,6 @@ private[twitch] object ChannelStateTracker:
   def apply(channel: String, clock: Clock, pushGrace: JDuration = JDuration.ofSeconds(60), pollInterval: FiniteDuration = Duration.Zero)(
       using Ox
   ): ChannelStateTracker =
+    // Ox's default mailbox holds 16 pending operations; when it is full, ask blocks the EventSub or Helix-poll caller (backpressure,
+    // not dropping). See docs/reference/architecture.md "Actor mailboxes".
     new ChannelStateTracker(Actor.create(ChannelTrackerState(channel, clock, pushGrace, JDuration.ofNanos(pollInterval.toNanos))))

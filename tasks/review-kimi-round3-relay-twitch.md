@@ -695,3 +695,39 @@ Retention in `tasks/review-kimi-root.md:44` ("would change HOCON default semanti
 | `./mill --no-daemon mill.scalalib.scalafmt/` then `mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
 | `./mill --no-daemon test` | SUCCESS: 45 suites, 505 tests, 0 failed (count unchanged; this change adds assertions to an existing test) |
 | `git status --short` | only `ManagementAuthSuite.scala` and `tasks/review-kimi-round3-relay-twitch.md` |
+
+## K-154 (Nit, relay-core): Actor mailboxes implicitly bounded at 16, an undocumented load-bearing invariant
+
+- **Disposition: fixed (documentation only).** This closes both `[partial]` gaps. The invariant is now stated once in `docs/reference/architecture.md` (bounded-resources table row plus an "Actor mailboxes" note with anchor `#actor-mailboxes`), and each of the 4 `Actor.create` sites has a comment pointing to it.
+
+### Verified facts
+
+- Ox 1.0.8 (`~/.cache/coursier/.../com/softwaremill/ox/core_3/1.0.8/core_3-1.0.8.jar`): `javap -c 'ox.channels.BufferCapacity$package$BufferCapacity$'` shows `default()` initialised with `bipush 16`. `javap -c 'ox.channels.Actor$'` shows `create(T, Option, Ox, int)` calling `BufferCapacity.newChannel(I)`, so the mailbox is a bounded channel of 16 and `ask` (send into it) blocks the caller when it is full.
+- `grep -rn "Actor.create" twitch-screen-relay/src`: exactly 4 sites. No `BufferCapacity` override anywhere in the relay.
+- `CredentialTransitions` (TwitchAuth) persists inside the actor: `install`, `refreshIfCurrent` and `remove` call `file.save` or `file.delete`. Network calls (`client.exchange`, `client.refresh`, `client.isValid`, `client.revoke`) run outside `ask`. The doc says this honestly: operations are short, and credential persistence is the one local file write inside an actor.
+- `DeviceHub.connectedCount` reads an `AtomicInteger`, so it bypasses the mailbox (stated in the doc).
+
+### Change
+
+- `docs/reference/architecture.md`, "Concurrency and bounded memory":
+  - New "Actor mailboxes" bullet after the DeviceHub bullet. It covers the 16-slot default, the absence of a `BufferCapacity` override, the 4 actors, and how `ask` blocks callers (EventSub/Twitch callback, Helix poller, token maintenance, HTTP and device-session threads). It says this is backpressure, not dropping, and that operations are short and non-blocking with network I/O outside. It names the token-file exception and the `connectedCount` bypass.
+  - New table row: "Relay actor mailbox ... | 16 pending operations (Ox default) | `ask` blocks the calling thread until a slot frees; nothing is dropped."
+- Comments only, no code change: `device/DeviceHub.scala:67-68` (existing comment extended; the ask/observe sentence kept), `twitch/TwitchAuth.scala:132-133`, `twitch/ChannelStateTracker.scala:132-133`, `twitch/TwitchRuntimeHealth.scala:31-32`.
+- No test: the change has no behaviour change, and the finding says documentation only.
+
+### Grep evidence
+
+- `grep -rn -i mailbox` over the 4 files: hits at DeviceHub.scala:67-68, TwitchAuth.scala:132-133, ChannelStateTracker.scala:132-133 and TwitchRuntimeHealth.scala:31-32, each directly above its `Actor.create`. DeviceHub also has older hits at lines 110 and 380.
+- `grep -rn -B3 "Actor.create" twitch-screen-relay/src | grep -ci mailbox`: 6, so every one of the 4 sites has a mailbox comment within 3 lines.
+- `grep -rn "Actor.create" twitch-screen-relay/src | wc -l`: 4, unchanged.
+- `grep -n -i mailbox docs/reference/architecture.md`: line 105 (the note, which contains "16", "`ask`" and "blocks") and line 116 (the table row).
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS (168 sources) |
+| `./mill --no-daemon compile` | SUCCESS (`-Werror`; 4 sources recompiled) |
+| `./mill --no-daemon test` | SUCCESS: 45 suites, 505 tests, 0 failed (count unchanged) |
+| `git diff --check` | clean |
+| `git diff --stat` | the 5 files above plus this tasks file |

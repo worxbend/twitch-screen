@@ -28,6 +28,8 @@ private[twitch] final class TwitchRuntimeHealth private (state: ActorRef[TwitchH
 private[twitch] object TwitchRuntimeHealth:
   def apply(config: TwitchConfig, bus: EventBus)(using Ox): TwitchRuntimeHealth =
     val snapshot = AtomicReference(TwitchStatus(config.mode, TwitchHealth.Connecting, config.channel, "waiting for listeners"))
+    // Ox's default mailbox holds 16 pending operations; when it is full, ask blocks the Twitch callback, poller or HTTP caller
+    // (backpressure, not dropping). See docs/reference/architecture.md "Actor mailboxes".
     new TwitchRuntimeHealth(Actor.create(TwitchHealthState(config, bus, snapshot)), snapshot)
 
 private final class TwitchHealthState(config: TwitchConfig, bus: EventBus, snapshot: AtomicReference[TwitchStatus]):

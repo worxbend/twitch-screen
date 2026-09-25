@@ -129,6 +129,8 @@ private[twitch] object TwitchAuth:
       using Ox
   ): TwitchAuth =
     val state = AtomicReference(State(initial))
+    // Ox's default mailbox holds 16 pending operations; when it is full, ask blocks the HTTP or maintenance caller (backpressure, not
+    // dropping). See docs/reference/architecture.md "Actor mailboxes".
     val transitions = Actor.create(CredentialTransitions(state, file, clock, bus))
     new TwitchAuth(config, client, bus, clock, state, transitions, PendingAuthorizations(clock, SecureRandom()))
 

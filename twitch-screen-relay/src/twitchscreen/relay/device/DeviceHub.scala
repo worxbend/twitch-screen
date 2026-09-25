@@ -64,7 +64,8 @@ private[relay] final class DeviceHub private (
     refused: AtomicLong,
     observed: AtomicReference[HubSnapshot]
 ):
-  // Ox's bounded default mailbox admits 16 pending operations. ask confines operation failures to the caller,
+  // Ox's bounded default mailbox admits 16 pending operations; when it is full, ask blocks the caller (backpressure, not dropping).
+  // See docs/reference/architecture.md "Actor mailboxes". ask confines operation failures to the caller,
   // while observe refreshes the telemetry snapshot even if an operation fails after changing state.
   private def command[A](operation: DeviceHubState => A): A = state.ask(_.observe(operation))
 
