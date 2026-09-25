@@ -1,1 +1,18 @@
+# Mill build output and daemon state
 out/
+.mill-*
+mill-*.log
+
+# Scala tooling
+.bsp/
+.metals/
+.bloop/
+.scala-build/
+.scalafmt-cache/
+*.class
+*.semanticdb
+
+# Local runtime configuration (secrets come from the environment)
+.env
+.env.*
+!.env.example

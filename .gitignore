@@ -1,9 +1,15 @@
 # OS / editors
 .DS_Store
 Thumbs.db
+.directory
+.fuse_hidden*
+*~
 *.swp
 *.swo
+*.orig
+*.rej
 .idea/
+*.iml
 .vscode/*
 !.vscode/extensions.json
 
@@ -33,3 +39,6 @@ venv/
 
 # Runtime logs
 *.log
+
+# Claude Code per-user settings
+.claude/settings.local.json
