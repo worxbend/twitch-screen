@@ -53,8 +53,7 @@ private[relay] object FrameSize:
     def value: Int = size
     def isAcceptable: Boolean = size >= Tsb3.MinRxMax
 
-/** Opaque handle on the relay's sequence space, changing once per relay process start. The device re-baselines whenever it changes, which
-  * closes the v2 hole where a restarted relay that happened to reach a higher seq silently skipped the gap (§10.2).
+/** Diagnostic process identifier. TSB/3 does not echo it in HELLO; replay and re-baselining use the sequence comparison in §10.2.
   */
 private[relay] opaque type SessionId = Long
 

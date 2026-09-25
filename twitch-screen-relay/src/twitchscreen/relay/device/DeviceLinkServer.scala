@@ -3,11 +3,13 @@ package twitchscreen.relay.device
 import java.io.IOException
 import java.net.{InetSocketAddress, ServerSocket, Socket}
 import java.time.Clock
+import java.util.concurrent.atomic.AtomicInteger
 import org.slf4j.LoggerFactory
 import ox.*
 import ox.either.catching
 import scala.annotation.tailrec
 import scala.util.control.NonFatal
+import scala.concurrent.duration.DurationInt
 import twitchscreen.relay.config.DeviceLinkConfig
 
 /** The listener firmware connects to: one virtual thread per connection, which is what Loom and Ox's structured concurrency are for.
@@ -19,25 +21,44 @@ private[relay] object DeviceLinkServer:
 
   /** Binds and starts accepting. Both the listener and every session stop when the enclosing scope ends. */
   def start(config: DeviceLinkConfig, hub: DeviceHub, clock: Clock)(using Ox): ServerSocket =
+    startOnPort(config, hub, clock, config.port.value)
+
+  private[device] val MaxConnections: Int = 64
+
+  /** A zero bind port is available to socket tests without weakening configured production ports. */
+  private[device] def startOnPort(config: DeviceLinkConfig, hub: DeviceHub, clock: Clock, port: Int)(using Ox): ServerSocket =
     val listener = useCloseableInScope(ServerSocket())
     listener.setReuseAddress(true)
-    listener.bind(InetSocketAddress(config.host.value, config.port.value), config.acceptBacklog)
-    logger.info(s"Device link listening on ${config.host.value}:${config.port.value} (protocol v${config.protocolVersion})")
+    listener.bind(InetSocketAddress(config.host.value, port), config.acceptBacklog)
+    logger.info(
+      s"Device link listening on ${config.host.value}:${listener.getLocalPort} (protocol v${config.protocolVersion}, max $MaxConnections sessions)"
+    )
     forkDiscard(acceptLoop(listener, config, hub, clock))
     listener
 
   private def acceptLoop(listener: ServerSocket, config: DeviceLinkConfig, hub: DeviceHub, clock: Clock)(using Ox): Unit =
+    val sessions = AtomicInteger(0)
+    var failures = 0
     repeatWhile:
       accept(listener) match
         case Right(socket) =>
-          forkDiscard(session(socket, config, hub, clock))
+          failures = 0
+          if sessions.incrementAndGet() <= MaxConnections then
+            forkDiscard:
+              try session(socket, config, hub, clock)
+              finally sessions.decrementAndGet().discard
+          else
+            sessions.decrementAndGet().discard
+            socket.close().catching[IOException].discard
           true
         case Left(_) if listener.isClosed =>
           logger.info("Device link listener closed")
           false
         case Left(error) =>
           // A refused connection must not take the listener down with it.
-          logger.warn("Accepting a device connection failed", error)
+          failures = math.min(failures + 1, 31)
+          if failures == 1 || failures % 10 == 0 then logger.warn("Accepting a device connection failed; retrying with backoff", error)
+          sleep((100 * (1 << math.min(failures - 1, 5))).millis)
           true
 
   private def accept(listener: ServerSocket): Either[IOException, Socket] = listener.accept().catching[IOException]

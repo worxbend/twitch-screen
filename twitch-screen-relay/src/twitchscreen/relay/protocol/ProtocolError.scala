@@ -37,6 +37,9 @@ private[relay] enum ProtocolError:
 
 /** What a receiver does about a [[ProtocolError]] (§4.3 versus §4.4/§4.5). */
 private[relay] enum ErrorDisposition:
+  /** A candidate header cannot be trusted; shift one octet and search again within the framing budget. */
+  case Resynchronize
+
   /** Discard the payload, count it, keep reading. The resync budget resets, because the frame was correctly framed. */
   case SkipFrame
 
@@ -49,7 +52,7 @@ private[relay] object ProtocolError:
       case BadMagic(byte0, byte1)          => f"bad frame magic 0x$byte0%02x 0x$byte1%02x, expected 0xa7 0x53"
       case HeaderCheckFailed(exp, got)     => f"header check 0x$got%02x, expected 0x$exp%02x"
       case IllegalTypeCode                 => "frame type 0x00 is illegal"
-      case LengthOutOfRange(length, limit) => s"payload length $length above the $limit byte limit, skipped"
+      case LengthOutOfRange(length, limit) => s"payload length $length above the $limit byte framing limit"
       case FramingViolation(bytes, cands)  => s"framing violation: $bytes bytes discarded, $cands candidate headers rejected"
       case EndOfStream                     => "stream closed"
       case TruncatedFrame(exp, got)        => s"stream closed $got bytes into a $exp byte frame"
@@ -63,10 +66,9 @@ private[relay] object ProtocolError:
       case InvalidSequence(detail)         => s"invalid sequence number: $detail"
 
     def disposition: ErrorDisposition = error match
-      // §4.3's six payload-level problems, every one of which the link survives. `LengthOutOfRange` belongs here and not with the
-      // framing violations: §4.3 lists it under "skip the frame, keep the link", and the reader now performs that skip itself.
-      case _: (UnknownType | WrongDirection | ShortPayload | InvalidField | LengthOutOfRange) => ErrorDisposition.SkipFrame
-      case _                                                                                  => ErrorDisposition.CloseLink
+      case _: (BadMagic | HeaderCheckFailed | LengthOutOfRange) | IllegalTypeCode => ErrorDisposition.Resynchronize
+      case _: (UnknownType | WrongDirection | ShortPayload | InvalidField)        => ErrorDisposition.SkipFrame
+      case _                                                                      => ErrorDisposition.CloseLink
 
     /** The `BYE` the relay owes the device when this error ends the session (§6.7). Errors that are skipped rather than fatal have none,
       * and neither does a stream that has already closed under the relay's feet.

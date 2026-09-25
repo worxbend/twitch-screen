@@ -70,7 +70,12 @@ private[relay] object Tsb3Encoder:
     * allocated with: §8.1 holds those five bytes open for a future monetary amount, so that reintroducing one moves no existing field.
     */
   private def event(record: EventRecord, policy: TextPolicy): Array[Byte] =
-    val actor = WireStrings.field(record.actor, Tsb3.ActorWidth, policy, placeholder = Some(WireStrings.FoldedPlaceholder))
+    val placeholder = record.kind match
+      case NotificationKind.Follow | NotificationKind.Sub | NotificationKind.Gift | NotificationKind.Raid | NotificationKind.Chat |
+          NotificationKind.Bits =>
+        Some(WireStrings.FoldedPlaceholder)
+      case _ => None
+    val actor = WireStrings.field(record.actor, Tsb3.ActorWidth, policy, placeholder)
     val text = WireStrings.field(record.text, Tsb3.TextWidth, policy)
     val flags = record.flags
       .withFlag(if actor.truncated then EventFlags.ActorTruncated else EventFlags.Empty)
@@ -99,7 +104,7 @@ private[relay] object Tsb3Encoder:
     putU32(payload, Tsb3.Stats.Subs, figures.subscribers.value.toLong)
     putU32(payload, Tsb3.Stats.ServerTime, epochSeconds(message.serverTime))
     putU32(payload, Tsb3.Stats.StreamStartedAt, epochSeconds(figures.streamStartedAt))
-    putU16(payload, Tsb3.Stats.ChatRate, figures.chatRate.value)
+    putU16(payload, Tsb3.Stats.ChatRate, math.min(0xffff, figures.chatRate.value))
     putU8(payload, Tsb3.Stats.Live, if figures.state.isLive then 1 else 0)
     payload
 

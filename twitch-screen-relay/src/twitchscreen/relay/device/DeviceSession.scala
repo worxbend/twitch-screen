@@ -3,6 +3,7 @@ package twitchscreen.relay.device
 import java.io.{BufferedInputStream, IOException, OutputStream}
 import java.net.{Socket, SocketTimeoutException}
 import java.time.Clock
+import java.util.concurrent.atomic.AtomicReference
 import org.slf4j.LoggerFactory
 import ox.*
 import ox.channels.{Channel, ChannelClosed, Source}
@@ -45,6 +46,10 @@ private[device] object DeviceSession:
         prepare(socket)
         val counters = LinkCounters(clock)
         val sink = FrameSink(socket.getOutputStream, counters)
+        forkDiscard:
+          forever:
+            sleep(50.millis)
+            if sink.writeOverdue(config.idleTimeout) then closeQuietly(socket)
         // Buffered so that a 176-byte EVENT does not cost one syscall per field; the reader still accumulates,
         // because a buffered stream short-counts exactly as an unbuffered one does (§2).
         val source = BufferedInputStream(socket.getInputStream, Tsb3.MaxFrame)
@@ -102,7 +107,7 @@ private[device] object DeviceSession:
           case Right(hello: DeviceMessage.Hello) =>
             val caps = Capabilities.RelaySupported.intersect(hello.caps)
             logger.debug(
-              s"Device ${hello.deviceId.value} on firmware '${hello.fwVersion.value}' asked for caps 0x${hello.caps.value.toHexString}, " +
+              s"Device ${hello.deviceId.value} on firmware '${WireStrings.sanitise(hello.fwVersion.value)}' asked for caps 0x${hello.caps.value.toHexString}, " +
                 s"granted 0x${caps.value.toHexString}, rx_max ${hello.rxMax.value}"
             )
             Right(Handshake(hello, caps, TextPolicy.forCapabilities(caps)))
@@ -146,14 +151,17 @@ private[device] object DeviceSession:
   )(using Ox): Unit =
     val hello = handshake.hello
     val outbound = Channel.buffered[Outbound](config.outboundQueueCapacity)
+    val drained = Channel.buffered[Unit](1)
     val connection = hub.attach(
-      AttachRequest(hello.deviceId, remote, config.protocolVersion, hello.lastSeq, handshake.caps, outbound, counters, socket)
+      AttachRequest(hello.deviceId, remote, config.protocolVersion, hello.lastSeq, handshake.caps, outbound, counters, socket, drained)
     )
     logger.info(s"Device ${hello.deviceId.value} attached as #${connection.value} from $remote (last_seq=${hello.lastSeq.value})")
     try
-      forkDiscard(writeLoop(socket, sink, outbound, handshake.text, config, counters))
+      forkDiscard:
+        try writeLoop(socket, sink, outbound, handshake.text, config, counters)
+        finally drained.doneOrClosed().discard
       forkDiscard(heartbeat(outbound, config, clock))
-      hub.detach(connection, readLoop(reader, idle, sink, counters, config))
+      hub.detach(connection, readLoop(reader, idle, sink, counters, config, handshake.caps))
     finally outbound.doneOrClosed().discard
 
   /** Drains the outbound queue onto the socket. A failed write closes the socket, which is what ends the session.
@@ -181,7 +189,12 @@ private[device] object DeviceSession:
             counters.recordDropped()
             logger.warn(s"Dropped a ${frame.message.messageType} frame of ${encoded.length} bytes, past the ${config.maxFrameLength} limit")
             true
-          else if sink.write(encoded) then true
+          else if (
+              frame.message match
+                case _: RelayMessage.Bye => sink.writeFinal(encoded)
+                case _                   => sink.write(encoded)
+            )
+          then true
           else
             closeQuietly(socket)
             false
@@ -193,8 +206,7 @@ private[device] object DeviceSession:
           false
         case ChannelClosed.Error(cause) => throw cause
 
-  /** The relay pings as well as answering pings. The firmware only pings after its own silence, so without this a device that is receiving
-    * nothing would be the only party able to notice a half-open connection (§12).
+  /** Both peers ping periodically and answer promptly; either side can detect a half-open connection (§12).
     */
   private def heartbeat(outbound: Channel[Outbound], config: DeviceLinkConfig, clock: Clock): Unit =
     forever:
@@ -207,7 +219,8 @@ private[device] object DeviceSession:
       idle: FrameBudget,
       sink: FrameSink,
       counters: LinkCounters,
-      config: DeviceLinkConfig
+      config: DeviceLinkConfig,
+      caps: Capabilities
   ): DisconnectReason =
     readFrame(reader, idle) match
       case Left(Inbound.Timeout)        => DisconnectReason.IdleTimeout
@@ -220,11 +233,17 @@ private[device] object DeviceSession:
       case Right(frame) =>
         // §12: any inbound frame of any type resets the idle timer, including one that is about to be skipped.
         counters.recordReceived(frame.header.frameSize)
-        handle(frame, sink, counters, config) match
+        handle(frame, sink, counters, config, caps) match
           case Some(reason) => reason
-          case None         => readLoop(reader, idle, sink, counters, config)
+          case None         => readLoop(reader, idle, sink, counters, config, caps)
 
-  private def handle(frame: Frame, sink: FrameSink, counters: LinkCounters, config: DeviceLinkConfig): Option[DisconnectReason] =
+  private def handle(
+      frame: Frame,
+      sink: FrameSink,
+      counters: LinkCounters,
+      config: DeviceLinkConfig,
+      caps: Capabilities
+  ): Option[DisconnectReason] =
     if !frame.header.version.isCurrent then
       val refusal = Refusal(
         DisconnectReason.ProtocolViolation(s"frame carried version ${frame.header.version.value}"),
@@ -234,6 +253,7 @@ private[device] object DeviceSession:
       )
       refuse(sink, refusal)
       Some(refusal.reason)
+    else if frame.header.typeCode.known.contains(MessageType.Hello) then duplicateHello(sink, frame)
     else
       Tsb3Decoder.fromDevice(frame) match
         case Right(DeviceMessage.Ping(token)) =>
@@ -247,14 +267,10 @@ private[device] object DeviceSession:
 
         case Right(DeviceMessage.Ack(seq)) =>
           // §6.6: informational. Delivery is never conditional on it and the relay never withholds events because of it.
-          counters.recordAck(seq.value)
+          if caps.contains(Capabilities.Ack) then counters.recordAck(seq.value)
           None
 
         case Right(_: DeviceMessage.Hello) => duplicateHello(sink, frame)
-
-        case Left(_: ProtocolError.ShortPayload) if frame.header.typeCode.known.contains(MessageType.Hello) =>
-          // §11.1 rule 3 has no length condition: any second HELLO on an established session is a DUPLICATE_HELLO, not a §4.3 skip.
-          duplicateHello(sink, frame)
 
         case Left(error) =>
           error.disposition match
@@ -264,7 +280,7 @@ private[device] object DeviceSession:
               counters.recordSkipped(error)
               logger.debug(s"Skipping an inbound frame: ${error.describe}")
               None
-            case ErrorDisposition.CloseLink =>
+            case ErrorDisposition.CloseLink | ErrorDisposition.Resynchronize =>
               val refusal = Refusal(DisconnectReason.ProtocolViolation(error.describe), error.byeAdvice, frame.header.version)
               refuse(sink, refusal)
               Some(refusal.reason)
@@ -313,7 +329,7 @@ private[device] object DeviceSession:
       .fold(
         {
           case _: SocketTimeoutException => Left(Inbound.Timeout)
-          case error                     => Left(Inbound.Closed(DisconnectReason.ReadFailed(String.valueOf(error.getMessage))))
+          case error => Left(Inbound.Closed(DisconnectReason.ReadFailed(Option(error.getMessage).getOrElse(error.getClass.getSimpleName))))
         },
         {
           case Right(frame)                          => Right(frame)
@@ -349,6 +365,11 @@ private final class FrameSink(target: OutputStream, counters: LinkCounters):
 
   /** Set once a `BYE` has been written; guarded by this object's monitor like every write. */
   private var closed = false
+  private val writeStarted = AtomicReference(Option.empty[Long])
+
+  /** Read without the sink monitor so a blocked writer cannot hold its own deadline hostage. */
+  def writeOverdue(limit: FiniteDuration): Boolean =
+    writeStarted.get().exists(started => System.nanoTime() - started >= limit.toNanos)
 
   /** Returns false once the socket is gone, or once a `BYE` has gone out, which is the writer fork's signal to stop. §14: the byte count is
     * the true one, `8 + length`.
@@ -357,14 +378,16 @@ private final class FrameSink(target: OutputStream, counters: LinkCounters):
     if closed then false
     else
       try
+        writeStarted.set(Some(System.nanoTime()))
         target.write(frame)
         target.flush()
         counters.recordSent(frame.length)
         true
       catch
         case error: IOException =>
-          logger.debug(s"Write to a device failed: ${error.getMessage}")
+          logger.debug("Write to a device failed", error)
           false
+      finally writeStarted.set(None)
 
   /** §6.7: `BYE` is always the last frame on the connection. Every write after this one is refused, so an `EVENT`, `STATS` or `PING` still
     * queued for the writer fork can never follow it onto the wire; the writer then closes the socket, as a refused write always does.

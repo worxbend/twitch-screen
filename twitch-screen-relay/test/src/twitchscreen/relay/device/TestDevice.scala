@@ -1,7 +1,7 @@
 package twitchscreen.relay.device
 
 import java.io.{BufferedInputStream, OutputStream}
-import java.net.{ServerSocket, Socket}
+import java.net.Socket
 import java.time.Clock
 import ox.Ox
 import scala.concurrent.duration.DurationInt
@@ -81,7 +81,7 @@ private[device] object TestRelay:
     handshakeTimeout = 2.seconds,
     idleTimeout = 5.seconds,
     pingInterval = 4.seconds,
-    outboundQueueCapacity = 16,
+    outboundQueueCapacity = 32,
     replayBufferSize = 8,
     maxFrameLength = Tsb3.MaxFrame
   )
@@ -90,11 +90,5 @@ private[device] object TestRelay:
   def start(config: DeviceLinkConfig = config, chat: ChatNotifications = ChatNotifications.Show)(using Ox): (DeviceHub, Int) =
     val clock = Clock.systemUTC()
     val hub = DeviceHub.start(config, chat, clock, EventBus(clock, queueCapacity = 64))
-    val listener = DeviceLinkServer.start(config.copy(port = freePort()), hub, clock)
+    val listener = DeviceLinkServer.startOnPort(config, hub, clock, 0)
     (hub, listener.getLocalPort)
-
-  /** Asks the OS for an unused port and releases it immediately; the listener claims it a moment later. */
-  private def freePort(): Port =
-    val probe = ServerSocket(0)
-    try Port(probe.getLocalPort).toOption.get
-    finally probe.close()

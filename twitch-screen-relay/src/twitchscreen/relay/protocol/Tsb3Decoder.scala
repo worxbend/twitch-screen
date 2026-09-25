@@ -30,9 +30,7 @@ private[relay] object Tsb3Decoder:
 
   private def fromDeviceCurrent(frame: Frame): Either[ProtocolError, DeviceMessage] =
     expect(frame, WireDirection.DeviceToRelay).flatMap {
-      case MessageType.Hello =>
-        if frame.header.version.isCurrent then hello(frame.payload)
-        else Left(ProtocolError.UnsupportedVersion(frame.header.version.value, Tsb3.Version.value))
+      case MessageType.Hello      => hello(frame.payload)
       case MessageType.DevicePing => Right(DeviceMessage.Ping(Token.fromWire(u32(frame.payload, Tsb3.Heartbeat.Token))))
       case MessageType.DevicePong => Right(DeviceMessage.Pong(Token.fromWire(u32(frame.payload, Tsb3.Heartbeat.Token))))
       case MessageType.Ack        => Right(DeviceMessage.Ack(SeqNo.fromWire(u32(frame.payload, Tsb3.Ack.Seq))))

@@ -138,8 +138,8 @@ class FrameReaderSuite extends munit.FunSuite:
     val reader = FrameReader(ByteArrayInputStream(garbage ++ oversize ++ garbage ++ welcome), maxPayload = 64)
     assertEquals(hex(rebuild(readOne(reader))), hex(welcome))
 
-  test("§4.3: LengthOutOfRange is a skip, not a teardown, and owes the device no BYE"):
-    assertEquals(ProtocolError.LengthOutOfRange(249, 248).disposition, ErrorDisposition.SkipFrame)
+  test("§4.2: an impossible header length resynchronizes without trusting its payload length"):
+    assertEquals(ProtocolError.LengthOutOfRange(249, 248).disposition, ErrorDisposition.Resynchronize)
     assertEquals(ProtocolError.LengthOutOfRange(249, 248).byeAdvice, None)
 
   // ── §12's frame budget ────────────────────────────────────────────────────────────────────────

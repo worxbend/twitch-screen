@@ -18,6 +18,7 @@ private[relay] enum DisconnectReason:
   case Replaced
   case RequestedByOperator
   case ListenerStopped
+  case OutboundOverflow
 
 private[relay] object DisconnectReason:
   extension (reason: DisconnectReason)
@@ -32,3 +33,4 @@ private[relay] object DisconnectReason:
       case Replaced                  => "another connection claimed this device id"
       case RequestedByOperator       => "disconnected through the management API"
       case ListenerStopped           => "the relay is shutting down"
+      case OutboundOverflow          => "EVENT queue overflow; reconnect to replay retained events"

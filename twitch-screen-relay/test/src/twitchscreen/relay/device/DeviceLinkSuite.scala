@@ -202,14 +202,13 @@ class DeviceLinkSuite extends munit.FunSuite:
         device.send(DeviceMessage.Ping(Token.fromWire(4210L)))
         assertEquals(device.receiveMessage(), Some(RelayMessage.Pong(Token.fromWire(4210L))))
 
-  test("a PONG still arrives when the outbound queue has been overrun"):
+  test("a PONG still arrives while replaceable STATS traffic overruns the outbound queue"):
     supervised:
-      val (hub, port) = TestRelay.start(TestRelay.config.copy(outboundQueueCapacity = 2))
+      val (hub, port) = TestRelay.start()
       withDevice(port): device =>
         device.hello("roundlcd-01", lastSeq = 0)
         device.receiveMany(2).discard
-        // Far more than the queue holds, published while nothing is being read.
-        (1 to 300).foreach(index => hub.publish(follow(s"friend$index")).discard)
+        (1 to 300).foreach(_ => hub.broadcastStats(StreamStats.Unknown))
         device.send(DeviceMessage.Ping(Token.fromWire(99L)))
         val pong = LazyList
           .continually(device.receiveMessage())
@@ -217,9 +216,27 @@ class DeviceLinkSuite extends munit.FunSuite:
           .takeWhile(_.isDefined)
           .flatten
           .collectFirst { case RelayMessage.Pong(token) => token.value }
-        // §6.3 and §10.4: PING/PONG is unrecoverable, so a pong queued behind a backlog that is being dropped is a
-        // pong that never comes — and a device that stops getting pongs reconnects and re-triggers the burst.
         assertEquals(pong, Some(99L))
+
+  test("ACK without the negotiated capability is ignored without rejecting the frame"):
+    supervised:
+      val (hub, port) = TestRelay.start()
+      withDevice(port): device =>
+        device.hello("roundlcd-01", lastSeq = 0, caps = Capabilities.Empty)
+        device.receiveMany(2).discard
+        device.send(DeviceMessage.Ack(SeqNo.fromWire(9L)))
+        device.send(DeviceMessage.Ping(Token.fromWire(1L)))
+        assertEquals(device.receiveMessage(), Some(RelayMessage.Pong(Token.fromWire(1L))))
+        assertEquals(hub.links.headOption.map(_.traffic.ackedSeq), Some(0L))
+
+  test("a full second HELLO with invalid rx_max is still a duplicate HELLO refusal"):
+    supervised:
+      val (_, port) = TestRelay.start()
+      withDevice(port): device =>
+        device.hello("roundlcd-01", lastSeq = 0)
+        device.receiveMany(2).discard
+        device.hello("roundlcd-01", lastSeq = 0, rxMax = 128)
+        assertEquals(byesOf(device.drain()).map(_.code), List(ByeCode.DuplicateHello))
 
   test("an ACK is recorded against the link and withholds nothing"):
     supervised:

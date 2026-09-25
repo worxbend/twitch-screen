@@ -3,6 +3,7 @@ package twitchscreen.relay.device
 import java.io.{Closeable, IOException}
 import java.time.{Clock, Instant}
 import java.util.concurrent.ThreadLocalRandom
+import java.util.concurrent.atomic.AtomicInteger
 import org.slf4j.LoggerFactory
 import ox.*
 import ox.channels.{Actor, ActorRef, Channel, ChannelClosed}
@@ -32,7 +33,8 @@ private[device] final case class AttachRequest(
     caps: Capabilities,
     outbound: Channel[Outbound],
     counters: LinkCounters,
-    connection: Closeable
+    connection: Closeable,
+    drained: Channel[Unit]
 )
 
 /** The relay's fan-out point: it assigns sequence numbers, keeps the replay buffers, and knows every attached device.
@@ -44,7 +46,7 @@ private[device] final case class AttachRequest(
   * The actor therefore must never block. Frames are handed to a device with a non-blocking offer: a device whose queue is full loses that
   * frame — which the replay buffer recovers on its next reconnect — rather than freezing the hub.
   */
-private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState]):
+private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState], connected: AtomicInteger):
   /** Sequences an event and pushes it to every attached device whose capabilities allow it. Returns it with its assigned seq and id. */
   def publish(request: EventRequest): Notification = state.ask(_.publish(request))
 
@@ -64,11 +66,21 @@ private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState]):
 
   def snapshot: HubSnapshot = state.ask(_.snapshot)
 
+  /** Safe for telemetry callbacks even after the actor's scope has ended. */
+  def connectedCount: Int = connected.get()
+
   /** §6.7 code 8: tells every attached device why it is about to lose the link, so a relay restart is one log line on the device instead of
     * a silent drop into the blind exponential ramp. `ask` rather than `tell`, so that the caller knows the frames are queued before the
     * application scope starts interrupting the forks that have to write them.
     */
-  def shutdown(): Int = state.ask(_.shutdown())
+  def shutdown(): Int =
+    val devices = state.ask(_.shutdown())
+    try
+      timeoutOption(2.seconds):
+        devices.foreach(_.drained.receiveOrClosed().discard)
+      .discard
+    finally devices.foreach(_.connection.close().catching[IOException].discard)
+    devices.size
 
   /** Closes the socket, which unblocks that session's reader; the session then detaches itself. */
   def disconnect(connection: ConnectionId): Option[DeviceLink] = state.ask(_.disconnect(connection))
@@ -80,12 +92,19 @@ private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState]):
 
 private[relay] object DeviceHub:
   def start(config: DeviceLinkConfig, chat: ChatNotifications, clock: Clock, bus: EventBus)(using Ox): DeviceHub =
-    new DeviceHub(Actor.create(new DeviceHubState(config, chat, clock, bus)))
+    val connected = AtomicInteger(0)
+    new DeviceHub(Actor.create(new DeviceHubState(config, chat, clock, bus, connected)), connected)
 
 /** The hub's mutable state. The `var`s are safe because every method runs inside the actor that owns this instance; nothing else may hold a
   * reference to it.
   */
-private[device] final class DeviceHubState(config: DeviceLinkConfig, chat: ChatNotifications, clock: Clock, bus: EventBus):
+private[device] final class DeviceHubState(
+    config: DeviceLinkConfig,
+    chat: ChatNotifications,
+    clock: Clock,
+    bus: EventBus,
+    connected: AtomicInteger
+):
   private val logger = LoggerFactory.getLogger(classOf[DeviceHub])
 
   /** §6.2. Opaque, and new on every relay process start, because the sequence counter is not persisted across restarts.
@@ -112,16 +131,27 @@ private[device] final class DeviceHubState(config: DeviceLinkConfig, chat: ChatN
   private var latestObservedStats: StreamStats = StreamStats.Unknown
   private var connectionsAccepted: Long = 0
   private var notificationsPublished: Long = 0
+  private var recentReclaims: Vector[Instant] = Vector.empty
 
   def attach(request: AttachRequest): ConnectionId =
     val now = clock.instant()
-    reclaim(request.device)
     val connection = nextConnectionId()
-    val device = AttachedDevice(connection, request, now)
-    attached = attached.updated(connection, device)
-    connectionsAccepted += 1
-    greet(device, request.lastSeq, now)
-    bus.publish(RelayEvent.DeviceConnected(request.device, connection, request.remoteAddress))
+    recentReclaims = recentReclaims.dropWhile(_.isBefore(now.minusSeconds(60)))
+    val replacing = attached.values.exists(_.device == request.device)
+    if replacing && recentReclaims.size >= 16 then
+      request.outbound
+        .trySendOrClosed(Outbound(RelayMessage.Bye(ByeCode.RateLimit, ByeDetail.Zero, 60.seconds, "reclaim rate exceeded")))
+        .discard
+      request.outbound.doneOrClosed().discard
+    else
+      if replacing then recentReclaims = recentReclaims :+ now
+      reclaim(request.device)
+      val device = AttachedDevice(connection, request, now)
+      attached = attached.updated(connection, device)
+      connected.set(attached.size)
+      connectionsAccepted += 1
+      greet(device, request.lastSeq, now)
+      bus.publish(RelayEvent.DeviceConnected(request.device, connection, request.remoteAddress))
     connection
 
   /** §6.7 code 9: one device id, one live connection.
@@ -138,6 +168,7 @@ private[device] final class DeviceHubState(config: DeviceLinkConfig, chat: ChatN
       .foreach: stale =>
         logger.info(s"Device ${device.value} reconnected; reclaiming it from connection #${stale.id.value}")
         attached = attached.removed(stale.id)
+        connected.set(attached.size)
         // Queued rather than written here: §10.1 forbids the hub blocking, and this runs on the actor's single thread. The
         // session's writer fork drains the BYE and then closes the socket on `Done`, which is what ends the stale session.
         stale.outbound
@@ -151,6 +182,7 @@ private[device] final class DeviceHubState(config: DeviceLinkConfig, chat: ChatN
       .get(connection)
       .foreach: device =>
         attached = attached.removed(connection)
+        connected.set(attached.size)
         logger.info(s"Device ${device.device.value} (#${connection.value}) detached: ${reason.describe}")
         bus.publish(RelayEvent.DeviceDisconnected(device.device, connection, reason.describe))
 
@@ -202,8 +234,7 @@ private[device] final class DeviceHubState(config: DeviceLinkConfig, chat: ChatN
     attached
       .get(connection)
       .map: device =>
-        // Only closes the socket. The session's reader wakes with an error and detaches itself, so the bookkeeping
-        // stays in one place instead of being duplicated here.
+        detach(connection, DisconnectReason.RequestedByOperator)
         device.connection
           .close()
           .catching[IOException]
@@ -216,16 +247,18 @@ private[device] final class DeviceHubState(config: DeviceLinkConfig, chat: ChatN
     * original complaint about v2: silence. A device that is told goes into backoff knowing why; one that is not shows CONNECTING and
     * guesses.
     */
-  def shutdown(): Int =
+  def shutdown(): List[AttachedDevice] =
     val devices = attached.values.toList
     devices.foreach: device =>
       device.outbound
         .trySendOrClosed(Outbound(RelayMessage.Bye(ByeCode.ServerShutdown, ByeDetail.Zero, 0.seconds, "relay shutting down")))
         .discard
       device.outbound.doneOrClosed().discard
+      bus.publish(RelayEvent.DeviceDisconnected(device.device, device.id, DisconnectReason.ListenerStopped.describe))
     if devices.nonEmpty then logger.info(s"Told ${devices.size} attached device(s) that the relay is shutting down")
     attached = Map.empty
-    devices.size
+    connected.set(0)
+    devices
 
   private def remember(record: EventRecord): Unit =
     if record.kind == NotificationKind.Chat then chatReplay = (chatReplay :+ record).takeRight(DeviceHubState.ChatReplaySize)
@@ -275,14 +308,19 @@ private[device] final class DeviceHubState(config: DeviceLinkConfig, chat: ChatN
     case _ => true
 
   private def send(device: AttachedDevice, frame: Outbound): Unit =
-    if wants(device, frame.message) then
+    if attached.contains(device.id) && wants(device, frame.message) then
       device.outbound.trySendOrClosed(frame) match
         case accepted: Boolean =>
           if !accepted then
             device.counters.recordDropped()
-            logger.warn(
-              s"Device ${device.device.value} (#${device.id.value}) is not keeping up; dropped a ${frame.message.messageType} frame"
-            )
+            frame.message match
+              case _: RelayMessage.Event =>
+                // Never let a later event move the peer's high-water mark across this gap.
+                detach(device.id, DisconnectReason.OutboundOverflow)
+                device.outbound.doneOrClosed().discard
+                device.connection.close().catching[IOException].discard
+                logger.warn(s"Device ${device.device.value} (#${device.id.value}) closed after EVENT queue overflow")
+              case _ => () // Telemetry is replaceable. Every drop is counted, without per-frame logging.
         case _: ChannelClosed => () // the session is tearing down and will detach in a moment
 
   private def nextConnectionId(): ConnectionId =
@@ -297,12 +335,13 @@ private[device] object DeviceHubState:
   val GenericKinds: Set[NotificationKind] =
     Set(NotificationKind.Info, NotificationKind.Message, NotificationKind.Warning, NotificationKind.Alert)
 
-private final class AttachedDevice(val id: ConnectionId, request: AttachRequest, val connectedAt: Instant):
+private[device] final class AttachedDevice(val id: ConnectionId, request: AttachRequest, val connectedAt: Instant):
   val device: DeviceId = request.device
   val outbound: Channel[Outbound] = request.outbound
   val counters: LinkCounters = request.counters
   val connection: Closeable = request.connection
   val caps: Capabilities = request.caps
+  val drained: Channel[Unit] = request.drained
 
   def link: DeviceLink =
     DeviceLink(id, device, request.remoteAddress, connectedAt, request.protocolVersion, request.lastSeq.value, counters.traffic)

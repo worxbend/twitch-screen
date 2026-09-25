@@ -1,0 +1,143 @@
+package twitchscreen.relay.device
+
+import java.io.{Closeable, IOException, OutputStream}
+import java.net.{ServerSocket, Socket}
+import java.time.Clock
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
+import ox.*
+import ox.channels.Channel
+import scala.concurrent.duration.DurationInt
+import twitchscreen.relay.bus.{EventBus, RelayEvent}
+import twitchscreen.relay.config.ChatNotifications
+import twitchscreen.relay.protocol.*
+
+class DeviceBackpressureSuite extends munit.FunSuite:
+  private val clock = Clock.systemUTC()
+
+  test("reclaim storms are refused without replacing the current connection"):
+    supervised:
+      val fixed = Clock.fixed(clock.instant(), java.time.ZoneOffset.UTC)
+      val hub = DeviceHub.start(TestRelay.config, ChatNotifications.Show, fixed, EventBus(fixed, 32))
+      def attach(): Channel[Outbound] =
+        val queue = Channel.buffered[Outbound](32)
+        hub
+          .attach(
+            AttachRequest(
+              DeviceId("test").toOption.get,
+              "test",
+              3,
+              SeqNo.Zero,
+              TestDevice.FullCaps,
+              queue,
+              LinkCounters(fixed),
+              () => (),
+              Channel.buffered[Unit](1)
+            )
+          )
+          .discard
+        queue
+      (1 to 17).foreach(_ => attach().discard)
+      val current = hub.links.head.connection
+      val refused = attach().receive().message
+      assertEquals(refused, RelayMessage.Bye(ByeCode.RateLimit, ByeDetail.Zero, 60.seconds, "reclaim rate exceeded"))
+      assertEquals(hub.links.map(_.connection), List(current))
+
+  test("pending handshakes count toward the listener session limit"):
+    supervised:
+      val (_, port) = TestRelay.start(TestRelay.config.copy(handshakeTimeout = 30.seconds))
+      val peers = (1 to DeviceLinkServer.MaxConnections).map(_ => useCloseableInScope(Socket("127.0.0.1", port)))
+      assertEquals(peers.size, DeviceLinkServer.MaxConnections)
+      val refused = useCloseableInScope(Socket("127.0.0.1", port))
+      refused.setSoTimeout(5000)
+      assertEquals(refused.getInputStream.read(), -1)
+
+  test("EVENT overflow closes and removes the connection before any later event can cross the gap"):
+    supervised:
+      val bus = EventBus(clock, 32)
+      val hub = DeviceHub.start(TestRelay.config, ChatNotifications.Show, clock, bus)
+      val queue = Channel.buffered[Outbound](2)
+      val closed = AtomicBoolean(false)
+      val transport: Closeable = () => closed.set(true)
+      val counters = LinkCounters(clock)
+      hub
+        .attach(
+          AttachRequest(
+            DeviceId("test").toOption.get,
+            "test",
+            3,
+            SeqNo.Zero,
+            TestDevice.FullCaps,
+            queue,
+            counters,
+            transport,
+            Channel.buffered[Unit](1)
+          )
+        )
+        .discard
+      // The undrained greeting fills both slots deterministically.
+      hub.publish(EventRequest.of(NotificationKind.Follow, "first", "")).discard
+      assert(closed.get())
+      assertEquals(hub.links, Nil)
+      assertEquals(hub.connectedCount, 0)
+      hub.publish(EventRequest.of(NotificationKind.Follow, "later", "")).discard
+      assertEquals(counters.traffic.framesDropped, 1L)
+      assertEquals(queue.receive().message.messageType, MessageType.Welcome)
+      assertEquals(queue.receive().message.messageType, MessageType.Stats)
+      assert(queue.receiveOrClosed().isInstanceOf[ox.channels.ChannelClosed])
+
+  test("operator disconnect retains its reason on the event bus"):
+    supervised:
+      val bus = EventBus(clock, 32)
+      val messages = bus.subscribe("test")
+      val hub = DeviceHub.start(TestRelay.config, ChatNotifications.Show, clock, bus)
+      val id = hub.attach(
+        AttachRequest(
+          DeviceId("test").toOption.get,
+          "test",
+          3,
+          SeqNo.Zero,
+          TestDevice.FullCaps,
+          Channel.buffered[Outbound](32),
+          LinkCounters(clock),
+          () => (),
+          Channel.buffered[Unit](1)
+        )
+      )
+      messages.receive().discard
+      hub.disconnect(id).discard
+      assertEquals(
+        messages.receive().event,
+        RelayEvent.DeviceDisconnected(DeviceId("test").toOption.get, id, DisconnectReason.RequestedByOperator.describe)
+      )
+
+  test("a stalled socket write cannot prevent the independent deadline closing the session"):
+    supervised:
+      val entered = CountDownLatch(1)
+      val released = CountDownLatch(1)
+      class StalledSocket extends Socket:
+        override def getOutputStream: OutputStream = new OutputStream:
+          override def write(value: Int): Unit =
+            entered.countDown()
+            released.await()
+            throw IOException("socket closed")
+        override def close(): Unit =
+          released.countDown()
+          super.close()
+      class Listener extends ServerSocket(0):
+        def stalled(): StalledSocket =
+          val socket = StalledSocket()
+          implAccept(socket)
+          socket
+      val listener = useCloseableInScope(Listener())
+      val hub = DeviceHub.start(TestRelay.config, ChatNotifications.Show, clock, EventBus(clock, 32))
+      val server = fork:
+        val socket = listener.stalled()
+        DeviceSession.run(socket, TestRelay.config.copy(idleTimeout = 2.seconds, pingInterval = 1.second), hub, clock)
+      val device = useCloseableInScope(TestDevice(listener.getLocalPort))
+      device.hello("stalled", 0L)
+      assert(entered.await(3, java.util.concurrent.TimeUnit.SECONDS))
+      device.send(DeviceMessage.Ping(Token.fromWire(9)))
+      assert(timeoutOption(5.seconds)(server.join()).isDefined)
+      // A snapshot ask is ordered after the session's detach tell.
+      assertEquals(hub.snapshot.connectedDevices, 0)
