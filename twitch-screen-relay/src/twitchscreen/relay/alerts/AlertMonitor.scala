@@ -3,7 +3,6 @@ package twitchscreen.relay.alerts
 import java.time.{Clock, Instant}
 import org.slf4j.LoggerFactory
 import ox.*
-import ox.flow.Flow
 import twitchscreen.relay.bus.{BusEvent, EventBus}
 import twitchscreen.relay.config.AlertsConfig
 import twitchscreen.relay.device.DeviceHub
@@ -25,17 +24,10 @@ private[relay] object AlertMonitor:
   def start(config: AlertsConfig, rules: List[AlertRule], bus: EventBus, hub: DeviceHub, clock: Clock)(using Ox): AlertStore =
     val store = AlertStore(config.bufferSize)
     if rules.isEmpty then logger.info("No alert rules are enabled")
-    else logger.info(s"Evaluating ${rules.size} alert rules every ${config.evaluationInterval}: ${rules.map(_.name).mkString(", ")}")
-
-    val events = bus.subscribe("alerts")
-    val startedAt = clock.instant()
-    forkDiscard:
-      Flow
-        .fromSource(events)
-        .map(MonitorInput.Observed(_))
-        .merge(Flow.tick[MonitorInput](config.evaluationInterval, MonitorInput.Evaluate))
-        .mapStateful(MonitorState.initial(startedAt))(step(config, rules, store, hub, clock))
-        .runDrain()
+    else
+      logger.info(s"Evaluating ${rules.size} alert rules every ${config.evaluationInterval}: ${rules.map(_.name).mkString(", ")}")
+      bus.foldTimed("alerts", MonitorState.initial(clock.instant()), config.evaluationInterval): (state, event) =>
+        step(config, rules, store, hub, clock)(state, event.fold[MonitorInput](MonitorInput.Evaluate)(MonitorInput.Observed.apply))._1
     store
 
   private def step(config: AlertsConfig, rules: List[AlertRule], store: AlertStore, hub: DeviceHub, clock: Clock)(
@@ -46,12 +38,12 @@ private[relay] object AlertMonitor:
       case MonitorInput.Observed(message) => (state.apply(message), ())
       case MonitorInput.Evaluate =>
         val now = clock.instant()
-        val current = state.withDevices(hub.snapshot.connectedDevices, now).pruneFailures(now, config.errorRateWindow)
+        val current = state.withDevices(hub.connectedCount, now).pruneFailures(now, config.errorRateWindow)
         rules.foreach(evaluate(_, current, store, now))
         (current, ())
 
   private def evaluate(rule: AlertRule, state: MonitorState, store: AlertStore, now: Instant): Unit =
-    state.check(rule, now) match
+    rule.check(state, now) match
       case Some(message) =>
         store.raise(rule, message, now).foreach(alert => logger.warn(s"ALERT ${alert.severity} ${alert.rule}: $message"))
       case None =>

@@ -11,34 +11,34 @@ class MonitorStateSuite extends munit.FunSuite:
   private val initial = MonitorState.initial(start)
 
   test("a Twitch link that has only just gone missing does not trip a one-minute rule"):
-    assertEquals(initial.check(AlertRule.TwitchDisconnected(1.minute), at(30)), None)
+    assertEquals(AlertRule.TwitchDisconnected(1.minute).check(initial, at(30)), None)
 
   test("a Twitch link missing for longer than the rule allows trips it"):
-    assert(initial.check(AlertRule.TwitchDisconnected(1.minute), at(120)).isDefined)
+    assert(AlertRule.TwitchDisconnected(1.minute).check(initial, at(120)).isDefined)
 
   test("a Twitch link that came up clears the rule"):
     val up = initial.apply(BusEvent(at(10), RelayEvent.TwitchLinkUp("connected")))
-    assertEquals(up.check(AlertRule.TwitchDisconnected(1.minute), at(600)), None)
+    assertEquals(AlertRule.TwitchDisconnected(1.minute).check(up, at(600)), None)
 
   test("a device that connects clears the no-devices rule"):
     val connected = initial.withDevices(connected = 1, at(10))
-    assertEquals(connected.check(AlertRule.NoDevicesConnected(1.minute), at(600)), None)
+    assertEquals(AlertRule.NoDevicesConnected(1.minute).check(connected, at(600)), None)
 
   test("no device for longer than the rule allows trips it"):
     val empty = initial.withDevices(connected = 0, at(10))
-    assert(empty.check(AlertRule.NoDevicesConnected(1.minute), at(600)).isDefined)
+    assert(AlertRule.NoDevicesConnected(1.minute).check(empty, at(600)).isDefined)
 
   test("failures below the threshold do not trip the rate rule"):
     val failing = (1 to 3).foldLeft(initial)((state, i) => state.apply(BusEvent(at(i.toLong), RelayEvent.RelayFailure("twitch", "boom"))))
-    assertEquals(failing.check(AlertRule.FailureRate(10, 5.minutes), at(60)), None)
+    assertEquals(AlertRule.FailureRate(10, 5.minutes).check(failing, at(60)), None)
 
   test("failures at the threshold trip the rate rule"):
     val failing = (1 to 10).foldLeft(initial)((state, i) => state.apply(BusEvent(at(i.toLong), RelayEvent.RelayFailure("twitch", "boom"))))
-    assert(failing.check(AlertRule.FailureRate(10, 5.minutes), at(60)).isDefined)
+    assert(AlertRule.FailureRate(10, 5.minutes).check(failing, at(60)).isDefined)
 
   test("failures older than the window stop counting"):
     val failing = (1 to 10).foldLeft(initial)((state, i) => state.apply(BusEvent(at(i.toLong), RelayEvent.RelayFailure("twitch", "boom"))))
-    assertEquals(failing.check(AlertRule.FailureRate(10, 5.minutes), at(3600)), None)
+    assertEquals(AlertRule.FailureRate(10, 5.minutes).check(failing, at(3600)), None)
 
 class AlertRuleSuite extends munit.FunSuite:
   private val config = AlertsConfig(
@@ -68,6 +68,8 @@ class AlertStoreSuite extends munit.FunSuite:
     val store = AlertStore(10)
     store.raise(rule, "no device", at).discard
     assertEquals(store.raise(rule, "still no device", at.plusSeconds(15)), None)
+    assertEquals(store.recent(1, None, activeOnly = false).head.message, "still no device")
+    assertEquals(store.recent(1, None, activeOnly = false).head.raisedAt, at)
 
   test("a resolved rule can raise again when it breaks a second time"):
     val store = AlertStore(10)

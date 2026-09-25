@@ -41,19 +41,6 @@ private[alerts] final case class MonitorState(twitch: Presence, stream: Presence
     val cutoff = now.minusSeconds(window.toSeconds)
     copy(failuresAt = failuresAt.dropWhile(_.isBefore(cutoff)))
 
-  /** The message to raise for this rule, or `None` while the rule is satisfied. */
-  def check(rule: AlertRule, now: Instant): Option[String] = rule match
-    case AlertRule.NoDevicesConnected(after) =>
-      devices.absentFor(now).filter(_ >= after).map(elapsed => s"no device connected for ${elapsed.toSeconds}s")
-    case AlertRule.TwitchDisconnected(after) =>
-      twitch.absentFor(now).filter(_ >= after).map(elapsed => s"Twitch link down for ${elapsed.toSeconds}s")
-    case AlertRule.StreamOffline(after) =>
-      stream.absentFor(now).filter(_ >= after).map(elapsed => s"channel offline for ${elapsed.toSeconds}s")
-    case AlertRule.FailureRate(threshold, window) =>
-      val cutoff = now.minusSeconds(window.toSeconds)
-      val recent = failuresAt.count(!_.isBefore(cutoff))
-      Option.when(recent >= threshold)(s"$recent relay failures within $window")
-
 private[alerts] object MonitorState:
   /** Everything starts absent: the relay has genuinely not seen a device or a Twitch frame when it boots. */
   def initial(startedAt: Instant): MonitorState =

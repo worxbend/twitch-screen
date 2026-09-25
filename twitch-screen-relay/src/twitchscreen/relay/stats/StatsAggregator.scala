@@ -3,7 +3,7 @@ package twitchscreen.relay.stats
 import java.time.Clock
 import org.slf4j.LoggerFactory
 import ox.*
-import ox.flow.Flow
+import scala.util.control.NonFatal
 import twitchscreen.relay.bus.{BusEvent, EventBus, RelayEvent}
 import twitchscreen.relay.config.StatsConfig
 import twitchscreen.relay.device.{DeviceHub, NotificationRouter}
@@ -24,28 +24,23 @@ private[relay] object StatsAggregator:
 
   /** Starts folding and broadcasting. Stops when the enclosing scope ends. */
   def start(config: StatsConfig, bus: EventBus, hub: DeviceHub, clock: Clock)(using Ox): Unit =
-    val events = bus.subscribe("stats")
     logger.info(s"Broadcasting stream stats every ${config.broadcastInterval}, chat rate over ${config.chatRateWindow}")
-    forkDiscard:
-      Flow
-        .fromSource(events)
-        .map(StatsInput.Observed(_))
-        .merge(Flow.tick[StatsInput](config.broadcastInterval, StatsInput.Publish))
-        .mapStateful(StatsState.Initial): (state, input) =>
-          val (next, stats) = step(config, clock)(state, input)
-          val card = input match
-            case StatsInput.Observed(message) if transitions(message.event) => NotificationRouter.toRequest(message.event)
-            case _                                                          => None
-          (next, stats.map(figures => (figures, card)))
-        .collect { case Some(output) => output }
-        .runForeach:
-          case (stats, Some(card)) =>
-            hub.publishTransition(card, stats) match
-              case Right(_) => ()
-              // §10.1 exhaustion: the card is refused (and reported once, by the hub), but §6.5's STATS must still land and this
-              // fork must keep running, or one spent sequence space would end the relay's supervised scope.
-              case Left(_) => hub.broadcastStats(stats)
-          case (stats, None) => hub.broadcastStats(stats)
+    bus.foldTimed("stats", StatsState.Initial, config.broadcastInterval): (state, event) =>
+      val input = event.fold[StatsInput](StatsInput.Publish)(StatsInput.Observed.apply)
+      val (next, stats) = step(config, clock)(state, input)
+      try
+        stats.foreach: figures =>
+          val card = event.filter(message => transitions(message.event)).flatMap(message => NotificationRouter.toRequest(message.event))
+          card match
+            case Some(notification) =>
+              hub.publishTransition(notification, figures) match
+                case Right(_) => ()
+                // §10.1 exhaustion: the card is refused (and reported once, by the hub), but §6.5's STATS must still land and this
+                // fork must keep running, or one spent sequence space would end the relay's supervised scope.
+                case Left(_) => hub.broadcastStats(figures)
+            case None => hub.broadcastStats(figures)
+      catch case NonFatal(error) => logger.error("Stats publication failed; aggregation will continue", error)
+      next
 
   /** Folding an event produces no output; a tick produces the frame every device then receives.
     *

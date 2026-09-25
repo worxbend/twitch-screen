@@ -5,13 +5,15 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 import org.slf4j.LoggerFactory
 import ox.*
 import ox.channels.{Channel, ChannelClosed, Source}
+import ox.flow.Flow
 import sttp.tapir.Schema
 import scala.util.control.NonFatal
+import scala.concurrent.duration.FiniteDuration
 
 /** A [[RelayEvent]] together with the moment the bus accepted it. */
 private[relay] final case class BusEvent(at: Instant, event: RelayEvent)
 
-/** What one subscriber has seen. Exposed by the status endpoint so a lagging consumer is visible before it matters. */
+/** `delivered` counts events accepted by the queue, not handler completion. Drops count rejected offers. */
 final case class SubscriberStats(name: String, delivered: Long, dropped: Long) derives Schema
 
 /** Fan-out of [[RelayEvent]]s to independent subscribers.
@@ -50,24 +52,52 @@ private[relay] final class EventBus(clock: Clock, queueCapacity: Int):
 
   def subscriberStats: List[SubscriberStats] = subscriptions.get().map(_.stats).toList
 
+  /** A serialized event/timer fold. A recoverable bad step retains the prior state and the worker continues. */
+  def foldTimed[S](name: String, initial: S, interval: FiniteDuration)(step: (S, Option[BusEvent]) => S)(using Ox): Unit =
+    val events = subscribe(name)
+    forkDiscard:
+      Flow
+        .fromSource(events)
+        .map(message => Option(message))
+        .merge(Flow.tick[Option[BusEvent]](interval, None))
+        .mapStateful(initial): (state, input) =>
+          val next =
+            try step(state, input)
+            catch
+              case NonFatal(error) =>
+                logger.error(s"Subscriber '$name' failed a fold step", error)
+                state
+          (next, ())
+        .runDrain()
+
   private def register(name: String)(using ResourceScope): Subscription =
     useInScope(Subscription(name, Channel.buffered[BusEvent](queueCapacity)).tap(add)): subscription =>
       remove(subscription)
       subscription.channel.doneOrClosed().discard
 
-  private def add(subscription: Subscription): Unit = subscriptions.updateAndGet(_ :+ subscription).discard
+  private def add(subscription: Subscription): Unit =
+    subscriptions
+      .updateAndGet: current =>
+        require(!current.exists(_.name == subscription.name), s"Duplicate bus subscriber: ${subscription.name}")
+        current :+ subscription
+      .discard
 
   private def remove(subscription: Subscription): Unit =
     subscriptions.updateAndGet(_.filterNot(_ eq subscription)).discard
 
 private final class Subscription(val name: String, val channel: Channel[BusEvent]):
+  private val logger = LoggerFactory.getLogger(getClass)
   private val deliveredCount = AtomicLong(0)
   private val droppedCount = AtomicLong(0)
 
   /** Never blocks: a full queue costs this subscriber an event, not the publisher its thread. */
   def offer(message: BusEvent): Unit =
     channel.trySendOrClosed(message) match
-      case accepted: Boolean => (if accepted then deliveredCount else droppedCount).incrementAndGet().discard
-      case _: ChannelClosed  => () // the subscriber's scope is ending; its remaining events are of no interest
+      case true => deliveredCount.incrementAndGet().discard
+      case false =>
+        val dropped = droppedCount.incrementAndGet()
+        // Log at powers of two: overload stays visible without turning it into a log storm.
+        if (dropped & (dropped - 1)) == 0 then logger.warn(s"Subscriber '$name' queue overflow: $dropped events dropped")
+      case _: ChannelClosed => () // the subscriber's scope is ending; its remaining events are of no interest
 
   def stats: SubscriberStats = SubscriberStats(name, deliveredCount.get(), droppedCount.get())

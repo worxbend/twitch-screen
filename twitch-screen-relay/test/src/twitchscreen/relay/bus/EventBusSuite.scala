@@ -2,6 +2,7 @@ package twitchscreen.relay.bus
 
 import java.time.{Clock, Instant, ZoneOffset}
 import ox.supervised
+import scala.concurrent.duration.DurationInt
 
 class EventBusSuite extends munit.FunSuite:
   private val clock = Clock.fixed(Instant.ofEpochSecond(1790309000L), ZoneOffset.UTC)
@@ -33,6 +34,33 @@ class EventBusSuite extends munit.FunSuite:
   test("publishing with no subscribers is not an error"):
     supervised:
       EventBus(clock, queueCapacity = 2).publish(RelayEvent.Followed("nobody is listening"))
+
+  test("duplicate subscription names are rejected without replacing the active consumer"):
+    supervised:
+      val bus = EventBus(clock, 2)
+      val first = bus.subscribe("only")
+      intercept[IllegalArgumentException](bus.subscribe("only")).discard
+      bus.publish(RelayEvent.Followed("still registered"))
+      assertEquals(first.receive().event, RelayEvent.Followed("still registered"))
+      assertEquals(bus.subscriberStats.size, 1)
+
+  test("a failed fold step retains state and the next event is processed"):
+    supervised:
+      val bus = EventBus(clock, 4)
+      val observed = ox.channels.Channel.buffered[Int](2)
+      bus.foldTimed("recoverable", 0, 1.hour): (state, input) =>
+        input match
+          case Some(BusEvent(_, RelayEvent.Followed("bad"))) => throw IllegalStateException("synthetic failure")
+          case Some(_) =>
+            observed.send(state + 1)
+            state + 1
+          case None => state
+      bus.publish(RelayEvent.Followed("first"))
+      bus.publish(RelayEvent.Followed("bad"))
+      bus.publish(RelayEvent.Followed("last"))
+      ox.timeout(3.seconds):
+        assertEquals(observed.receive(), 1)
+        assertEquals(observed.receive(), 2)
 
   test("a device event is categorised as a device event"):
     val device = twitchscreen.relay.protocol.DeviceId("device").toOption.get
