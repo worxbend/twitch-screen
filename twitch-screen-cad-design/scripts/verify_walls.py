@@ -1,6 +1,5 @@
 """Sample exact cavity/outer surface separation; this is not a print strength test."""
 import json
-import FreeCAD as App
 import Part
 from pod_document import ROOT, DEFAULTS, geometry
 
@@ -18,6 +17,8 @@ def main():
                     continue
                 gap = Part.Vertex(point).distToShape(inner_faces)[0]
                 samples.append((gap,list(point)))
+    if not samples:
+        raise RuntimeError('Wall validation produced no samples above Z=6; check the body surfaces and sampling domain.')
     minimum = min(samples)
     report = {'samples':len(samples),'minimum_sampled_separation_mm':minimum[0],
               'minimum_location_mm':minimum[1],

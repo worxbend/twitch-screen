@@ -3,6 +3,9 @@ import FreeCAD as App
 import Part
 
 V = App.Vector
+BASE_VENT_Y = (-8, -3, 2, 7, 12, 17)
+BASE_HARDWARE = ('esp32_pcb', 'esp32_shield', 'esp32_headers', 'buttons', 'usb_socket', 'rubber_feet')
+LCD_HARDWARE = ('lcd_pcb', 'lcd_glass', 'lcd_connector', 'lcd_brass_mounts')
 
 
 def box(x, y, z, px, py, pz):
@@ -55,11 +58,37 @@ def circle_wire(r, z, p):
     return at_face(w, p)
 
 
+def cavity_profile(p, inset, clearance=0):
+    """Bottom ellipse radii and centre; taper applies to wall inset only.
+
+    Clearance shrinks both radii equally without moving the centre, as needed
+    by the base locating lip.
+    """
+    return (p['BodyHalfWidth']-inset-clearance,
+            p['BodyHalfDepth']-1.75*inset-clearance,
+            p['BodyCenterY']+.75*inset)
+
+
+def shell_vents(p):
+    """Vent cutting solids in construction order (rear, then sides)."""
+    vents = [rear_slot(20,2.2,p['BodyCenterY']+p['BodyHalfDepth']-25,z,30)
+             for z in (34,39,44)]
+    vents += [Part.makeCylinder(1.5,15,V(sign*(p['BodyHalfWidth']+1),y,z),V(-sign,0,0))
+              for sign in (-1,1) for y in (-2,3,8) for z in (8,13,18)]
+    return vents
+
+
+def base_vent(p, y):
+    slot = box(18,2.2,p['BaseThickness']+2,-9,y-1.1,-1)
+    for x in (-9,9):
+        slot = slot.fuse(cylinder(1.1,p['BaseThickness']+2,x,y,-1))
+    return slot
+
+
 def pod_loft(p, inset=0, top=-0.0):
     # A radial shrink alone crosses the steep front wall. Move the cavity
     # profile inward in Y and behind the face as well as shrinking its radius.
-    rx, ry = p['BodyHalfWidth']-inset, p['BodyHalfDepth']-1.75*inset
-    cy = p['BodyCenterY']+.75*inset
+    rx, ry, cy = cavity_profile(p, inset)
     neck = -10-1.6*inset
     wires = [ellipse(rx, ry, cy, p['BaseThickness']),
              ellipse(rx, ry, cy, 13),
@@ -90,8 +119,8 @@ def core(p):
     outer = pod_loft(p)
     inner = pod_loft(p, p['Wall'], -p['LcdRecess'])
     # Extend the open bottom through the shell origin, independent of loft caps.
-    inner = inner.fuse(Part.Face(ellipse(p['BodyHalfWidth']-p['Wall'],
-        p['BodyHalfDepth']-1.75*p['Wall'], p['BodyCenterY']+.75*p['Wall'], 0)).extrude(V(0,0,p['BaseThickness']+.01)))
+    inner = inner.fuse(Part.Face(ellipse(*cavity_profile(p, p['Wall']), 0))
+                       .extrude(V(0,0,p['BaseThickness']+.01)))
     shell = outer.cut(inner)
     opening = at_face(cylinder(p['DisplayOpening']/2, 12, z=-8), p)
     shell = shell.cut(opening)
@@ -102,24 +131,16 @@ def core(p):
     shell = shell.cut(port)
     # Vent pattern comes from the supplied appearance references, not their
     # unverified dimensions. All cuts stop at the local side/rear cavity.
-    for height in (34,39,44):
-        shell = shell.cut(rear_slot(20,2.2,p['BodyCenterY']+p['BodyHalfDepth']-25,height,30))
-    for sign in (-1,1):
-        for y in (-2,3,8):
-            for z in (8,13,18):
-                vent = Part.makeCylinder(1.5,15,V(sign*(p['BodyHalfWidth']+1),y,z),V(-sign,0,0))
-                shell = shell.cut(vent)
+    for vent in shell_vents(p):
+        shell = shell.cut(vent)
     # Raised fine rim surrounds a separate matte black face insert. A 0.15 mm
     # adhesive film seats the insert without thinning the structural bezel.
     rim = cylinder(p['FaceRadius'],1.05,z=-.1).cut(cylinder(p['FaceRadius']-1.15,1.3,z=-.2))
     shell = shell.fuse(at_face(rim,p))
     base = Part.Face(ellipse(p['BodyHalfWidth'], p['BodyHalfDepth'],
                             p['BodyCenterY'], 0)).extrude(V(0,0,p['BaseThickness']-0.2))
-    for y in (-8,-3,2,7,12,17):
-        slot = box(18,2.2,p['BaseThickness']+2,-9,y-1.1,-1)
-        for x in (-9,9):
-            slot = slot.fuse(cylinder(1.1,p['BaseThickness']+2,x,y,-1))
-        base = base.cut(slot)
+    for y in BASE_VENT_Y:
+        base = base.cut(base_vent(p, y))
     return {'shell': shell, 'base': base}, {'outer': outer, 'inner': inner, 'usb_keepout': port}
 
 
@@ -211,8 +232,7 @@ def build(p):
         base = base.cut(cylinder(1.4,t+2,x,y,-1))
         base = base.cut(cylinder(2.6,1.4,x,y,-.1))
     # Continuous locating lip with 0.3 mm radial clearance; relief at screw webs.
-    rx, ry = p['BodyHalfWidth']-p['Wall']-p['FitClearance'], p['BodyHalfDepth']-1.75*p['Wall']-p['FitClearance']
-    cy = p['BodyCenterY']+.75*p['Wall']
+    rx, ry, cy = cavity_profile(p, p['Wall'], p['FitClearance'])
     lip = Part.Face(ellipse(rx,ry,cy,t-.3)).extrude(V(0,0,2.8))
     lip = lip.cut(Part.Face(ellipse(rx-1.4,ry-1.4,cy,t-.4)).extrude(V(0,0,3)))
     for x,y in screw_centres(p):

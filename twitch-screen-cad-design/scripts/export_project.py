@@ -1,9 +1,7 @@
 """Run inside FreeCADCmd. Exact solids and real meshes, never renamed formats."""
 import json
-import math
 import zipfile
 import xml.etree.ElementTree as ET
-from pathlib import Path
 import FreeCAD as App
 import Part
 import Mesh

@@ -2,9 +2,13 @@
 import json
 import math
 import os
+import sys
 from pathlib import Path
 import bpy
 from mathutils import Vector
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from render_settings import PREVIEW_SIZE
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT/'output'
@@ -15,8 +19,7 @@ bpy.ops.object.delete(use_global=False)
 scene.render.engine = 'CYCLES'
 scene.cycles.samples = 48
 scene.cycles.use_denoising = True
-scene.render.resolution_x = 1400
-scene.render.resolution_y = 1200
+scene.render.resolution_x, scene.render.resolution_y = PREVIEW_SIZE
 scene.render.resolution_percentage = 100
 scene.world.color = (.25,.25,.25)
 scene.view_settings.view_transform = 'AgX'

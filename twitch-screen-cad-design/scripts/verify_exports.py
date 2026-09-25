@@ -1,5 +1,4 @@
 """Independent mesh/package audit. Run with uv run --with trimesh --with numpy."""
-import hashlib
 import json
 import zipfile
 import xml.etree.ElementTree as ET

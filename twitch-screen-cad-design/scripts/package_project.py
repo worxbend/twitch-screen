@@ -1,10 +1,10 @@
 """Build a local gallery, checksummed manifest and complete portable delivery ZIP."""
 import hashlib
-import html
 import json
 import struct
 import zipfile
 from pathlib import Path
+from render_settings import PREVIEW_SIZE
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT/'output'
@@ -17,7 +17,7 @@ def main():
         path = OUT/'preview'/f'{stem}.png'
         data = path.read_bytes()
         assert data[:8] == b'\x89PNG\r\n\x1a\n' and len(data)>10000
-        assert struct.unpack('>II',data[16:24]) == (1400,1200)
+        assert struct.unpack('>II',data[16:24]) == PREVIEW_SIZE
     for stem in ('geometry','mesh','assembly','wall'):
         json.loads((OUT/'reports'/f'{stem}_validation.json').read_text())
     rows = []

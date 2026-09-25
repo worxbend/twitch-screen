@@ -79,9 +79,9 @@ Uses the installed FreeCAD 1.1.3 Flatpak and Blender 5.2. No third-party FreeCAD
 workbench is required. From this directory:
 
 ```sh
-flatpak run --command=FreeCADCmd org.freecad.FreeCAD -c 'import sys; sys.path.insert(0,"scripts"); import export_project; export_project.main()'
+flatpak run --env=QT_QPA_PLATFORM=offscreen --command=FreeCADCmd org.freecad.FreeCAD -c 'import sys; sys.path.insert(0,"scripts"); import export_project; export_project.main()'
 uv run --with trimesh --with numpy --with networkx python scripts/verify_exports.py
-flatpak run --command=FreeCADCmd org.freecad.FreeCAD -c 'import sys; sys.path.insert(0,"scripts"); import verify_assembly, verify_walls; verify_assembly.main(); verify_walls.main()'
+flatpak run --env=QT_QPA_PLATFORM=offscreen --command=FreeCADCmd org.freecad.FreeCAD -c 'import sys; sys.path.insert(0,"scripts"); import verify_assembly, verify_walls; verify_assembly.main(); verify_walls.main()'
 blender -b --threads 8 --python scripts/render_previews.py
 python scripts/package_project.py
 ```
@@ -97,7 +97,8 @@ interference, rear-port position, mesh-volume comparison and STEP/FCStd reopen
 checks. `mesh_validation.json` independently checks the written STL/3MF meshes
 for closed surfaces, orientation, connectedness, dimensions and print placement.
 `assembly_validation.json` covers screw-head envelopes, component insertion and
-base extraction at sampled positions, editable-parameter recompute, and reopening
+base extraction at 1 mm sampled positions (not continuous swept-volume proof),
+editable-parameter recompute, and reopening
 all native files. `wall_validation.json` records 695 exact surface-distance
 samples; the minimum is the intended 1.5 mm bezel seat. These checks establish
 nominal CAD validity, not physical fit or a tested print.
