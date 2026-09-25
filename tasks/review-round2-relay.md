@@ -369,3 +369,40 @@ Validation (run from twitch-screen-relay):
 - `./mill --no-daemon test` → 31 suites, 359 tests (was 30/355), 0 failed. The LifecycleOrderingSuite flake did not appear.
 
 Residuals: there is no live-Twitch acceptance for this change, and the end-to-end twitch4j `EventManager` test (B4) was not written.
+
+## RLY-41 — OTel SDK/instrumentation alignment and linkage test
+
+Change:
+- `build.mill`: `otelInstrumentation` goes from 2.9.0-alpha to 2.31.1-alpha, the latest release. `bomMvnDeps` now imports `opentelemetry-bom` 1.66.0 and `opentelemetry-bom-alpha` 1.66.0-alpha before `opentelemetry-instrumentation-bom-alpha` 2.31.1-alpha, so the SDK pin wins over the instrumentation BOM's 1.65.0 target. `opentelemetry-runtime-telemetry-java17` is replaced by `opentelemetry-runtime-telemetry` (upstream rename). The test module adds `opentelemetry-sdk-testing` 1.66.0.
+- `Otel.scala`: `RuntimeMetrics` (java17 package) becomes `io.opentelemetry.instrumentation.runtimetelemetry.RuntimeTelemetry`. The two linkage calls moved into `private[relay] def instrument(otel)(using ResourceScope)`, and `initialize()` calls `.tap(instrument)` right after registering the SDK closeable. Startup order and the "OpenTelemetry initialised" log line are unchanged.
+
+Tests: the new `OtelLinkageSuite` (2 tests) builds an SDK with `InMemoryMetricReader` and a `SimpleLogRecordProcessor(InMemoryLogRecordExporter)`, then runs `Otel.instrument` inside `supervised`:
+- "runtime telemetry exports JVM metrics through SDK 1.66": `collectAllMetrics()` contains a `jvm.*` metric. The failure message lists the collected names.
+- "logback appender exports relay log records": a UUID marker logged at INFO under `twitchscreen.relay` is among the exported log bodies (`getBodyValue`). It goes through the OTEL appender in `resources/logback.xml`.
+- Cleanup, in `finally`: `OpenTelemetryAppender.install(OpenTelemetry.noop())`, then `sdk.close()`. This way the global appender never points at a closed SDK.
+
+Red to green: with only the test dependency added, `test.compile` failed because `Otel.instrument` did not exist. After the migration, 2/2 pass, and 3 consecutive runs were stable.
+
+Mutation checks (the file was restored from a backup each time and `sha256sum -c` reported OK):
+- (a) `RuntimeTelemetry.create` was replaced by a no-op that still references the scope. Test 1 fails with "no jvm.* metric among collected metrics: " (empty list).
+- (b) `OpenTelemetryAppender.install` was replaced by a no-op. Test 2 fails with "marker ... not among exported log records: " (empty list).
+
+Validation (run from twitch-screen-relay):
+- `./mill --no-daemon show resolvedRunMvnDeps | grep -o 'io/opentelemetry/[^"]*\.jar' | sed 's#.*/##' | sort -u` gives 21 jars, each at one version:
+  - api/context/common/sdk*/exporter*/autoconfigure*: 1.66.0
+  - api-incubator: 1.66.0-alpha
+  - instrumentation-api: 2.31.1
+  - instrumentation-api-incubator, runtime-telemetry and logback-appender-1.0: 2.31.1-alpha
+  - semconv: 1.43.0
+  - `| grep -E '2\.9\.0|1\.65\.0|java(8|17)'` prints nothing.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.observability.OtelLinkageSuite` → 2/2, 0 failed (×3).
+- `./mill --no-daemon test.testOnly ...OtelLinkageSuite ...DiagnosticsSuite ...StartupOrderSuite` → 2 + 5 + 1, 0 failed.
+- `./mill --no-daemon compile` (`-Werror`) → SUCCESS.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` → SUCCESS; `git diff --check` clean.
+- `./mill --no-daemon test` → 32 suites, 361 tests (was 31/359), 0 failed. The LifecycleOrderingSuite flake did not appear.
+- Real startup: `RELAY_TWITCH_MODE=simulated` with a random API token, alternate ports, and no `OTEL_*` exporters set, via `timeout 40 ./mill --no-daemon run`. It logged "OpenTelemetry initialised; exporters stay off until OTEL_*_EXPORTER is set", then device link listening and Tapir Netty server started, with no errors or `NoClassDefFoundError`.
+- From the repo root: `python3 -m unittest discover -s tools/tests -v` → 7 tests OK. `python3 tools/audit_relay_dependencies.py --output <scratch>/relay-dependency-audit.json` → "Scanned 181 runtime coordinates: 2 advisories, 0 unexcepted". The two remaining advisories are the unchanged commons-configuration 1.10 and commons-lang 2.6 exceptions (expiry 2026-10-25).
+
+Residuals:
+- No instrumentation release targets SDK 1.66 yet: the 2.31.1 BOM targets 1.65.0, so the SDK BOM override is deliberate and covered by OtelLinkageSuite. Re-check when 2.32 ships.
+- The Hystrix/Archaius legacy exceptions are still tracked in `tasks/review-dependencies.md` and were not changed here.

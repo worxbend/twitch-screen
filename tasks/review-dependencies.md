@@ -26,8 +26,32 @@ not claims that each vulnerable feature is enabled in this relay.
   dependency matches without changing that application codec.
 
 The upgrades were split into separate commits and API regressions run after
-both. Other dependency versions were retained. The OpenTelemetry instrumentation
-comment no longer claims an unverified latest release.
+both. Other dependency versions were retained.
+
+## OpenTelemetry SDK/instrumentation alignment
+
+Before this change, the SDK was 1.66.0 but the instrumentation stayed on
+2.9.0-alpha. That put instrumentation-api 2.9.0 and runtime-telemetry-java8/java17
+on a classpath built for a much newer SDK, and no test exercised that linkage.
+
+- `bomMvnDeps` imports `opentelemetry-bom` 1.66.0 and `opentelemetry-bom-alpha`
+  1.66.0-alpha before `opentelemetry-instrumentation-bom-alpha` 2.31.1-alpha.
+  2.31.1-alpha is the latest instrumentation release on Maven Central (checked
+  2026-09-25). Its BOM targets SDK 1.65.0, so no instrumentation release targets
+  1.66 yet. The SDK BOM is imported first on purpose so it wins.
+- `opentelemetry-runtime-telemetry-java17` was renamed upstream to
+  `opentelemetry-runtime-telemetry`, and `RuntimeMetrics` is now
+  `io.opentelemetry.instrumentation.runtimetelemetry.RuntimeTelemetry`.
+  The java8/java17 artifacts are gone from the runtime classpath.
+- Resolved runtime OTel jars: 21, each at a single version. Core api, context,
+  common, sdk\*, exporter\* and autoconfigure\* are 1.66.0; api-incubator is
+  1.66.0-alpha. instrumentation-api is 2.31.1; instrumentation-api-incubator,
+  runtime-telemetry and logback-appender-1.0 are 2.31.1-alpha. semconv is 1.43.0,
+  which matches instrumentation-api 2.31.1. No 2.9.0 or 1.65.0 jar remains.
+- The linkage is tested by `OtelLinkageSuite`. It runs the same `Otel.instrument`
+  code as startup against an SDK with an in-memory metric reader and log
+  exporter. It asserts that a `jvm.*` metric and a relay log record are
+  exported, and it fails if either linkage call is removed.
 
 ## Temporary legacy exceptions
 
@@ -102,7 +126,10 @@ malformed/incomplete responses, per-query pagination, repeated/page-limit
 protection, bounded batches, and exact/expired/stale exception behavior.
 A live scan of the patched resolved runtime queried **182 coordinates** and
 returned **two advisories, both explicitly excepted**, with no unexcepted
-matches. The pre-Jawn-upgrade live scan correctly failed on both Jawn advisories.
+matches. After the OTel alignment (RLY-41), a fresh live scan queried **181
+coordinates** (the java8/java17 runtime-telemetry pair was replaced by the single
+`opentelemetry-runtime-telemetry`) and again returned **2 advisories, both
+excepted, 0 unexcepted**. The 7 offline tests still pass. The pre-Jawn-upgrade live scan correctly failed on both Jawn advisories.
 All 19 API regressions pass after each independent dependency update. Root owns
 combined warnings-as-errors, full relay suite and real HTTP/container smoke on
 the integrated security/runtime sources; those results are recorded separately.
