@@ -244,3 +244,42 @@ Test only. No production source changed (`git diff src/` is empty).
 - `./mill --no-daemon test`: PASS (SUCCESS), 43 suites / 468 tests, 0 failed.
 - `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: the first run found 1 misformatted file (the new suite's scaladoc wrap). After `./mill --no-daemon mill.scalalib.scalafmt/`, it PASSED. Only the comment wrap changed, and no assertion line numbers moved.
 - `git diff --check`: PASS. `git status` lists only the new suite and this record.
+
+## refactor(relay): move offer, overflow and drain-then-close behavior onto AttachedDevice
+
+Findings: **K-081** (Low) AttachedDevice Data Class + Feature Envy (`DeviceHub.scala:343-352` in the review). An earlier round (KIMI-D05) had already moved `link`, `wants(message, chat)` and `queueFinalBye` onto `AttachedDevice`. Two envious call sites were left. `DeviceHubState.send` reached into `device.outbound.trySendOrClosed`, `device.counters.recordDropped`, `device.outbound.doneOrClosed` and `device.connection.close`. The facade's `shutdown()` and `disconnect()` each repeated their own `timeoutOption` / `drained.receiveOrClosed` / `connection.close` block. `outbound`, `counters`, `connection` and `drained` were public vals.
+
+### Change (`src/twitchscreen/relay/device/DeviceHub.scala` only)
+
+- New `private[device] enum Offer { Accepted, DroppedReplaceable, Overflowed, Closed }`.
+- `AttachedDevice.offer(frame): Offer` holds the logic that used to be inline in `send`, with the original comments. A queued frame returns `Accepted`. On a full queue, the drop is recorded on the device's own counters. An EVENT then marks the queue done, closes the transport and returns `Overflowed`. Any other frame returns `DroppedReplaceable`. A `ChannelClosed` queue returns `Closed` and records nothing.
+- `AttachedDevice.drainThenClose(limit)` delegates to the companion's `AttachedDevice.drainThenClose(devices, limit)`. The companion uses one `timeoutOption` deadline shared by all the devices, then closes every transport in `finally`, swallowing `IOException` through `private closeTransport()`. These are the old shutdown semantics: one shared 2 s deadline, not 2 s per device.
+- `outbound`, `counters`, `connection` and `drained` are now `private val`. `id`, `device`, `connectedAt` and `caps` stay public because they are immutable identity values, and `greet` needs `caps` for WELCOME.
+- `DeviceHubState.send` is now an exhaustive match with no wildcard: `Overflowed` leads to `detach(OutboundOverflow)` and the warn log, and `Accepted | DroppedReplaceable | Closed` do nothing. Adding an `Offer` case later breaks the build under `-Werror`.
+- The facade calls `AttachedDevice.drainThenClose(devices, DeviceHub.DrainLimit)` in `shutdown()` and `device.drainThenClose(DeviceHub.DrainLimit)` in `disconnect()`. `DrainLimit = 2.seconds` is named once, in the `DeviceHub` companion. Neither method contains `timeoutOption`, `receiveOrClosed` or `close` any more.
+- Ordering note: `doneOrClosed` and the transport close now run just before `detach` rather than just after, still inside the same actor operation. The session's own detach, triggered by the socket close, arrives through the actor mailbox after this operation, and `DeviceHubState.detach` is a no-op for an id it no longer holds. The `OutboundOverflow` reason and the `DeviceDisconnected` event are therefore unchanged, and the unmodified DeviceBackpressureSuite pins both.
+- The top-level `queueFinalBye(outbound, …)` also stays. Its `retry` parameter now uses the imported `FiniteDuration` instead of the fully qualified name.
+
+### Tests (test first)
+
+NEW `test/src/twitchscreen/relay/device/AttachedDeviceSuite.scala`, 8 tests. They drive `AttachedDevice` directly, with no actor and no socket, through a fixture of a buffered queue, `LinkCounters`, an `AtomicBoolean` transport and a drained channel:
+(a) offer Accepted; (b) replaceable frame on a full queue is DroppedReplaceable, counted, link kept, and the next offer after a receive is Accepted; (c) EVENT on a full queue is Overflowed, counted, transport closed, the queued frame is still receivable, and then the queue reports ChannelClosed; (d) offer on a closed queue is Closed and records nothing; (e) drainThenClose returns in under 1 s once drained is signalled, and closes; (f) drainThenClose closes after a 50 ms deadline with no drain; (g) an `IOException` from the transport close is swallowed; (h) three undrained devices with a 200 ms shared deadline finish in under 500 ms, and all three are closed.
+
+- Red: before the production change, `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.AttachedDeviceSuite'` failed to compile with 18 errors, all of them `value offer is not a member of AttachedDevice`, `Not found: Offer` or a missing `drainThenClose`. Two test-side typing slips were fixed first: a `Closeable` ascription and the `DurationLong` import.
+- Green: the same command passed, 8 / 8.
+
+### Revert checks (the production file was restored from a copy after each check; `cmp` confirmed it matched)
+
+1. In `offer`, EVENT overflow returned `DroppedReplaceable` without `doneOrClosed` or the close. Running `test.testOnly AttachedDeviceSuite DeviceBackpressureSuite` gave FAIL. AttachedDeviceSuite was 1 failed / 8, with (c) failing at `AttachedDeviceSuite.scala:76`. DeviceBackpressureSuite was 1 failed / 7, with "EVENT overflow closes and removes the connection before any later event can cross the gap" failing at `DeviceBackpressureSuite.scala:107`.
+2. In `drainThenClose`, `finally ()` replaced the `closeTransport` loop. Running `test.testOnly AttachedDeviceSuite DeviceLinkSuite` gave FAIL for AttachedDeviceSuite, 3 failed / 8: (e) at `:94`, (f) at `:100` and (h) at `:110`. DeviceLinkSuite stayed 43 / 43. Its operator-disconnect test still sees EOF, because the session's writer closes the socket itself when the queue reaches `Done`. The facade's close is only the backstop for a writer that is stuck, so the new unit tests (e) and (f) are the only thing that pins it.
+3. Per-device deadline: `devices.foreach(d => timeoutOption(limit)(…))`. Running `test.testOnly AttachedDeviceSuite` gave FAIL, 1 failed / 8. Test (h) failed at `:109` with "three undrained devices took 601717322 nanoseconds; the deadline is per device".
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.AttachedDeviceSuite'`: PASS, 8 / 8.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.DeviceBackpressureSuite' 'twitchscreen.relay.device.DeviceLinkSuite' 'twitchscreen.relay.device.ApplicationShutdownSuite'`: run 3 times, PASS every time: 7 / 7, 43 / 43 and 2 / 2. No test was modified.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.*'`: PASS, 11 suites / 97 tests, 0 failed.
+- `./mill --no-daemon test`: PASS (SUCCESS), 44 suites / 476 tests, 0 failed. The previous record was 43 / 468, so this is +1 suite and +8 tests.
+- `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS. The reformat was a no-op; `cmp` against the pre-format copy matched.
+- `grep -nE '\.outbound|\.counters|\.connection\.close|\.drained' src/twitchscreen/relay/device/DeviceHub.scala`: 6 hits. `:220` and `:222` are `request.outbound` in the pre-attach `queueFinalBye` refusals, which take an `AttachRequest`, not an `AttachedDevice`. `:409`, `:410` and `:412` are the private val initialisers inside `AttachedDevice`, and `:449` is `_.drained` inside the `AttachedDevice` companion. No `device.outbound`, `device.counters`, `device.connection` or `device.drained` remains in the facade or in `DeviceHubState`.
+- `git diff --check`: PASS.

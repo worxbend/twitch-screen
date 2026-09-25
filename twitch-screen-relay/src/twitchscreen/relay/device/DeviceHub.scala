@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory
 import ox.*
 import ox.channels.{Actor, ActorRef, Channel, ChannelClosed}
 import ox.either.catching
-import scala.concurrent.duration.DurationInt
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 import twitchscreen.relay.bus.{EventBus, RelayEvent}
 import twitchscreen.relay.config.{ChatNotifications, DeviceLinkConfig}
 import twitchscreen.relay.protocol.*
@@ -115,18 +115,13 @@ private[relay] final class DeviceHub private (
     */
   def shutdown(): Int =
     val devices = command(_.shutdown())
-    try
-      timeoutOption(2.seconds):
-        devices.foreach(_.drained.receiveOrClosed().discard)
-      .discard
-    finally devices.foreach(_.connection.close().catching[IOException].discard)
+    AttachedDevice.drainThenClose(devices, DeviceHub.DrainLimit)
     devices.size
 
   /** Closes the socket, which unblocks that session's reader; the session then detaches itself. */
   def disconnect(connection: ConnectionId): Option[DeviceLink] =
     command(_.disconnect(connection)).map: device =>
-      try timeoutOption(2.seconds)(device.drained.receiveOrClosed().discard).discard
-      finally device.connection.close().catching[IOException].discard
+      device.drainThenClose(DeviceHub.DrainLimit)
       device.link
 
   private[device] def attach(request: AttachRequest): ConnectionId = command(_.attach(request))
@@ -135,6 +130,11 @@ private[relay] final class DeviceHub private (
     command(_.detach(connection, reason))
 
 private[relay] object DeviceHub:
+  /** How long the facade waits for a session's writer to flush its final `BYE` before closing the socket anyway. Shutdown shares one such
+    * deadline across every device rather than granting it to each in turn.
+    */
+  private val DrainLimit: FiniteDuration = 2.seconds
+
   /** Production source of the §6.2 `session_id`: a fresh random value per hub, which is per relay process start. [[SessionId.fromWire]]
     * masks it to `u32`.
     */
@@ -374,31 +374,42 @@ private[device] final class DeviceHubState(
 
   private def send(device: AttachedDevice, frame: Outbound): Unit =
     if attached.contains(device.id) && device.wants(frame.message, chat) then
-      device.outbound.trySendOrClosed(frame) match
-        case accepted: Boolean =>
-          if !accepted then
-            device.counters.recordDropped()
-            frame.message match
-              case _: RelayMessage.Event =>
-                // Never let a later event move the peer's high-water mark across this gap.
-                detach(device.id, DisconnectReason.OutboundOverflow)
-                device.outbound.doneOrClosed().discard
-                device.connection.close().catching[IOException].discard
-                logger.warn(s"Device ${device.device.value} (#${device.id.value}) closed after EVENT queue overflow")
-              case _ => () // Telemetry is replaceable. Every drop is counted, without per-frame logging.
-        case _: ChannelClosed => () // the session is tearing down and will detach in a moment
+      device.offer(frame) match
+        case Offer.Overflowed =>
+          // The device has already closed its queue and transport. The session's own detach arrives through the mailbox after this
+          // operation and finds nothing to remove, so OutboundOverflow is the reason the bus reports.
+          detach(device.id, DisconnectReason.OutboundOverflow)
+          logger.warn(s"Device ${device.device.value} (#${device.id.value}) closed after EVENT queue overflow")
+        case Offer.Accepted | Offer.DroppedReplaceable | Offer.Closed => ()
 
   private def nextConnectionId(): ConnectionId =
     lastConnectionId += 1
     ConnectionId(lastConnectionId)
 
+/** What happened to one frame offered to one device's outbound queue. */
+private[device] enum Offer:
+  /** Queued for the session's writer. */
+  case Accepted
+
+  /** The queue was full and the frame was replaceable telemetry: counted as dropped, and the link is kept. */
+  case DroppedReplaceable
+
+  /** The queue was full and the frame was an `EVENT`: counted as dropped, the queue is done and the transport is closed. */
+  case Overflowed
+
+  /** The session is already tearing down and will detach in a moment. Nothing is recorded. */
+  case Closed
+
+/** One live connection as the hub sees it. It owns its outbound queue, counters and transport, so the hub only asks it to take a frame and
+  * the facade only asks it to drain and close.
+  */
 private[device] final class AttachedDevice(val id: ConnectionId, request: AttachRequest, val connectedAt: Instant):
   val device: DeviceId = request.device
-  val outbound: Channel[Outbound] = request.outbound
-  val counters: LinkCounters = request.counters
-  val connection: Closeable = request.connection
   val caps: Capabilities = request.caps
-  val drained: Channel[Unit] = request.drained
+  private val outbound: Channel[Outbound] = request.outbound
+  private val counters: LinkCounters = request.counters
+  private val connection: Closeable = request.connection
+  private val drained: Channel[Unit] = request.drained
 
   def link: DeviceLink =
     DeviceLink(id, device, request.remoteAddress, connectedAt, request.protocolVersion.value, request.lastSeq.value, counters.traffic)
@@ -409,14 +420,40 @@ private[device] final class AttachedDevice(val id: ConnectionId, request: Attach
     case RelayMessage.Event(record) if record.kind.isGeneric => caps.contains(Capabilities.Generic)
     case _                                                   => true
 
+  /** Non-blocking, because it runs on the hub's actor thread (§10.1). */
+  def offer(frame: Outbound): Offer =
+    outbound.trySendOrClosed(frame) match
+      case true => Offer.Accepted
+      case false =>
+        counters.recordDropped()
+        frame.message match
+          case _: RelayMessage.Event =>
+            // Never let a later event move the peer's high-water mark across this gap.
+            outbound.doneOrClosed().discard
+            closeTransport()
+            Offer.Overflowed
+          case _ => Offer.DroppedReplaceable // Telemetry is replaceable. Every drop is counted, without per-frame logging.
+      case _: ChannelClosed => Offer.Closed
+
   def queueFinalBye(code: ByeCode, reason: String): Unit =
     twitchscreen.relay.device.queueFinalBye(outbound, code, reason)
+
+  /** Waits up to `limit` for the session's writer to flush what is queued, then closes the transport whether or not it did. */
+  def drainThenClose(limit: FiniteDuration): Unit = AttachedDevice.drainThenClose(List(this), limit)
+
+  private def closeTransport(): Unit = connection.close().catching[IOException].discard
+
+private[device] object AttachedDevice:
+  /** One deadline shared by every device, not one per device, then every transport is closed even if the deadline expired. */
+  def drainThenClose(devices: Seq[AttachedDevice], limit: FiniteDuration): Unit =
+    try timeoutOption(limit)(devices.foreach(_.drained.receiveOrClosed().discard)).discard
+    finally devices.foreach(_.closeTransport())
 
 private def queueFinalBye(
     outbound: Channel[Outbound],
     code: ByeCode,
     reason: String,
-    retry: scala.concurrent.duration.FiniteDuration = 0.seconds
+    retry: FiniteDuration = 0.seconds
 ): Unit =
   outbound.trySendOrClosed(Outbound(RelayMessage.Bye(code, ByeDetail.Zero, retry, reason))).discard
   outbound.doneOrClosed().discard
