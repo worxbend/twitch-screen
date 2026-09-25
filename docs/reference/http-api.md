@@ -19,7 +19,7 @@ Health, aggregate stats, Swagger documentation, and the exact OAuth/EventSub cal
 | Contract | Behavior |
 |---|---|
 | Error body | JSON object with an `error` string, including ordinary route/decode errors |
-| List query | `pageSize` is an integer from **1 to 500**; newest entries first |
+| Diagnostic list query | Notifications, activity, logs, and alerts accept `pageSize` from **1 to 500**, newest first. Devices and alert rules are unpaged. |
 | List envelopes | Named arrays such as `devices`, `notifications`, `entries`, `alerts`, or `records` |
 | Enum casing | Most management enums use names such as `Live`, `Offline`, `Warning`, `Info`; notification kinds use lowercase JSON names |
 | HTTP body limit | **65536 bytes**, including chunked requests |
