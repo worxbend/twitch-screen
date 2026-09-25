@@ -169,22 +169,21 @@ private[twitch] object LiveTwitchSource:
               appTokenRejected
             )
           case EventSubTransport.WebSocket =>
-            val grant = token.filter(_ => !missing.contains("moderator:read:followers"))
-            if registeredGrant.isDefined && grant != registeredGrant then restartRequested.set(true)
-            else if grant.isDefined && registeredGrant.isEmpty then
-              auth.credential.foreach: credential =>
-                val subscriptions =
-                  EventSubWebhookApi.unscopedSubscriptions(broadcasterId) ++ EventSubWebhookApi.scopedSubscriptions(broadcasterId)
-                val accepted = subscriptions.map: (kind, condition) =>
-                  health.observe(s"eventsub-${kind.getName}", Some("awaiting subscription confirmation"))
-                  val success = client.getEventSocket.register(credential, EventSubFactory.webSocketSubscription(kind, condition))
-                  if !success then health.observe(s"eventsub-${kind.getName}", Some("registration rejected; rebuilding connection"))
-                  success
-                if accepted.forall(identity) then
-                  registeredGrant = grant
-                  client.getEventSocket.connect()
-                else restartRequested.set(true)
-            if grant.isEmpty then health.observe("eventsub-connection", Some("awaiting broadcaster authorization and follow scope"))
+            WebSocketRegistration.step(
+              token,
+              missing,
+              registeredGrant,
+              auth.credential,
+              EventSubWebhookApi.unscopedSubscriptions(broadcasterId) ++ EventSubWebhookApi.scopedSubscriptions(broadcasterId),
+              (credential, subscription) => client.getEventSocket.register(credential, subscription),
+              granted =>
+                registeredGrant = Some(granted)
+                client.getEventSocket.connect()
+              ,
+              (kind, failure) => health.observe(kind, failure)
+            ) match
+              case WebSocketStep.Restart                                                      => restartRequested.set(true)
+              case WebSocketStep.Await | WebSocketStep.Unchanged | WebSocketStep.Connected(_) => ()
         health.observe("subscription-maintenance", None)
       catch case NonFatal(error) => health.observe("subscription-maintenance", Some(s"${error.getClass.getSimpleName}; retrying"))
       sleep(30.seconds)
