@@ -40,3 +40,24 @@ disposition is in [review-status.md](review-status.md).
       possible parallel-suite flake in the ApiSuite pageSize test; RLY-08 does not clear
       pushedEndStartedAt.
 - [x] Agent instruction to always commit and push to `main` is in AGENTS.md.
+
+## Kimi round 3 follow-ups
+
+Round 3 dispositions and integrated validation are in
+[review-kimi-summary.md](review-kimi-summary.md#round-3-ultracode-swarm).
+
+- [ ] Flakes seen in lane runs, none in the integrated run: the K-017
+      trickle-body test in `ManagementAuthSuite`; the `DeviceLinkSuite`
+      `bytesSent` read-after-write race; `SequenceExhaustionSuite:134`; one
+      firmware `test_presentation` error that passed on rerun.
+- [ ] Hardware: K-109 needs a stack high-water measurement on a real board
+      under worst-case load. K-118 needs an on-device check that a routine
+      card's hold no longer invalidates the full panel.
+- [ ] Weak regression tests: K-011 is proven only by a pure test; K-086 shows
+      only as a timing change, because a 2 s backstop still closes the socket;
+      K-025/K-107/K-118 display glue is not built on the host.
+- [ ] User decision, left unchanged: K-002 (H2 device-link TLS/auth), K-177
+      (FW-10 BYE retry cap) and K-180 (FW-18 OTA). See
+      [ADR-0002](../docs/decisions/0002-device-link-trust-boundary.md).
+- [ ] Owner action: K-169 is a stale comment in the owner's untracked
+      `src/credentials.h`.

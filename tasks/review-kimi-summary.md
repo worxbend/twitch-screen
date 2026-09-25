@@ -77,17 +77,24 @@ with no force pushes. The evidence for each unit is in the lane records:
 
 | Disposition | Count |
 | --- | --- |
-| Closed on audit: already resolved on `main` before round 3 | 132 |
-| Fixed this round, in 38 commits | 44 |
+| Closed on audit: already resolved on `main` before round 3 | 129 |
+| Accepted as-is: deliberately retained in rounds 1-2 | 3 |
+| Fixed this round: production change | 28 |
+| Already fixed: round 3 added only a regression test, docs or a behaviour-preserving extraction | 16 |
 | User decision: owner-level threat-model items | 3 |
 | Skipped: needs hardware or the owner's secrets file | 2 |
 | Rejected | 0 |
 
+The 44 round-3 findings (28 fixed plus 16 already fixed) landed in 38 commits.
 No unit was rejected or left uncommitted. K-139 was left out of the
 planner's lists, so the integrator audited it by hand. It was already fixed in
-1918581 and is counted under closed on audit. The 132 audit closures are the
+1918581 and is counted under closed on audit. The 129 audit closures are the
 planner's result, based on the earlier registers above. The integrator did not
-re-verify them one by one.
+re-verify them one by one. A later record check moved K-122, K-150 and K-174
+from closed on audit to accepted as-is, because the registers record them as
+deliberate retentions rather than fixes. It also moved 16 rows from fixed to
+already fixed after `git show` confirmed that their round-3 commits changed no
+production behaviour.
 
 ### Integrated validation (origin/main `c23f2fc`, fresh worktree)
 
@@ -134,8 +141,11 @@ Integration needed no fixes.
   - A misspelled relay config key now fails startup (K-016). A misspelled key
     given only as a `-D` system property is still ignored, but it is masked.
   - The accept-failure WARN now includes the consecutive-failure count (K-147).
-- **Stale note.** `tasks/review-kimi-device.md` still marks KIMI-P15 as
-  "retained deliberately". K-141 (c23f2fc) replaced that decision.
+- **Superseded retentions.** Round 3 reversed five earlier "retained"
+  decisions: KIMI-P15 (K-141, c23f2fc) in `tasks/review-kimi-device.md`, and
+  the LogBuffer resize (K-098, bd24d3e), `Sensitive.Empty` (K-100, 1c20a49),
+  RelayEvent classifications (K-095, 39a70c5) and bounded appends (K-096,
+  7911556) in `tasks/review-kimi-root.md`. Those register rows now say so.
 
 ### Every finding
 
@@ -158,7 +168,7 @@ Integration needed no fixes.
 | K-015 | Medium-bug | Ping/idle cross-field check compares untruncated durations against truncating wire | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-016 | Medium-bug | Unknown/mis-spelled secret keys render unmasked in /config | Fixed this round | `658e7ad`; [relay-twitch](review-kimi-round3-relay-twitch.md) |
 | K-017 | Medium-bug | No idle/read timeout on HTTP listener (slowloris exhausts 128 connections) | Fixed this round | `08fcaab`; [relay-twitch](review-kimi-round3-relay-twitch.md) |
-| K-018 | Medium-bug | Cleartext management credentials with no warning (plain HTTP, host 0.0.0.0 default) | Fixed this round | `cebab02`; [relay-twitch](review-kimi-round3-relay-twitch.md) |
+| K-018 | Medium-bug | Cleartext management credentials with no warning (plain HTTP, host 0.0.0.0 default) | Already fixed; regression test/docs added in round 3 (`cebab02`) | The WARN already existed; tests plus a behaviour-preserving extraction of the loopback check; [relay-twitch](review-kimi-round3-relay-twitch.md) |
 | K-019 | Medium-bug | Duplicate WELCOME mid-stream silently rewinds session state | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-020 | Medium-bug | Task watchdog init silently no-ops; effective timeout 5 s not 10 s | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-021 | Medium-bug | DNS Pending has no deadline; lost lwIP callback wedges the link forever | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
@@ -177,7 +187,7 @@ Integration needed no fixes.
 | K-034 | Medium-smell | Per-kind policy scattered across four matches | Fixed this round | `93e7e80`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-035 | Medium-smell | Two construction vocabularies for EVENT semantics (EventRecord factories vs NotificationRouter) | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-036 | Medium-smell | DeviceSession Long Parameter List / Data Clump (sink, counters, config, caps[, socket]) | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-037 | Medium-smell | One new counter = five edits in two files | Fixed this round | `67b7645`; [relay-core](review-kimi-round3-relay-core.md) |
+| K-037 | Medium-smell | One new counter = five edits in two files | Already fixed; regression test/docs added in round 3 (`67b7645`) | Test only: pins the nested `traffic` JSON shape; [relay-core](review-kimi-round3-relay-core.md) |
 | K-038 | Medium-smell | maintainSubscriptions Long Method + transport Switch Statements | Fixed this round | `234eb5e`; [relay-twitch](review-kimi-round3-relay-twitch.md) |
 | K-039 | Medium-smell | Scope-name literals scattered across five sites | Fixed this round | `2bcca20`; [relay-twitch](review-kimi-round3-relay-twitch.md) |
 | K-040 | Medium-smell | Health components keyed by raw strings at 19 call sites | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
@@ -197,22 +207,22 @@ Integration needed no fixes.
 | K-054 | Medium-smell | uiNotifyShow Long Method | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-055 | Low | Operator disconnect drops queued frames where reclaim drains | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-056 | Low | Over-limit connections refused silently (no log/counter) | Fixed this round | `41f1138`; [relay-core](review-kimi-round3-relay-core.md) |
-| K-057 | Low | Failed PONG write discarded | Fixed this round | `a43a815, deflake 544a872`; [relay-core](review-kimi-round3-relay-core.md) |
+| K-057 | Low | Failed PONG write discarded | Already fixed; regression test/docs added in round 3 (`a43a815`) | Test only; its fixture flake was fixed in `544a872`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-058 | Low | Oversize-drop keeps link after EVENT drop (latent) | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-059 | Low | Dead refresh token retried forever with no terminal state | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-060 | Low | CAS-lost refresh leaves an unrevoked rotated token at Twitch | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-061 | Low | Spurious 'recovered' on first health observation | Fixed this round | `846866a`; [relay-twitch](review-kimi-round3-relay-twitch.md) |
+| K-061 | Low | Spurious 'recovered' on first health observation | Already fixed; regression test/docs added in round 3 (`846866a`) | Test only: `TwitchHealthState.observe` already required a previous failure; [relay-twitch](review-kimi-round3-relay-twitch.md) |
 | K-062 | Low | Link-down card discards the failure reason | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-063 | Low | Absent webhook 'event' masked by all-None payload | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-064 | Low | Chat/WS path doesn't null-normalize channel-update fields (RLY-21 residual) | Fixed this round | `b142b2a`; [relay-twitch](review-kimi-round3-relay-twitch.md) |
+| K-064 | Low | Chat/WS path doesn't null-normalize channel-update fields (RLY-21 residual) | Already fixed; regression test/docs added in round 3 (`b142b2a`) | Nulls were already normalised; the commit (counted as the K-042 fix) added the registered-handler tests; [relay-twitch](review-kimi-round3-relay-twitch.md) |
 | K-065 | Low | Callback URL validation case-sensitive | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-066 | Low | twitch.oauth.scopes never validated in live mode | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-067 | Low | Sub-millisecond intervals admitted | Fixed this round | `08cd1c1`; [relay-twitch](review-kimi-round3-relay-twitch.md) |
+| K-067 | Low | Sub-millisecond intervals admitted | Already fixed; regression test/docs added in round 3 (`08cd1c1`) | Test only: `Config` already rejected sub-millisecond values at every timer site; [relay-twitch](review-kimi-round3-relay-twitch.md) |
 | K-068 | Low | Memory-sizing config knobs unbounded | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-069 | Low | /status blocks on an unbounded hub ask | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-070 | Low | Readiness/auth-config default bypasses validation | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-071 | Low | Alert message freezes elapsed duration at first raise | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-072 | Low | Alert monitor runs with zero rules | Fixed this round | `544a872`; [relay-core](review-kimi-round3-relay-core.md) |
+| K-072 | Low | Alert monitor runs with zero rules | Already fixed; regression test/docs added in round 3 (`544a872`) | Test only: the zero-rule guard was already on `main`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-073 | Low | EventBus subscriber overflow is silent | Fixed this round | `2b44bb5`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-074 | Low | Basic-auth timing fingerprint | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-075 | Low | Basic-permit exhaustion yields 503 for legit logins, undocumented at site | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
@@ -224,7 +234,7 @@ Integration needed no fixes.
 | K-081 | Low | AttachedDevice Data Class + Feature Envy | Fixed this round | `db559f8`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-082 | Low | Replay-ring merge duplicated | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-083 | Low | FrameReader.read Long Method | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-084 | Low | Version-mismatch Refusal duplicated | Fixed this round | `a43a815`; [relay-core](review-kimi-round3-relay-core.md) |
+| K-084 | Low | Version-mismatch Refusal duplicated | Already fixed; regression test/docs added in round 3 (`a43a815`) | Test only: the shared version refusal was already on `main`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-085 | Low | protocolVersion: Int Primitive Obsession | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-086 | Low | Boolean blindness in DeviceSession write loop | Fixed this round | `0cb01ad`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-087 | Low | Boolean blindness in WebhookDeduplication.claim | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
@@ -234,7 +244,7 @@ Integration needed no fixes.
 | K-091 | Low | Webhook API constructed unconditionally | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-092 | Low | Stringly-typed Either[String, _] OAuth errors | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-093 | Low | Bus-fold scaffolding duplicated (AlertMonitor vs StatsAggregator) | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-094 | Low | Rule knowledge shotgun (AlertRule + MonitorState) | Fixed this round | `544a872`; [relay-core](review-kimi-round3-relay-core.md) |
+| K-094 | Low | Rule knowledge shotgun (AlertRule + MonitorState) | Already fixed; regression test/docs added in round 3 (`544a872`) | Scaladoc link fix only: rule logic already lived in `AlertRule.check`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-095 | Low | Three parallel RelayEvent classifications | Fixed this round | `39a70c5`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-096 | Low | Bounded-append ring implemented 3x | Fixed this round | `7911556`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-097 | Low | Otel appender install unscoped | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
@@ -247,7 +257,7 @@ Integration needed no fixes.
 | K-104 | Low | WELCOME.caps trusted verbatim as effectiveCaps | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-105 | Low | Backoff reset contradicts PROTOCOL.md §12 | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-106 | Low | xTaskNotifyGive(closeTask) unguarded null handle if worker creation failed | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-107 | Low | Replayed cards still play slide-in despite comment/§6.4 | Fixed this round | `10f6d70`; [firmware](review-kimi-round3-firmware.md) |
+| K-107 | Low | Replayed cards still play slide-in despite comment/§6.4 | Already fixed; regression test/docs added in round 3 (`10f6d70`) | Behaviour was already correct; the entrance decision moved into a host-tested pure function; [firmware](review-kimi-round3-firmware.md) |
 | K-108 | Low | initDsc trusts generator size with no static_assert | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-109 | Low | LVGL render stack headroom on 8 KB loop task unmeasured | Skipped (owner/hardware action) | Needs a physical ESP32 run (~10 min worst-case load, stack high-water log); instrumentation already in `main.cpp` |
 | K-110 | Low | LVGL boot allocations unchecked -> panic boot loop | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
@@ -262,7 +272,7 @@ Integration needed no fixes.
 | K-119 | Low | Infinite animations run on hidden groups | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-120 | Low | LV_USE_FLOAT 1 unused | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-121 | Low | TX FIFO O(n) memmove per partial write | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-122 | Low | WiFi PSK baked into flash without flash encryption | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
+| K-122 | Low | WiFi PSK baked into flash without flash encryption | Accepted as-is (deliberate: flash encryption and secure boot are a provisioning migration; the physical-access risk is documented) | [Firmware register](review-kimi-firmware.md): documented in the firmware README, not enabled |
 | K-123 | Low | Fuzz harness is differential-only | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-124 | Low | Relay greet predicate transcribed into C++ test | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-125 | Low | Real-sleep timing assertion | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
@@ -278,7 +288,7 @@ Integration needed no fixes.
 | K-135 | Low | WireStrings.fold compiles regex + allocates per character on hot encode path | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-136 | Low | Suppressed-bot log builds event.summary eagerly at INFO | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-137 | Low | Per-skipped-frame DEBUG builds describe eagerly | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-138 | Low | Identical frames re-encoded per session | Fixed this round | `9f313b2`; [relay-core](review-kimi-round3-relay-core.md) |
+| K-138 | Low | Identical frames re-encoded per session | Already fixed; regression test/docs added in round 3 (`9f313b2`) | Test only: broadcasts already shared one `Outbound` encoding per text policy; [relay-core](review-kimi-round3-relay-core.md) |
 | K-139 | Low | Dedup claim is O(n) per CAS retry | Closed on audit | Missing from the round-3 plan; the integrator checked it: `WebhookDeduplication` tracks `nextExpiry` and prunes only when an entry is due ([Twitch register](review-kimi-twitch.md), 1918581) |
 | K-140 | Low | 50 ms deadline watcher per session | Fixed this round | `db41f1c`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-141 | Nit | Unreachable WrongDirection fallbacks | Fixed this round | `c23f2fc`; [relay-core](review-kimi-round3-relay-core.md) |
@@ -288,19 +298,19 @@ Integration needed no fixes.
 | K-145 | Nit | Folding gaps for ẞ/ligatures | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-146 | Nit | Deadline overflow on absurd budgets | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-147 | Nit | Accept-failure logging goes silent at the cap | Fixed this round | `41f1138`; [relay-core](review-kimi-round3-relay-core.md) |
-| K-148 | Nit | 'attached as #N' logged on refused attach | Fixed this round | `cd61e30`; [relay-core](review-kimi-round3-relay-core.md) |
+| K-148 | Nit | 'attached as #N' logged on refused attach | Already fixed; regression test/docs added in round 3 (`cd61e30`) | Test plus a behaviour-preserving seam extraction; the attach log was already admit-only; [relay-core](review-kimi-round3-relay-core.md) |
 | K-149 | Nit | Write watchdog uses idle timeout during handshake | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-150 | Nit | Manual lifecycle card re-broadcasts STATS | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-151 | Nit | Heartbeat PING drops uncounted | Fixed this round | `cd61e30`; [relay-core](review-kimi-round3-relay-core.md) |
+| K-150 | Nit | Manual lifecycle card re-broadcasts STATS | Accepted as-is (deliberate: PROTOCOL.md §6.5 requires STATS after any STREAM_START/STREAM_END) | [Device register](review-kimi-device.md) KIMI-D25: retained deliberately |
+| K-151 | Nit | Heartbeat PING drops uncounted | Already fixed; regression test/docs added in round 3 (`cd61e30`) | Test plus a behaviour-preserving seam extraction; PING drops were already counted; [relay-core](review-kimi-round3-relay-core.md) |
 | K-152 | Nit | Duplicate subscriber names allowed | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-153 | Nit | SubscriberStats.delivered overstates delivery | Fixed this round | `2b44bb5`; [relay-core](review-kimi-round3-relay-core.md) |
-| K-154 | Nit | Actor mailboxes implicitly bounded at 16 — undocumented load-bearing invariant | Fixed this round | `16add4f`; [relay-twitch](review-kimi-round3-relay-twitch.md) |
+| K-154 | Nit | Actor mailboxes implicitly bounded at 16 — undocumented load-bearing invariant | Already fixed; regression test/docs added in round 3 (`16add4f`) | Comments and `docs/reference/architecture.md` only; [relay-twitch](review-kimi-round3-relay-twitch.md) |
 | K-155 | Nit | lowerCaseEnums dead with stale comment | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-156 | Nit | WWW-Authenticate sent on 403/503 | Fixed this round | `cb4505d`; [relay-twitch](review-kimi-round3-relay-twitch.md) |
+| K-156 | Nit | WWW-Authenticate sent on 403/503 | Already fixed; regression test/docs added in round 3 (`cb4505d`) | Test only: the challenge was already sent only on 401; [relay-twitch](review-kimi-round3-relay-twitch.md) |
 | K-157 | Nit | Redundant endsWith(CallbackPath) require | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-158 | Nit | Hostname accepts embedded whitespace | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-159 | Nit | Scalar fallback silently coerces non-lists | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-160 | Nit | Negative uptime on backward clock step | Fixed this round | `6826a26`; [relay-core](review-kimi-round3-relay-core.md) |
+| K-160 | Nit | Negative uptime on backward clock step | Already fixed; regression test/docs added in round 3 (`6826a26`) | Test only: the `StatusApi` uptime clamp was already on `main`; [relay-core](review-kimi-round3-relay-core.md) |
 | K-161 | Nit | Pipeline insertion couples to Netty internal handler name | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-162 | Nit | Unreachable terminal throw in TwitchRetry | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-163 | Nit | TwitchRetry has no jitter | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
@@ -314,7 +324,7 @@ Integration needed no fixes.
 | K-171 | Nit | Two counters lack descriptions | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-172 | Nit | Redundant ACK test case | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-173 | Nit | asInstanceOf instead of named failure | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
-| K-174 | Nit | Single-case HealthStatus enum | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
+| K-174 | Nit | Single-case HealthStatus enum | Accepted as-is (deliberate: liveness has exactly one successful value; the enum pins JSON/OpenAPI to `Up`) | [Integration register](review-kimi-root.md): retained intentionally |
 | K-175 | Theme | twitch4j/OAuth error text reaches device display unsanitized | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-176 | Theme | Activity export and on-screen alert cards don't share sanitization policy | Closed on audit | Already resolved on `main` before round 3; see the round-1/2 registers |
 | K-177 | Theme | BYE retry_after uncapped floor (FW-10, ~18 h suppression) remains valid | User decision | Owner, together with H2: if a cap is chosen, change PROTOCOL.md §12.1 first, then clamp `floorMs` |

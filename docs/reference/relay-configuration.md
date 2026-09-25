@@ -143,6 +143,8 @@ java -Dconfig.file=data/relay-local.conf -jar out/assembly.dest/out.jar
 
 This disables the no-device duration rule and retains 1000 log records. Explicit values in the external file override the included values; the environment substitutions still apply to settings you leave inherited. Keep secret values in the configured environment rather than this sample file.
 
+**Unknown keys fail startup.** Every key inside the relay's sections (`http`, `http.auth`, `device-link`, `twitch` and its `oauth`, `event-sub` and `simulation` subsections, `notifications`, `bus`, `stats`, `activity`, `alerts`, `observability`) must be one the relay reads. A misspelled key such as `twitch.client-secert` in `application.conf` or a `-Dconfig.file` source stops startup with `Unknown key` and its full path; every unknown key is listed, not just the first. Upgrade note: earlier versions silently ignored such a key and ran with the intended setting unset, so check any external HOCON file before upgrading. Keys supplied **only** as JVM `-D` system properties are exempt, because the JDK's own `http.proxyHost`, `http.nonProxyHosts`, `http.auth.preference` and similar properties share the `http` namespace. A misspelled relay key passed only as `-D` is therefore ignored without an error; prefer the `RELAY_*` variables or a config file. Keys outside the relay's sections are not checked.
+
 Polling, simulation, aggregation and alert evaluation intervals must be at least 1 ms; statistics and failure-rate windows must be at least 1 second. TCP accept backlog is bounded to 1–1024.
 
 Additional fixed limits in code include 64 simultaneous TCP sessions, 128 HTTP connections, 65536-byte HTTP request bodies, and list `pageSize` values of 1–500. They are not deployment knobs in this version. HTTP connections also have a 30-second decoded-read deadline, including incomplete headers, and each request has a 30-second whole-request deadline from its decoded headers to its final body chunk that a slowly trickled body cannot extend; Tapir bounds response production and idle connections. Non-loopback plaintext HTTP emits a startup warning: use a trusted TLS proxy and restrict direct access.
@@ -170,6 +172,6 @@ curl --fail --silent --show-error \
   http://localhost:8080/api/v1/config
 ```
 
-The response is `{"settings":{...}}`, using dotted HOCON keys and string values. The Basic verifier, API token, Twitch client secret, and EventSub secret are replaced by `***`. The broadcaster token is not part of this configuration endpoint. `/config` is still protected because settings reveal deployment details.
+The response is `{"settings":{...}}`, using dotted HOCON keys and string values. The Basic verifier, API token, Twitch client secret, and EventSub secret are replaced by `***`, and so is any key in a relay section that the relay does not read, such as an ignored `-D` system property. The broadcaster token is not part of this configuration endpoint. `/config` is still protected because settings reveal deployment details.
 
 Values such as `"30 seconds"` require shell quoting when assigned on a command line. Durations must be finite; use readable units rather than guessing milliseconds. For malformed settings, the relay fails startup with validation context instead of silently running a partially configured integration.

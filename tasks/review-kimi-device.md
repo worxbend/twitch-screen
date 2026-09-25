@@ -23,7 +23,7 @@ quoted findings for commit traceability.
 | KIMI-P12 | Absent wire timestamp becomes 1970 | `Notification.at` and `Notification_OUT.at` preserve `Option[Instant]`. Production-assigned times remain present. |
 | KIMI-P13 | Redundant ACK assertion; cast assertions | Removed duplicate unchanged ACK decode; protocol boundary tests pattern-match with named failure messages. |
 | KIMI-P14 | InvalidSequence advises forbidden BYE4 | **Already fixed at baseline.** `ProtocolError` has no InvalidSequence variant or mapping. Existing exhaustive variant coverage proves no error advises 4 or 6. Reserved `ByeCode` values remain decodable for peer diagnostics. |
-| KIMI-P15 | Unreachable WrongDirection fallback arms | **Retained deliberately.** `expect` returns the complete `MessageType` enum, and the direction-specific decoder must remain total/exhaustive. The fallback is defensive and side-effect-free; deleting it requires casts, throws, or a second type hierarchy with no protocol benefit. |
+| KIMI-P15 | Unreachable WrongDirection fallback arms | Originally retained deliberately to keep the direction-specific decoder total. Changed in round 3 (K-141, `c23f2fc`): `fromDeviceCurrent` and `fromRelay` match on `typeCode.known` with one arm per inbound type, and a final arm classifies every other code as WrongDirection or UnknownType. `expect` and the unreachable arms are gone, with no cast, throw or new type. Public signatures and errors are unchanged. |
 
 ## Device lifecycle and structure
 
