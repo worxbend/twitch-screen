@@ -239,3 +239,93 @@ class ConfigSuite extends munit.FunSuite:
       intercept[IllegalArgumentException](HttpAuthConfig(username, apiToken = token).validate()).discard
     List("x" * 32 + "\n", "é" * 32, "x" * 32 + " space").foreach: invalid =>
       intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Sensitive(invalid)).validate()).discard
+
+  private def loadWith(overrides: String) =
+    ConfigSource.fromConfig(ConfigFactory.parseString(overrides).withFallback(configured)).load[Config]
+
+  private def failureText(result: Either[pureconfig.error.ConfigReaderFailures, Config]): String =
+    result.swap.toOption.map(_.prettyPrint()).getOrElse(s"loaded unexpectedly: $result")
+
+  test("K-016: a misspelled secret key fails startup and names the key instead of being silently ignored"):
+    val result = loadWith("twitch.client-secert = \"leak\"")
+    assert(result.isLeft, result.toString)
+    assert(failureText(result).contains("client-secert"), failureText(result))
+
+  test("K-016: a misspelled management token key fails startup and names the key"):
+    val result = loadWith("http.auth.api-tokn = \"leak-leak-leak-leak-leak-leak-leak-leak\"")
+    assert(result.isLeft, result.toString)
+    assert(failureText(result).contains("api-tokn"), failureText(result))
+
+  test("K-016: unknown keys are rejected in nested and leaf sections alike"):
+    List("twitch.oauth.redirct-url = \"x\"", "stats.broadcast-intervl = 5 seconds", "device-link.idle-timout = 5 seconds").foreach:
+      overrides =>
+        val result = loadWith(overrides)
+        assert(result.isLeft, s"$overrides: $result")
+
+  test("K-016: every unknown key is reported, not just the first"):
+    val text = failureText(loadWith("twitch.client-secert = \"a\"\nalerts.bufer-size = 3"))
+    assert(text.contains("client-secert") && text.contains("bufer-size"), text)
+
+  test("K-016: an optional setting may still be omitted, and one that is set is not mistaken for an unknown key"):
+    val omitted = configured.withoutPath("alerts.no-devices-connected-for")
+    assertEquals(ConfigSource.fromConfig(omitted).loadOrThrow[Config].alerts.noDevicesConnectedFor, None)
+    assertEquals(loadWith("alerts.stream-offline-for = 3 minutes").map(_.alerts.streamOfflineFor), Right(Some(3.minutes)))
+
+  test("K-016: /config masks every key the schema does not know, whatever its spelling"):
+    val source = ConfigFactory
+      .parseString("""twitch { client-secert = "leak", apiKey = "leak" }, http.auth.api-tokn = "leak"""")
+      .withFallback(ConfigFactory.load())
+    val rendered = ConfigApi.flatten(source)
+    List("twitch.client-secert", "twitch.apiKey", "http.auth.api-tokn").foreach: path =>
+      assertEquals(rendered.get(path), Some("***"), path)
+    assert(!rendered.values.exists(_ == "leak"), rendered.toString)
+
+  test("K-016: the schema lists every shipped key, and only the known secrets are masked"):
+    val rendered = ConfigApi.flatten(configured)
+    assertEquals(rendered.keySet -- Config.SchemaPaths, Set.empty[String])
+    assertEquals(
+      rendered.collect { case (path, "***") => path }.toSet,
+      Set("twitch.client-secret", "twitch.event-sub.secret", "http.auth.api-token", "http.auth.basic-password-hash")
+    )
+
+  test("K-016: the JDK's http.* and http.auth.* system properties still load, and /config masks them"):
+    val properties = Map("http.nonProxyHosts" -> "localhost|*.local", "http.auth.preference" -> "basic")
+    val previous = properties.keys.map(key => key -> Option(System.getProperty(key))).toMap
+    try
+      properties.foreach(System.setProperty(_, _).discard)
+      ConfigFactory.invalidateCaches()
+      val result = configSource.load[Config]
+      assert(result.isRight, failureText(result))
+      val rendered = ConfigApi.flatten(configured)
+      assertEquals(rendered.get("http.nonProxyHosts"), Some("***"))
+      assertEquals(rendered.get("http.auth.preference"), Some("***"))
+    finally
+      previous.foreach:
+        case (key, Some(value)) => System.setProperty(key, value).discard
+        case (key, None)        => System.clearProperty(key).discard
+      ConfigFactory.invalidateCaches()
+
+  test("K-016: a system-property overlay carrying proxy settings loads, as ConfigFactory.load() layers it"):
+    val properties = java.util.Properties()
+    List(
+      "http.proxyHost" -> "proxy.local",
+      "http.proxyPort" -> "3128",
+      "http.nonProxyHosts" -> "localhost",
+      "http.auth.preference" -> "basic",
+      "http.auth.digest.validateServer" -> "true"
+    ).foreach(properties.setProperty(_, _).discard)
+    val overlay = ConfigFactory.parseProperties(
+      properties,
+      com.typesafe.config.ConfigParseOptions.defaults().setOriginDescription(ConfigFactory.systemProperties().origin().description())
+    )
+    val result = ConfigSource.fromConfig(overlay.withFallback(configured)).load[Config]
+    assert(result.isRight, failureText(result))
+
+  test("K-016: a misspelled relay key in a config.file source still fails, even next to system properties"):
+    val file = java.nio.file.Files.createTempFile("relay-k016", ".conf")
+    try
+      java.nio.file.Files.writeString(file, "twitch.client-secert = \"leak\"\nhttp.auth.api-tokn = \"leak\"\n").discard
+      val source = ConfigFactory.systemProperties().withFallback(ConfigFactory.parseFile(file.toFile)).withFallback(configured)
+      val text = failureText(ConfigSource.fromConfig(source).load[Config])
+      assert(text.contains("client-secert") && text.contains("api-tokn"), text)
+    finally java.nio.file.Files.deleteIfExists(file).discard

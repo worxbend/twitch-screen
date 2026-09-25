@@ -20,7 +20,8 @@ object Config_OUT:
   * the question that takes longest to answer from the outside.
   *
   * Read-only: settings come from HOCON and the environment, so anything editable here would be lost on the next restart. Secrets are
-  * replaced with `***` before they leave the process.
+  * replaced with `***` before they leave the process, and so is any key outside [[Config.SchemaPaths]]: loading already rejects such a key,
+  * but the rendered source is not the one that was validated, so a misspelled secret must not depend on that.
   */
 final class ConfigApi(source: HoconConfig) extends ServerEndpoints:
   override val endpoints: List[ServerEndpoint[Any, Identity]] =
@@ -29,9 +30,10 @@ final class ConfigApi(source: HoconConfig) extends ServerEndpoints:
 object ConfigApi:
   private val Mask = "***"
 
+  /** Masks known secrets by suffix, in any spelling convention, and every path the schema does not know. */
   private def secret(path: String): Boolean =
     val key = path.toLowerCase(java.util.Locale.ROOT).filter(_.isLetterOrDigit)
-    List("secret", "token", "password", "passwordhash", "credential").exists(key.endsWith)
+    !Config.SchemaPaths.contains(path) || List("secret", "token", "password", "passwordhash", "credential").exists(key.endsWith)
 
   private[config] def flatten(source: HoconConfig): Map[String, String] =
     Config.Sections.view

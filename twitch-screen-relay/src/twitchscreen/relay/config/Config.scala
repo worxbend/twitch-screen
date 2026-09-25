@@ -215,6 +215,21 @@ object Config:
 
   val Sections: List[String] = List("http", "device-link", "twitch", "notifications", "bus", "stats", "activity", "alerts", "observability")
 
+  /** Every leaf path the typed configuration reads. `/config` masks anything else, so a key the relay never reads cannot leak its value. */
+  val SchemaPaths: Set[String] =
+    def leaves(prefix: String, keys: List[String], nested: String*): List[String] =
+      keys.filterNot(nested.contains).map(key => s"$prefix.$key")
+    Set.from(
+      leaves("http", ConfigKeys.of[HttpConfig], "auth") ++ leaves("http.auth", ConfigKeys.of[HttpAuthConfig]) ++
+        leaves("device-link", ConfigKeys.of[DeviceLinkConfig]) ++
+        leaves("twitch", ConfigKeys.of[TwitchConfig], "oauth", "event-sub", "simulation") ++
+        leaves("twitch.oauth", ConfigKeys.of[TwitchOAuthConfig]) ++ leaves("twitch.event-sub", ConfigKeys.of[EventSubConfig]) ++
+        leaves("twitch.simulation", ConfigKeys.of[SimulationConfig]) ++ leaves("notifications", ConfigKeys.of[NotificationsConfig]) ++
+        leaves("bus", ConfigKeys.of[BusConfig]) ++ leaves("stats", ConfigKeys.of[StatsConfig]) ++
+        leaves("activity", ConfigKeys.of[ActivityConfig]) ++ leaves("alerts", ConfigKeys.of[AlertsConfig]) ++
+        leaves("observability", ConfigKeys.of[ObservabilityConfig])
+    )
+
   def load(): (Config, HoconConfig) =
     val source = ConfigFactory.load()
     (ConfigSource.fromConfig(source).loadOrThrow[Config], source)

@@ -34,7 +34,7 @@ final case class HttpAuthConfig(
     require(basicPasswordHash.isSet || apiToken.isSet, "http.auth requires Basic credentials or an API token")
 
 object HttpAuthConfig:
-  given ConfigReader[HttpAuthConfig] = ValidatedConfigReader(ConfigReader.derived[HttpAuthConfig].map(_.tap(_.validate())))
+  given ConfigReader[HttpAuthConfig] = ValidatedConfigReader.strict(ConfigReader.derived[HttpAuthConfig].map(_.tap(_.validate())))
 
 /** PBKDF2-SHA256 verifier: pbkdf2-sha256$600000$base64(salt)$base64(32-byte key). No password is retained. */
 private[relay] object PasswordVerifier:
