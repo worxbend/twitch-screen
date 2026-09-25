@@ -7,7 +7,7 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 import pureconfig.ConfigReader
 import scala.util.Try
-import ox.tap
+import ox.{computeIntensive, tap}
 
 /** Empty fields disable a method; at least one complete method is required at server startup. */
 final case class HttpAuthConfig(
@@ -16,6 +16,15 @@ final case class HttpAuthConfig(
     apiToken: Sensitive = Sensitive.Empty
 ):
   def validate(): Unit =
+    require(
+      basicUsername.isEmpty || (!basicUsername.isBlank && basicUsername == basicUsername.trim && !basicUsername
+        .exists(c => c.isControl || c == ':')),
+      "http.auth.basic-username must be nonblank without surrounding whitespace, controls or colon"
+    )
+    require(
+      apiToken.value.isEmpty || apiToken.value.matches("[A-Za-z0-9._~+/-]+=*"),
+      "http.auth.api-token must use the ASCII Bearer token alphabet"
+    )
     require(basicPasswordHash.value.isEmpty || basicPasswordHash.isSet, "http.auth.basic-password-hash cannot be whitespace")
     require(apiToken.value.isEmpty || apiToken.isSet, "http.auth.api-token cannot be whitespace")
     require(basicUsername.isBlank == !basicPasswordHash.isSet, "http.auth requires both Basic username and password hash")
@@ -42,5 +51,8 @@ private[relay] object PasswordVerifier:
   def verify(password: String, encoded: String): Boolean =
     parts(encoded).exists: (salt, expected) =>
       val spec = PBEKeySpec(password.toCharArray, salt, 600000, 256)
-      try MessageDigest.isEqual(expected, SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded)
+      try
+        computeIntensive(
+          MessageDigest.isEqual(expected, SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded)
+        )
       finally spec.clearPassword()

@@ -3,6 +3,7 @@ package twitchscreen.relay.http
 import java.nio.charset.StandardCharsets.UTF_8
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.concurrent.Semaphore
 import scala.util.Try
 import sttp.model.StatusCode
 import sttp.model.headers.WWWAuthenticateChallenge
@@ -16,8 +17,9 @@ private[relay] enum HttpAccess:
   case Management, Public, Callback
 
 /** Runs before body decoding or any management operation. */
-private[relay] final class ManagementAuth(config: HttpAuthConfig):
+private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword: (String, String) => Boolean = PasswordVerifier.verify):
   config.validate()
+  private val passwordChecks = Semaphore(2)
 
   def protect(endpoint: ServerEndpoint[Any, Identity]): ServerEndpoint[Any, Identity] =
     endpoint.attribute(Http.Access) match
@@ -48,21 +50,32 @@ private[relay] final class ManagementAuth(config: HttpAuthConfig):
     val oneHeader = request.headers.count(_.name.equalsIgnoreCase("Authorization")) == 1
     if !oneHeader then Left(ManagementRejection.unauthorized)
     else if bearer.exists(token => config.apiToken.isSet && equal(token, config.apiToken.value)) then Right(())
-    else if basic.exists(checkBasic) then
-      if crossSite(request) then Left(ManagementRejection(StatusCode.Forbidden, Error_OUT("Cross-site management request rejected")))
-      else Right(())
-    else Left(ManagementRejection.unauthorized)
-
-  private def checkBasic(encoded: String): Boolean =
-    if !config.basicPasswordHash.isSet || encoded.length > 2048 then false
     else
-      Try(String(Base64.getDecoder.decode(encoded), UTF_8)).toOption.exists: decoded =>
-        val separator = decoded.indexOf(':')
-        if separator < 0 then false
-        else
-          val usernameMatches = equal(decoded.take(separator), config.basicUsername)
-          val passwordMatches = PasswordVerifier.verify(decoded.drop(separator + 1), config.basicPasswordHash.value)
-          usernameMatches && passwordMatches
+      basic match
+        case Some(encoded) =>
+          checkBasic(encoded).flatMap: valid =>
+            if !valid then Left(ManagementRejection.unauthorized)
+            else if crossSite(request) then
+              Left(ManagementRejection(StatusCode.Forbidden, Error_OUT("Cross-site management request rejected")))
+            else Right(())
+        case None => Left(ManagementRejection.unauthorized)
+
+  private def checkBasic(encoded: String): Either[ManagementRejection, Boolean] =
+    if !config.basicPasswordHash.isSet || encoded.length > 2048 then Right(false)
+    else if !passwordChecks.tryAcquire() then
+      Left(ManagementRejection(StatusCode.ServiceUnavailable, Error_OUT("Password verification busy; retry request")))
+    else
+      try
+        Right(
+          Try(String(Base64.getDecoder.decode(encoded), UTF_8)).toOption.exists: decoded =>
+            val separator = decoded.indexOf(':')
+            if separator < 0 then false
+            else
+              val usernameMatches = equal(decoded.take(separator), config.basicUsername)
+              val passwordMatches = verifyPassword(decoded.drop(separator + 1), config.basicPasswordHash.value)
+              usernameMatches && passwordMatches
+        )
+      finally passwordChecks.release()
 
   /** Browsers attach Basic credentials automatically. Restrict all management requests, including the OAuth authorize GET. Non-browser
     * clients omit Origin/Fetch Metadata. A TLS proxy must preserve public Host; Forwarded headers are not trusted.

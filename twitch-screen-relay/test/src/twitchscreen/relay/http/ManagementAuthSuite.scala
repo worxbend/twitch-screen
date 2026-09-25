@@ -9,7 +9,7 @@ import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
-import ox.{discard, supervised}
+import ox.{discard, fork, supervised}
 import sttp.shared.Identity
 import sttp.tapir.*
 import sttp.tapir.server.ServerEndpoint
@@ -87,7 +87,9 @@ class ManagementAuthSuite extends munit.FunSuite:
 
   test("Basic browser cross-site management is rejected; same-origin succeeds"):
     withServer: (port, calls) =>
-      assertEquals(request(port, "/api/v1/protected", Some(basic), Some("bad"), List("Origin" -> "https://evil.example")).statusCode(), 403)
+      val rejected = request(port, "/api/v1/protected", Some(basic), Some("bad"), List("Origin" -> "https://evil.example"))
+      assertEquals(rejected.statusCode(), 403)
+      assert(rejected.body().startsWith("{\"error\":"))
       assertEquals(request(port, "/api/v1/protected", Some(basic), Some("bad"), List("Sec-Fetch-Site" -> "cross-site")).statusCode(), 403)
       assertEquals(
         request(port, "/api/v1/protected", Some(basic), Some("ok"), List("Origin" -> s"http://127.0.0.1:$port")).statusCode(),
@@ -98,15 +100,26 @@ class ManagementAuthSuite extends munit.FunSuite:
   test("public routes and docs require no credentials; management tokens cannot bypass callback checks"):
     withServer: (port, _) =>
       assertEquals(request(port, "/api/v1/health").statusCode(), 200)
+      val missing = request(port, "/unknown-route")
+      assertEquals(missing.statusCode(), 404)
+      assert(missing.body().startsWith("{\"error\":"))
       val docs = request(port, "/docs/docs.yaml")
       assertEquals(docs.statusCode(), 200)
-      assert(docs.body().contains("ManagementBasic") && docs.body().contains("ManagementToken"), docs.body())
+      val yaml = docs.body()
+      val protectedSection =
+        yaml.linesIterator.dropWhile(_ != "  /api/v1/protected:").drop(1).takeWhile(!_.startsWith("  /")).mkString("\n")
+      assert(protectedSection.contains("security:"), yaml)
+      assert(protectedSection.matches("(?s).*security:\\s+- ManagementBasic: \\[\\]\\s+- ManagementToken: \\[\\].*"), protectedSection)
+      val publicSection = yaml.linesIterator.dropWhile(_ != "  /api/v1/health:").drop(1).takeWhile(!_.startsWith("  /")).mkString("\n")
+      assert(!publicSection.contains("security:"), publicSection)
       assertEquals(request(port, "/api/v1/callback", Some(s"Bearer $token"), Some("unsigned")).statusCode(), 401)
 
   test("oversized bodies are bounded before handling and exception responses preserve JSON without details"):
     withServer: (port, calls) =>
-      assertEquals(request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("x" * 65537)).statusCode(), 413)
-      assertEquals(request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("x" * 65537), chunked = true).statusCode(), 413)
+      List(false, true).foreach: chunked =>
+        val oversized = request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("x" * 65537), chunked = chunked)
+        assertEquals(oversized.statusCode(), 413)
+        assert(oversized.body().startsWith("{\"error\":"))
       assertEquals(calls.get(), 0)
       val failure = request(port, "/api/v1/failure", Some(s"Bearer $token"))
       assertEquals(failure.statusCode(), 500)
@@ -119,3 +132,29 @@ class ManagementAuthSuite extends munit.FunSuite:
     intercept[IllegalArgumentException](ManagementAuth(HttpAuthConfig(apiToken = Sensitive("short")))).discard
     assert(PasswordVerifier.verify(password, hash))
     assert(!PasswordVerifier.verify("wrong", hash))
+
+  test("password verification has a shared nonblocking two-request limit"):
+    supervised:
+      val entered = java.util.concurrent.CountDownLatch(2)
+      val release = java.util.concurrent.CountDownLatch(1)
+      val gate = ManagementAuth(
+        auth,
+        (_, _) =>
+          entered.countDown()
+          release.await()
+          true
+      )
+      val endpoint = gate.protect(Http.baseEndpoint.post.in("bounded").out(stringBody).handleSuccess(_ => "ok"))
+      val backend = sttp.tapir.server.stub4.TapirSyncStubInterpreter().whenServerEndpointRunLogic(endpoint).backend()
+      def send() = sttp.client4.basicRequest
+        .post(sttp.model.Uri.unsafeParse("http://localhost/api/v1/bounded"))
+        .header("Authorization", basic)
+        .send(backend)
+      val first = fork(send())
+      val second = fork(send())
+      try
+        assert(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals(send().code.code, 503)
+      finally release.countDown()
+      assertEquals(first.join().code.code, 200)
+      assertEquals(second.join().code.code, 200)

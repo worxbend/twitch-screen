@@ -136,3 +136,10 @@ class ConfigSuite extends munit.FunSuite:
       ConfigSource.fromConfig(ConfigFactory.parseString("http.auth.api-token = \"\"").withFallback(ConfigFactory.load())).load[Config]
     assert(result.isLeft)
     assert(result.swap.toOption.exists(_.toString.contains("http.auth")))
+
+  test("configured credentials reject whitespace usernames and non-header-safe bearer tokens"):
+    val token = Sensitive("valid-test-token-with-at-least-32-bytes")
+    List(" ", "name:password").foreach: username =>
+      intercept[IllegalArgumentException](HttpAuthConfig(username, apiToken = token).validate()).discard
+    List("x" * 32 + "\n", "é" * 32, "x" * 32 + " space").foreach: invalid =>
+      intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Sensitive(invalid)).validate()).discard
