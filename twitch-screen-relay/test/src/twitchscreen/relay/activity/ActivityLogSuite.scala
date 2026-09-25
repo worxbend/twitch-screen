@@ -38,3 +38,10 @@ class ActivityLogSuite extends munit.FunSuite:
     val log = ActivityLog(10)
     (1 to 5).foreach(record(log, _))
     assertEquals(log.recent(2, None).size, 2)
+
+  test("activity summaries redact credentials and controls before JSON or text export"):
+    val log = ActivityLog(10)
+    log.record(BusEvent(at, RelayEvent.RelayFailure("upstream", "Bearer private-token\nforged\u001b[31m")))
+    val summary = log.recent(1, None).head.summary
+    assert(!summary.contains("private-token"))
+    assert(!summary.exists(_.isControl))
