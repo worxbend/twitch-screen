@@ -66,12 +66,16 @@ uint8_t headerCheck(const uint8_t *hdr) {
   return (uint8_t)(0xFFu ^ (sum & 0xFFu));
 }
 
+static DecodeResult validateHeader(const uint8_t *hdr) {
+  if (hdr[0] != MAGIC0 || hdr[1] != MAGIC1) return DecodeResult::BadMagic;
+  if (hdr[7] != headerCheck(hdr)) return DecodeResult::HeaderCheckFail;
+  if (hdr[3] == 0) return DecodeResult::IllegalType;
+  if (rdU16(hdr + 4) > MAX_PAYLOAD) return DecodeResult::LengthOutOfRange;
+  return DecodeResult::Ok; // version is session policy, not framing
+}
+
 bool headerIsValid(const uint8_t *hdr) {
-  if (hdr[0] != MAGIC0 || hdr[1] != MAGIC1) return false;
-  if (hdr[7] != headerCheck(hdr))           return false;
-  if (hdr[3] == 0x00)                       return false;   // type 0 is illegal
-  if (rdU16(hdr + 4) > MAX_PAYLOAD)         return false;
-  return true;                                              // version NOT checked
+  return hdr != nullptr && validateHeader(hdr) == DecodeResult::Ok;
 }
 
 bool typeIsInbound(uint8_t type)  { return type >= 0x20 && type <= 0x3f; }
@@ -111,11 +115,9 @@ const char *decodeResultName(DecodeResult r) {
 
 DecodeResult decodeHeader(const uint8_t *frame, size_t length, TsbHeader &out) {
   if (frame == 0 || length < HEADER_SIZE)       return DecodeResult::Truncated;
-  if (frame[0] != MAGIC0 || frame[1] != MAGIC1) return DecodeResult::BadMagic;
-  if (frame[7] != headerCheck(frame))           return DecodeResult::HeaderCheckFail;
-  if (frame[3] == 0x00)                         return DecodeResult::IllegalType;
+  const DecodeResult result = validateHeader(frame);
+  if (result != DecodeResult::Ok) return result;
   const uint16_t len = rdU16(frame + 4);
-  if (len > MAX_PAYLOAD)                        return DecodeResult::LengthOutOfRange;
   out.version = frame[2];
   out.type    = frame[3];
   out.length  = len;
@@ -379,6 +381,7 @@ bool FrameReader::budgetBlown() const {
 }
 
 void FrameReader::discard(uint32_t n) {
+  counters_.resyncEvents += n;
   counters_.discardedBytes += n;
   counters_.discardedBytesTotal += n;
 }
@@ -449,7 +452,6 @@ size_t FrameReader::feed(const uint8_t *src, size_t n) {
           }
         } else {
           if (hdr_[0] == MAGIC0) ++counters_.rejectedCandidates;
-          ++counters_.resyncEvents;
           shiftWindow();
           if (budgetBlown()) state_ = Fatal;
         }

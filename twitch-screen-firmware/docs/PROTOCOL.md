@@ -160,7 +160,7 @@ TSB/3 and there will not be one.
 
 | Bit | Mask | Name | Meaning |
 |---|---|---|---|
-| 0 | `0x01` | `REPLAY` | this frame is a replay of buffered state, not a live event (§10.3) |
+| 0 | `0x01` | `REPLAY` | this EVENT is replayed buffered state, not live (§10.3); ignored on other types |
 | 1–7 | `0xfe` | reserved | MUST be sent as 0 |
 
 **A receiver MUST ignore `flags` bits it does not recognise and MUST NOT reject a frame
@@ -232,6 +232,9 @@ that was skipped was nonetheless correctly framed.
 The one exception is the handshake (§11.2): before `WELCOME` has been exchanged, a frame
 that is not the expected one is fatal to the session.
 
+A receiver MUST ignore `REPLAY` on a non-`EVENT` frame. It does not change payload
+validation, liveness, or counters, and is not a reason to drop or close.
+
 ### 4.4 Framing violations — resynchronise, then give up
 
 If the candidate header is invalid, the receiver MUST NOT trust `length` and MUST NOT
@@ -285,7 +288,7 @@ understood* (§4.3) and "malformed stream" means *the framing invariant itself i
 | `actor` | **47** content bytes + NUL, field width 48 | `EVENT`; matches the firmware's `char title[48]` |
 | `text` | **95** content bytes + NUL, field width 96 | `EVENT`; matches the firmware's `char body[96]` |
 | `reason` | **23** content bytes + NUL, field width 24 | `BYE` |
-| relay outbound queue, per device | **128** frames | drop-on-full, never block (§10.4) |
+| relay outbound queue, per device | **128** frames | never block; EVENT overflow closes the link (§10.4) |
 | device notification queue | **at least 8** entries | refuse-newest on full (§10.5) |
 | replay buffer, durable events | **64** events | §10.3 |
 | replay buffer, chat events | **16** events | separate ring, §10.3 |
@@ -347,6 +350,10 @@ which is frame offset 8.
 | 10 | 2 | `u16` | `reserved0` | MUST be sent as 0; receiver MUST ignore its content |
 | 12 | 32 | `char[32]` | `device_id` | 1…31 content bytes, NUL-padded. Blank after trimming ASCII whitespace, no NUL in the field, or any byte `< 0x20` or `> 0x7e` before the first NUL → `BYE(3 INVALID_DEVICE_ID)` and close |
 | 44 | 16 | `char[16]` | `fw_version` | free-form ASCII, 0…15 content bytes, NUL-padded; diagnostics only, never parsed. An unterminated or non-ASCII value is logged and otherwise ignored |
+
+Leading/trailing spaces in a nonblank `device_id` are significant identity bytes.
+Validation trims only to detect an all-whitespace identifier; it MUST NOT collapse
+`"device"` and `" device "` into the same identity.
 
 `caps` bits:
 
@@ -564,6 +571,10 @@ It is informational: it feeds `GET /api/v1/devices` and lets an operator see a d
 behind. **The relay MUST NOT make delivery conditional on it**, MUST NOT block waiting for
 it, and MUST NOT withhold events because of it.
 
+A relay receiving ACK without effective `CAP_ACK` MUST ignore its value. The frame
+still counts as a complete inbound frame for liveness and traffic accounting; it
+does not update the reported acknowledged sequence and does not cause a BYE.
+
 ### 6.7 `BYE` — `0x25`, relay → device, 32 bytes — FROZEN SHAPE
 
 The offsets, widths and semantics of this payload, and the type code `0x25`, are **frozen
@@ -583,9 +594,9 @@ repurposed; only appended (§16). This is what makes cross-version error reporti
 | 1 | `UNSUPPORTED_VERSION` | the version this relay speaks (3) |
 | 2 | `BAD_HANDSHAKE` | the type code actually received |
 | 3 | `INVALID_DEVICE_ID` | 0 |
-| 4 | `INVALID_SEQUENCE` | 0 |
+| 4 | `INVALID_SEQUENCE` | reserved in TSB/3; MUST NOT be sent |
 | 5 | `FRAMING_VIOLATION` | 0 |
-| 6 | `FRAME_TOO_LARGE` | the relay's `max_frame` |
+| 6 | `FRAME_TOO_LARGE` | reserved in TSB/3; MUST NOT be sent |
 | 7 | `DUPLICATE_HELLO` | 0 |
 | 8 | `SERVER_SHUTDOWN` | 0 |
 | 9 | `REPLACED` | 0 — another connection claimed this device id |
@@ -593,7 +604,12 @@ repurposed; only appended (§16). This is what makes cross-version error reporti
 | 11 | `INVALID_PARAMETER` | the payload offset of the offending field |
 | 12 | `HANDSHAKE_TIMEOUT` | 0 |
 | 13 … 999 | reserved | |
-| 1000 + | private | a receiver treats an unknown code as a generic teardown |
+| 1000 + | private | |
+
+Every unknown BYE code, including reserved codes and codes outside the private
+range, is a generic teardown. Codes 4 and 6 have no trigger in TSB/3: any
+HELLO.last_seq is legal, and excessive frame length is a framing violation handled
+by resynchronisation. Their numeric values remain reserved for future versions.
 
 `BYE` is advisory and always the **last** frame on the connection: the sender closes
 immediately after writing it and MUST NOT wait for a reply. A receiver MUST close, MUST log
@@ -735,7 +751,12 @@ queueing domain values and encode in each session's writer fork, or encode once 
 guarantee.
 
 The counter is not persisted across relay restarts; it restarts at 0 and `session_id` covers
-the consequence. The relay MUST NOT let it wrap past `0xffffffff`.
+the process change diagnostically. The relay MUST NOT let it wrap past `0xffffffff`.
+At exhaustion it MUST refuse further EVENT publication, expose the failure to the
+operator, and retain the final sequence until an explicit process restart begins
+a new sequence space. It MUST NOT silently reset the counter in a live session.
+Restart has the replay limitations of §10.2; this is an operational recovery, not
+a durable-delivery guarantee.
 
 ### 10.2 Baseline and re-baseline
 
@@ -761,12 +782,14 @@ sides therefore used different tests for the same condition, and after a relay r
 relay pushed a replay burst that the device — having just re-baselined to `latest_seq` —
 discarded frame by frame as duplicates. Nothing was drawn and the outbound queue was spent.
 
-Dropping the clause also loses nothing. When a restarted relay is at `latest_seq = 130` and
-the device holds 117, the events the relay still retains above 117 are events this device has
-genuinely never seen, so replaying them is right; the events *below* 117 in the new sequence
-space are past the end of a 64-entry ring and are unrecoverable either way. Re-baselining
-did not close that hole, it only hid it. The number-based test delivers strictly more, and
-both sides can compute it.
+**Restart limitation.** The number-based test cannot distinguish retained events
+from a new relay process whose sequence overlaps the device's old high-water mark.
+For example, at `latest_seq = 130`, a full 64-entry durable ring can retain 67–130;
+a device holding 117 receives 118–130 but skips new-process events 67–117. If the
+relay is behind, re-baselining instead skips its retained history entirely.
+TSB/3 therefore offers bounded best-effort replay within one running sequence
+space, not durable delivery across relay restarts. A session echo/capability
+extension or persisted sequence ownership requires a separately specified change.
 
 `session_id` stays on the wire and keeps its §6.2 meaning — it changes once per relay process
 start. It is diagnostic: a device SHOULD log it, because "the relay restarted under me" is
@@ -796,22 +819,30 @@ device kept its mark. It then sends exactly one `STATS`. Replayed events are
 filtered by the effective capabilities exactly as live events are: a device without
 `CAP_CHAT` is not buried in replayed chat on reconnect.
 
+TSB/3 has no replay age cutoff. Retained cards can describe a previous stream after
+a long outage; REPLAY identifies recovery, not current stream state. A future age
+policy must define which cards expire and keep filtering/high-water rules aligned.
+
 A device that sent `last_seq = 0` receives exactly two frames on greet: `WELCOME` and
 `STATS`. The replayed sequence may contain gaps (a capability-filtered kind, an evicted chat
 line); the device tracks a high-water mark, not a set.
 
 ### 10.4 Backpressure at the relay
 
-Backpressure is **drop, not block**. A device whose outbound queue (128 frames) is full loses
-the frame the relay was about to enqueue, and the loss is counted. Only `EVENT` frames are
-recoverable, via replay. Every type is assigned deliberately:
+The hub MUST never block on a device's outbound queue (128 frames). Overflow is
+handled by frame type:
 
-| Type | Recoverable | How |
+| Type | On full queue | Recovery |
 |---|---|---|
-| `EVENT` | yes | replay buffer, §10.3 |
-| `STATS` | no | next 5 s tick, and one on every greet |
-| `PING` / `PONG` | no | next heartbeat |
-| `WELCOME` / `BYE` | n/a | handshake / teardown |
+| `EVENT` | count the loss and remove/close that device before accepting any later EVENT for it | reconnect replay, subject to retention and §10.2 |
+| `STATS` | count and drop | next 5 s tick, and one on every greet |
+| `PING` / `PONG` | bounded session output; failed/stalled writes close | normal reconnect |
+| `WELCOME` / `BYE` | handshake / teardown | BYE remains best effort |
+
+A relay MUST NOT drop an EVENT and then send a higher sequence on the same
+connection: that would let the device acknowledge beyond the missing event.
+Closing is backward compatible with existing TSB/3 devices and does not make ACK
+mandatory. Replay is bounded: events evicted before reconnect cannot be recovered.
 
 Any type added in a future version MUST state which bucket it is in.
 
@@ -827,8 +858,14 @@ replay being decorative.
    oldest advances the high-water mark past an event that was never shown, and the reconnect
    replay can then never bring it back.
 
-Today's firmware does the opposite of both (`main.cpp` advances `lastSeq` before `enqueue`,
-and `enqueue` drops the oldest on overflow), which is why a raid burst silently loses cards.
+A device SHOULD stop consuming EVENT frames while its display queue is full,
+retaining the next complete frame and applying TCP backpressure. It MUST continue
+rendering queued cards and servicing bounded output so capacity returns. A local
+pause may delay reading heartbeats; it is not evidence of remote silence. If an
+EVENT is actually refused, close and reconnect for replay before admitting any
+higher EVENT sequence. Keep the previously accepted display queue and high-water
+mark across that reconnect. This prevents in-session gaps while preserving the
+existing refuse-newest rule and frame layouts.
 
 ---
 
@@ -985,7 +1022,11 @@ MUST count `8 + length` per frame; v2 counted UTF-16 characters plus one, which 
 two axes. Both sides SHOULD additionally expose: `framesUnknownType`, `framesWrongDirection`,
 `framesShortPayload`, `framesInvalidField`, `framesOversizeSkipped`, `resyncEvents` and
 `framesDropped`. Those are how a version skew or an encoder bug is diagnosed in the field,
-and they cost nothing.
+and they cost nothing. `resyncEvents` counts discarded octets while hunting for a
+valid header, including noise skipped without assembling a candidate; it does not
+count only rejected candidate windows. `framesDecoded` is a legacy diagnostic name
+for complete frames consumed, including well-framed payloads subsequently skipped;
+it is not the number of accepted application messages.
 
 ---
 
@@ -1034,37 +1075,26 @@ static_assert(offsetof(TsbStats, stream_started_at) == 24, "TsbStats.stream_star
 static_assert(offsetof(TsbStats, chat_rate)         == 28, "TsbStats.chat_rate offset");
 ```
 
-(`static_assert` requires the message argument at `-std=gnu++11`.) The existing `StreamStats`
-and `Notification` structs must be reordered into wire order: today `StreamStats` begins with
-a `bool` and `Notification` has `title` at offset 5, so neither can be copied as-is.
+`static_assert` requires its message argument at `-std=gnu++11`. Wire records and
+presentation records are separate: decode fixed offsets into `tsb::TsbEvent` and
+`tsb::TsbStats`, then convert into `Notification` and `StreamStats`. Never copy
+presentation structs directly onto the wire.
 
-Decoding is: `if (length < sizeof(T)) { skip; }` then `memcpy(&dst, payload, sizeof(T))`,
-then force the last byte of each string field to `0`. No casts through `uint32_t*`.
-
-Other consequences: the receive buffer becomes `alignas(4) uint8_t rx[248]` plus
-`uint8_t hdr[8]`, replacing `char lineBuf[512]`; `ArduinoJson` leaves `lib_deps`, since
-`link_client.cpp` is its only consumer firmware-wide and removing it takes the per-frame
-heap-allocating `JsonDocument` off the RX path; `NotifyKind` gains `StreamStart` and
-`StreamEnd` (but **not** `Donation`) and a `kindFromCode(uint8_t)` validator replacing
-`kindFromString`; `Notification` carries `ts`, `value`, `months`, `ttl_ds`, `tier`, `eflags`,
-`actor[48]`, `text[96]`. No allocation of any kind occurs on the read path.
+Decode only after checking `length >= base`, copy only the defined base, and force
+the last byte of each local string field to NUL. Use byte assembly or `memcpy`,
+never unaligned casts through `uint32_t*`. The resumable reader owns a fixed byte
+buffer and header; no per-frame heap allocation occurs on the read path. Transport
+callbacks publish state only; application callbacks and LVGL run on the loop task.
 
 ### 15.2 Relay (Scala 3)
 
-`WireJson.scala` is deleted. `FrameCodec.encode` becomes a write into an `OutputStream` (or a
-`ServerFrame => Array[Byte]`), `decode` takes an `Array[Byte]` plus a length; `DeviceSession`
-replaces `BufferedReader`/`BufferedWriter` with `InputStream`/`OutputStream`. `ProtocolError`
-gains `BadMagic`, `HeaderCheckFailed`, `LengthOutOfRange`, `UnknownType`, `WrongDirection`,
-`ShortPayload` and `InvalidField`, each mapped to §4.3 (skip) or §4.4/§4.5 (close).
-`StreamStats` gains `messagesTotal` and `streamStartedAt`; `StatsState` gains the cumulative
-counter, reset on `StreamStarted`; `RelayEvent`'s audience cases gain the structured numeric
-fields the router currently flattens into English (`viewers`, `bits`, `tier`,
-`cumulativeMonths`, `giftCount`) but **no** `Donated` case and **no** login or user-id field;
-`NotificationKind` gains a `code: Byte` alongside its `wire: String`,
-which the HTTP API keeps using. `application.conf`: `protocol-version = 3`,
-`max-frame-length = 256` (bytes, with a comment saying so), and a new
-`notifications.ignored-display-names` list under the existing `notifications` section — not a
-new top-level section, which would break the config section-name test.
+`Tsb3Encoder` and `Tsb3Decoder` encode/decode fixed binary fields over byte arrays;
+`FrameReader` operates on `InputStream`, and `DeviceSession` writes ordered frames
+to `OutputStream`. Payload-level decoder errors are skipped (§4.3), framing errors
+resynchronise within budget (§4.4/§4.5), and session violations close with a BYE
+where the stream remains trustworthy. The hub owns sequence assignment and replay
+rings. Statistics keep cumulative totals through stream end, resetting on start.
+The HTTP API retains its string notification-kind names independently of byte codes.
 
 No new dependency is needed or justified: `java.nio.ByteBuffer` with `LITTLE_ENDIAN` order is
 the entire codec. Scalac's `-Wvalue-discard` and `-Wnonunit-statement` make byte-writing
@@ -1106,8 +1136,8 @@ reflashing. For one relay and a handful of devices that is the correct severity.
 ## 17. Conformance
 
 Both implementations MUST pin the byte vectors of §18 as tests — the relay in
-`FrameCodecSuite` (today a set of JSON string literals; it becomes byte-array assertions,
-frame for frame), the firmware in a host-compiled unit test over the decoder plus the
+`Tsb3DecoderSuite` and `Tsb3GoldenVectorSuite`, the firmware in host-compiled codec,
+wire/queue and session suites plus the
 `static_assert`s of §15.1. Pinning the wire against this document on both sides is the
 mechanism by which two independent implementations stay aligned, and it is the single most
 valuable test in the repository.

@@ -370,11 +370,11 @@ void buildHello(TsbHello &hello, uint32_t lastSeq, uint32_t caps,
 
 struct Counters {
   // Lifetime totals.
-  uint32_t framesDecoded;
+  uint32_t framesDecoded;         // complete frames consumed, including payload skips
   uint32_t bytesReceived;         // 8 + length per delivered frame
   uint32_t bytesSent;             // 8 + length per frame written (noteSent)
   uint32_t framesDropped;         // outbound frames that could not be written
-  uint32_t resyncEvents;
+  uint32_t resyncEvents;          // discarded octets during header resynchronisation
   uint32_t discardedBytesTotal;
   uint32_t framesOversizeSkipped;
   uint32_t framesUnknownType;

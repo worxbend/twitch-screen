@@ -875,6 +875,7 @@ static void test_reader_resynchronises() {
     Collected got[8];
     size_t frames = drive(r, stream, n, chunk, got, 8);
     CHECK_U32(frames, 3);
+    CHECK_U32(r.counters().resyncEvents, 2 * sizeof(junk) + 5);
     CHECK(!r.isFatal());
     if (frames == 3) {
       CHECK_U32(got[0].type, T_STATS);
