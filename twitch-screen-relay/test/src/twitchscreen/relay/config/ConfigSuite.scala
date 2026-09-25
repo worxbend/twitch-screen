@@ -162,10 +162,29 @@ class ConfigSuite extends munit.FunSuite:
     assert(ConfigApi.flatten(source).values.forall(_ == "***"))
 
   test("config rejects sub-millisecond timers and unbounded queue sizes"):
+    // K-067: every fixture is valid as built, so each rejection below comes from the one field its copy changes.
+    val alerts = AlertsConfig(1.second, 10, Some(1.minute), Some(1.minute), Some(1.minute), 0, 1.minute)
+    val oauth = TwitchOAuthConfig("http://localhost:8080/api/v1/twitch/callback", Nil, "data/twitch-token.json", 15.minutes)
+    val twitch = liveTwitchConfig("client")
+    val deviceLink = deviceLinkConfig()
+    assertEquals(alerts.copy(evaluationInterval = 1.millis, noDevicesConnectedFor = Some(1.millis)).evaluationInterval, 1.millis)
+    assertEquals(twitch.copy(pollInterval = 1.millis).pollInterval, 1.millis)
+    assertEquals(oauth.copy(refreshBefore = 1.millis).refreshBefore, 1.millis)
+    assertEquals(deviceLink.handshakeTimeout, 5.seconds)
     List[() => Any](
       () => SimulationConfig(1.nanos, 1.second),
+      () => SimulationConfig(1.second, 1.nanos),
       () => StatsConfig(1.nanos, 1.second),
       () => StatsConfig(1.second, 999.millis),
+      () => twitch.copy(pollInterval = 1.nanos),
+      () => oauth.copy(refreshBefore = 1.nanos),
+      () => alerts.copy(evaluationInterval = 1.nanos),
+      () => alerts.copy(evaluationInterval = 999.micros),
+      () => alerts.copy(noDevicesConnectedFor = Some(1.nanos)),
+      () => alerts.copy(twitchDisconnectedFor = Some(1.nanos)),
+      () => alerts.copy(streamOfflineFor = Some(1.nanos)),
+      () => alerts.copy(errorRateWindow = 999.millis),
+      () => deviceLinkConfig(handshakeTimeout = 1.nanos),
       () => BusConfig(Int.MaxValue),
       () => ActivityConfig(Int.MaxValue),
       () => ObservabilityConfig(Int.MaxValue)

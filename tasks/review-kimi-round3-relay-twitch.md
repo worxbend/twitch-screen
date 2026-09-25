@@ -299,3 +299,46 @@ After the revert, `git diff --stat` showed only `TwitchRecoverySuite.scala` chan
 | `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS (162 sources) |
 | `grep -rn 'TwitchEventHandlers.channelUpdated\|mirrors the webhook mapping' twitch-screen-relay/` | no matches (exit 1) |
 | `git diff --check` | clean |
+
+## K-067: Sub-millisecond intervals admitted
+
+**Disposition:** fixed. The test gap is closed with tests only; no production change was needed. `Config.scala` already enforced `toMillis >= 1` (and `toSeconds >= 1` for count windows) at every timer site. The regression test pinned only `SimulationConfig.interval` and `StatsConfig`.
+
+### Change
+
+`twitch-screen-relay/test/src/twitchscreen/relay/config/ConfigSuite.scala`, test "config rejects sub-millisecond timers and unbounded queue sizes" (edited in place, name kept):
+
+- Valid fixtures: `alerts` (every threshold enabled at 1 minute), `oauth`, `liveTwitchConfig("client")` and `deviceLinkConfig()`. Positive controls assert that each fixture accepts exactly 1 ms (`evaluationInterval`, `noDevicesConnectedFor`, `pollInterval`, `refreshBefore`). This proves each rejection below comes from the changed field and not from an invalid fixture.
+- New rejection cases, each intercepted as `IllegalArgumentException`:
+  - `SimulationConfig(1.second, 1.nanos)` (chatInterval)
+  - `twitch.copy(pollInterval = 1.nanos)`
+  - `oauth.copy(refreshBefore = 1.nanos)`
+  - `alerts.copy(evaluationInterval = 1.nanos)`
+  - `alerts.copy(evaluationInterval = 999.micros)`: boundary case showing the check is millisecond-granular, not just nonzero
+  - `alerts.copy(noDevicesConnectedFor = Some(1.nanos))`, `twitchDisconnectedFor = Some(1.nanos)`, `streamOfflineFor = Some(1.nanos)`
+  - `alerts.copy(errorRateWindow = 999.millis)`
+  - `deviceLinkConfig(handshakeTimeout = 1.nanos)`
+- The existing six cases are unchanged.
+
+### Mutation proof (scratch edits of `Config.scala`, each restored from a backup copy; afterwards `git status` shows only `ConfigSuite.scala` modified)
+
+Command for each: `./mill --no-daemon test.testOnly twitchscreen.relay.config.ConfigSuite`
+
+| Site reverted to the old form | Result |
+|---|---|
+| `TwitchConfig`: `pollInterval.toMillis >= 1` -> `toNanos > 0` | 1 failed of 41. The K-067 test failed with "expected exception of type 'java.lang.IllegalArgumentException' but body evaluated successfully" (ConfigSuite.scala:191). |
+| `TwitchOAuthConfig`: `refreshBefore.toMillis >= 1` -> `toNanos > 0` | 1 failed of 41 (same test, same message) |
+| `AlertsConfig`: `evaluationInterval.toMillis >= 1` -> `toNanos > 0` | 1 failed of 41 (same test, same message) |
+| `AlertsConfig` thresholds: `forall(_.toMillis >= 1)` -> `forall(_.toNanos > 0)` | 1 failed of 41 (same test, same message) |
+| `AlertsConfig`: `errorRateWindow.toSeconds >= 1` -> `toNanos > 0` | 1 failed of 41 (same test, same message) |
+| `DeviceLinkConfig`: `handshakeTimeout.toMillis >= 1` -> `toNanos > 0` | 1 failed of 41 (same test, same message) |
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly twitchscreen.relay.config.ConfigSuite` | SUCCESS. 41 tests, 0 failed. It passed on the first run because the production code was already fixed. |
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.config.*'` | SUCCESS. 1 suite, 41 tests, 0 failed. |
+| `./mill --no-daemon test` | SUCCESS. 41 suites, 459 tests, 0 failed. |
+| `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS (163 sources) |
+| `git diff --stat -- twitch-screen-relay/src` | empty (no production change) |
