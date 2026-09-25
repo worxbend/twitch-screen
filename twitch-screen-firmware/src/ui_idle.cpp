@@ -4,6 +4,7 @@
 #include <lvgl.h>
 
 #include "assets/twitch_glitch.h"
+#include "presentation.h"
 
 // Layout for the 240x240 round panel (radius 120, center 120,120).
 // Usable half-width at offset y from center: sqrt(120^2 - y^2) minus ~8 px
@@ -46,7 +47,7 @@ bool linkUp = false;
 lv_image_dsc_t glitch48, glitch84;
 
 bool curLive = false;
-int32_t shownViewers = -1;
+int64_t shownViewers = -1;
 
 // §6.5 local uptime ticking. uptime_s is a snapshot taken at server_time and
 // STATS only arrives every 5 s, so the label would step in 5 s jumps. Anchor
@@ -108,27 +109,30 @@ void startPulse(lv_obj_t *obj, lv_opa_t lo, lv_opa_t hi, uint32_t ms) {
 }
 
 void viewersAnim(void *var, int32_t v) {
-  lv_label_set_text_fmt((lv_obj_t *)var, "%ld", (long)v);
+  char text[8];
+  formatCount(text, sizeof(text), v < 0 ? 0u : (uint32_t)v);
+  lv_label_set_text((lv_obj_t *)var, text);
 }
 
 void setViewers(uint32_t v) {
-  if ((int32_t)v == shownViewers) return;
+  if ((int64_t)v == shownViewers) return;
   lv_anim_delete(viewersValue, viewersAnim);
+  if (v >= 10000) {
+    char text[8];
+    formatCount(text, sizeof(text), v);
+    lv_label_set_text(viewersValue, text);
+    shownViewers = v;
+    return;
+  }
   lv_anim_t a;
   lv_anim_init(&a);
   lv_anim_set_var(&a, viewersValue);
-  lv_anim_set_values(&a, shownViewers < 0 ? (int32_t)v : shownViewers, (int32_t)v);
+  lv_anim_set_values(&a, shownViewers < 0 || shownViewers >= 10000 ? (int32_t)v : (int32_t)shownViewers, (int32_t)v);
   lv_anim_set_duration(&a, COUNT_ANIM_MS);
   lv_anim_set_exec_cb(&a, viewersAnim);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
   lv_anim_start(&a);
-  shownViewers = (int32_t)v;
-}
-
-void formatK(char *buf, size_t n, uint32_t v) {
-  if (v >= 1000) snprintf(buf, n, "%lu.%luK", (unsigned long)(v / 1000),
-                          (unsigned long)(v % 1000 / 100));
-  else snprintf(buf, n, "%lu", (unsigned long)v);
+  shownViewers = v;
 }
 
 void formatUptime(char *buf, size_t n, uint32_t sec) {
@@ -374,13 +378,13 @@ void uiIdleSetStats(const StreamStats &s) {
   // carries viewers, uptime and the chat-rate ring, which are the figures that
   // genuinely have no meaning offline.
   char buf[16];
-  formatK(buf, sizeof(buf), s.msgTotal);
+  formatCount(buf, sizeof(buf), s.msgTotal);
   lv_label_set_text(chipChat, buf);
   lv_label_set_text(offChipChat, buf);
-  formatK(buf, sizeof(buf), s.followers);
+  formatCount(buf, sizeof(buf), s.followers);
   lv_label_set_text(chipFoll, buf);
   lv_label_set_text(offChipFoll, buf);
-  formatK(buf, sizeof(buf), s.subs);
+  formatCount(buf, sizeof(buf), s.subs);
   lv_label_set_text(chipSubs, buf);
   lv_label_set_text(offChipSubs, buf);
 

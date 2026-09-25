@@ -8,13 +8,14 @@ namespace {
 
 constexpr int SCREEN_W = 240;
 constexpr int SCREEN_H = 240;
-constexpr int BUF_LINES = 40;  // 240x40x2 = ~19 KB per buffer
+constexpr int BUF_LINES = 40;
+constexpr size_t DRAW_BYTES = SCREEN_W * BUF_LINES * 2; // RGB565, 19,200 bytes
+uint32_t lastTickAt = 0;
 
 TFT_eSPI tft;
 
 // Static so they never end up on a task stack.
-lv_color_t drawBuf1[SCREEN_W * BUF_LINES];
-lv_color_t drawBuf2[SCREEN_W * BUF_LINES];
+alignas(LV_DRAW_BUF_ALIGN) uint8_t drawBuf[DRAW_BYTES];
 
 void flushCb(lv_display_t *disp, const lv_area_t *area, uint8_t *pxMap) {
   uint32_t w = area->x2 - area->x1 + 1;
@@ -39,22 +40,23 @@ void lvPortInit() {
   tft.fillScreen(TFT_BLACK);
 
   lv_init();
+  lastTickAt = millis();
 
   lv_display_t *disp = lv_display_create(SCREEN_W, SCREEN_H);
   // GC9A01 wants RGB565 MSB-first over SPI; LVGL renders little-endian.
   // Render straight into the swapped format so flush needs no byte juggling.
   lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565_SWAPPED);
   lv_display_set_flush_cb(disp, flushCb);
-  lv_display_set_buffers(disp, drawBuf1, drawBuf2, sizeof(drawBuf1),
+  lv_display_set_buffers(disp, drawBuf, nullptr, sizeof(drawBuf),
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
+  Serial.printf("[display] synchronous RGB565 buffer=%u B\n", (unsigned)sizeof(drawBuf));
 }
 
 void lvPortPump() {
-  static uint32_t last = 0;
   uint32_t now = millis();
-  lv_tick_inc(now - last);
-  last = now;
+  lv_tick_inc(now - lastTickAt);
+  lastTickAt = now;
   lv_timer_handler();
 }

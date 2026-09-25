@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "proto_codec.h"   // tsb::EF_* — the eflags bit masks of §6.4
+#include "presentation.h"
 
 // Full-screen event card for the 240x240 round panel. Content stays inside
 // the circle: nothing wider than ~170 px below the vertical center, and the
@@ -165,7 +165,7 @@ void formatDuration(char *buf, size_t n, uint32_t sec) {
 // or the gifter was anonymous (§6.4 eflags bit 3).
 const char *headlineFor(const Notification &n) {
   if (n.actor[0] != '\0') return n.actor;
-  if (n.eflags & tsb::EF_ANONYMOUS) return "Anonymous";
+  if (n.anonymous) return "Anonymous";
   return kindLabel(n.kind);
 }
 
@@ -235,11 +235,12 @@ void layoutDefault() {
   lv_obj_align(kindTxt, LV_ALIGN_CENTER, 0, -6);
 
   lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_28, 0);
+  lv_obj_set_height(titleLabel, lv_font_get_line_height(&lv_font_montserrat_28));
   lv_obj_align(titleLabel, LV_ALIGN_CENTER, 0, 18);
 
   lv_obj_set_style_text_font(bodyLabel, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(bodyLabel, lv_color_hex(0x9E9E9E), 0);
-  lv_obj_set_size(bodyLabel, 170, 36);  // ~2 wrapped lines, clipped beyond
+  lv_obj_set_size(bodyLabel, 170, 36);  // two lines, ellipsis beyond
   lv_obj_align(bodyLabel, LV_ALIGN_CENTER, 0, 60);
 }
 
@@ -251,6 +252,7 @@ void layoutChat() {
   lv_obj_align(kindTxt, LV_ALIGN_CENTER, 0, -58);
 
   lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_height(titleLabel, lv_font_get_line_height(&lv_font_montserrat_14));
   lv_obj_align(titleLabel, LV_ALIGN_CENTER, 0, -36);
 
   lv_obj_set_style_text_font(bodyLabel, &lv_font_montserrat_20, 0);
@@ -276,7 +278,6 @@ void uiNotifyInit() {
   lv_obj_set_size(ring, 232, 232);
   lv_obj_center(ring);
   lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_width(ring, 3, 0);
   lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
   clearDecor(ring);
   lv_obj_set_style_border_width(ring, 3, 0);  // clearDecor zeroed it
@@ -298,11 +299,11 @@ void uiNotifyInit() {
   titleLabel = lv_label_create(overlay);
   lv_obj_set_style_text_color(titleLabel, lv_color_white(), 0);
   lv_obj_set_width(titleLabel, 190);
-  lv_label_set_long_mode(titleLabel, LV_LABEL_LONG_DOT);
+  lv_label_set_long_mode(titleLabel, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_style_text_align(titleLabel, LV_TEXT_ALIGN_CENTER, 0);
 
   bodyLabel = lv_label_create(overlay);
-  lv_label_set_long_mode(bodyLabel, LV_LABEL_LONG_WRAP);
+  lv_label_set_long_mode(bodyLabel, LV_LABEL_LONG_MODE_DOTS);
   lv_obj_set_style_text_align(bodyLabel, LV_TEXT_ALIGN_CENTER, 0);
 
   layoutDefault();
@@ -348,8 +349,8 @@ void uiNotifyShow(const Notification &n) {
   // §6.4.1: CHAT.value is the chatter's name colour, and only when
   // eflags.CHAT_COLOUR_PRESENT is set — black is a legal colour, so the flag,
   // not a zero test, is what decides.
-  if (n.kind == NotifyKind::Chat && (n.eflags & tsb::EF_CHAT_COLOUR_PRESENT)) {
-    lv_obj_set_style_text_color(titleLabel, lv_color_hex(n.value & 0x00ffffffu), 0);
+  if (n.kind == NotifyKind::Chat && n.chatColorPresent) {
+    lv_obj_set_style_text_color(titleLabel, lv_color_hex(readableChatColor(n.value)), 0);
   } else {
     lv_obj_set_style_text_color(titleLabel, lv_color_white(), 0);
   }

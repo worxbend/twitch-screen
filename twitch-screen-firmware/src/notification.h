@@ -37,6 +37,8 @@ struct Notification {
   uint8_t  wireKind = 0;   // EVENT +20 verbatim, so a folded unknown still logs
   uint8_t  tier     = 0;   // EVENT +21, 0 = n/a, 1 = Prime, 2..4 = Tier 1..3
   uint8_t  eflags   = 0;   // EVENT +22, unknown bits ignored (§6.4)
+  bool     anonymous = false;
+  bool     chatColorPresent = false;
   bool     replay   = false;  // header flags.REPLAY (§3.2), not an eflag
   char     actor[48] = {0};   // EVENT +24, matches char[48] on the wire (§5)
   char     text[96]  = {0};   // EVENT +72, matches char[96] on the wire (§5)

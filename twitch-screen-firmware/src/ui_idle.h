@@ -11,5 +11,5 @@ void uiIdleBuild();
 // Feed the latest stream stats (updates widgets, animates transitions).
 void uiIdleSetStats(const StreamStats &s);
 
-// Link state: shows a subtle "LINK DOWN" hint when the TCP link is lost.
+// Full-screen CONNECTING until WiFi and the TSB/3 WELCOME handshake are ready.
 void uiIdleSetOnline(bool online);
