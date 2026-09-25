@@ -88,20 +88,10 @@ private[twitch] object TwitchEventHandlers:
 
   def registerEventSub(events: EventManager, bus: EventBus, tracker: ChannelStateTracker, filter: BotFilter, channel: String): Unit =
     val mapping = EventSubMapping(tracker, channel, event => filter.publish(bus, event))
-    on[ChannelFollowEvent](events)(event => mapping.dispatch("channel.follow", EventSubPayload(userName = Option(event.getUserName))))
-    on[StreamOnlineEvent](events)(event =>
-      mapping.dispatch("stream.online", EventSubPayload(startedAt = Option(event.getStartedAt).map(_.toString)))
-    )
+    on[ChannelFollowEvent](events)(event => mapping.dispatch("channel.follow", followPayload(event)))
+    on[StreamOnlineEvent](events)(event => mapping.dispatch("stream.online", streamOnlinePayload(event)))
     on[StreamOfflineEvent](events)(_ => mapping.dispatch("stream.offline", EventSubPayload()))
-    on[ChannelUpdateV2Event](events): event =>
-      mapping.dispatch(
-        "channel.update",
-        EventSubPayload(
-          broadcasterUserName = Option(event.getBroadcasterUserName),
-          title = Option(event.getTitle),
-          categoryName = Option(event.getCategoryName)
-        )
-      )
+    on[ChannelUpdateV2Event](events)(event => mapping.dispatch("channel.update", channelUpdatePayload(event)))
 
     logger.debug("EventSub handlers registered")
 
@@ -136,14 +126,19 @@ private[twitch] object TwitchEventHandlers:
   /** A resub or cheer with no attached message is the common case, not an error; §6.4.1 leaves `text` empty for it. */
   private def textOr(value: String): String = if value == null then "" else value
 
-  /** twitch4j leaves a `channel.update`'s fields null when Twitch omits them. This mirrors the webhook mapping in [[EventSubWebhookApi]]
-    * (`channel.update`): a missing title or category becomes empty text, and a missing broadcaster name falls back to the configured
-    * channel — only when null, never when blank, exactly as the webhook's `getOrElse` does (RLY-21).
+  /** The WebSocket counterpart of the webhook's JSON decoding: each adapter turns a twitch4j event into the transport-neutral
+    * [[EventSubPayload]], and [[EventSubMapping]] is the only place a payload becomes a [[RelayEvent]]. twitch4j leaves a field null when
+    * Twitch omits it, so every getter goes through `Option(...)`; a `Some(null)` would reach the screen as the word "null" (RLY-21, K-064).
     */
-  private[twitch] def channelUpdated(
-      broadcaster: String,
-      title: String,
-      category: String,
-      fallbackChannel: String
-  ): RelayEvent.ChannelUpdated =
-    EventSubMapping.channelUpdated(Option(broadcaster), Option(title), Option(category), fallbackChannel)
+  private[twitch] def followPayload(event: ChannelFollowEvent): EventSubPayload =
+    EventSubPayload(userName = Option(event.getUserName))
+
+  private[twitch] def streamOnlinePayload(event: StreamOnlineEvent): EventSubPayload =
+    EventSubPayload(startedAt = Option(event.getStartedAt).map(_.toString))
+
+  private[twitch] def channelUpdatePayload(event: ChannelUpdateV2Event): EventSubPayload =
+    EventSubPayload(
+      broadcasterUserName = Option(event.getBroadcasterUserName),
+      title = Option(event.getTitle),
+      categoryName = Option(event.getCategoryName)
+    )

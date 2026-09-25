@@ -250,3 +250,52 @@ After the revert, `git diff --stat` showed only `TwitchRecoverySuite.scala` chan
 | `./mill --no-daemon test` | SUCCESS. 39 suites, 448 tests (444 + 4), 0 failed. |
 | `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS (160 sources) |
 | `git diff --check` | clean |
+
+## K-042 + K-064: route WebSocket EventSub through one tested payload adapter
+
+- K-042 (Medium-smell, relay-twitch): Duplicated transport-to-domain mapping (RLY-20 follow-through). Location at review time: `TwitchEventHandlers.scala:88-103`, `EventSubWebhookApi.scala:119-147`.
+- K-064 (Low, relay-twitch): Chat/WS path doesn't null-normalize channel-update fields (RLY-21 residual). Location at review time: `TwitchEventHandlers.scala:99-101`.
+- **Disposition: fixed.** Both gaps were `[partial]`. Production already normalised nulls and already shared `EventSubMapping`, but the RLY-21 tests exercised `TwitchEventHandlers.channelUpdated`, a test-only wrapper that no production code called. No test drove `registerEventSub`, and no test compared the two transports. Changing the registered handler to `Some(event.getTitle)` passed every test.
+
+### Change
+
+- `twitch-screen-relay/src/twitchscreen/relay/twitch/TwitchEventHandlers.scala`:
+  - New `private[twitch]` adapters `followPayload(ChannelFollowEvent)`, `streamOnlinePayload(StreamOnlineEvent)` and `channelUpdatePayload(ChannelUpdateV2Event)`. Each wraps every nullable twitch4j getter in `Option(...)`. One scaladoc covers the block: these adapters are the WebSocket counterpart of the webhook's JSON decoding, `EventSubMapping` is the only place a payload becomes a `RelayEvent`, and `Option(...)` keeps nulls off the screen (RLY-21, K-064).
+  - `registerEventSub` is now four one-line handlers, each `mapping.dispatch("<kind>", <adapter>(event))`. `stream.offline` has no fields, so it still passes `EventSubPayload()`, as the plan specifies. Same subscription kinds, same `BotFilter` publish path.
+  - Deleted `TwitchEventHandlers.channelUpdated` and its stale scaladoc ("mirrors the webhook mapping in EventSubWebhookApi").
+  - `EventSubMapping` and `EventSubWebhookApi` are unchanged.
+- `test/.../twitch/TwitchEventSubFixtures.scala` (new, test-only): builds twitch4j events the way the WebSocket client does, with `TypeConvert.jsonToObject` over snake_case JSON. An absent field is written as an explicit JSON `null`. No reflection fallback was needed. It also provides `eventManager()`, an `EventManager` with `SimpleEventHandler` as the default handler, so `publish` is synchronous.
+- `test/.../twitch/TwitchEventHandlersSuite.scala` (rewritten, 3 to 6 tests):
+  - A fixture check that the JSON populates the getters, and that null JSON gives null getters.
+  - RLY-21, all fields null: `channelUpdatePayload` gives `EventSubPayload()` with no `Some(null)`. `EventSubMapping.channelUpdated` gives `ChannelUpdated("somechannel", "", "")`, and its summary is `"somechannel updated:  ()"` with no "null".
+  - RLY-21, all fields present: they pass through the adapter and the mapping.
+  - RLY-21, category missing: the result is `ChannelUpdated("Streamer", "Soldering", "")`.
+  - `followPayload` and `streamOnlinePayload` turn a null field into `None`.
+  - K-064: registered-handler test. `registerEventSub` is wired to a real `EventManager`. Publishing a null-field `ChannelUpdateV2Event` puts `ChannelUpdated("somechannel", "", "")` on the bus. A null-user follow publishes nothing. A null-`startedAt` online publishes `StreamStarted(..., Some(clock now))`.
+- `test/.../twitch/EventSubTransportParitySuite.scala` (new, 1 test, K-042). One scenario goes through both transports, each with a fresh bus, tracker and fixed clock:
+  - Scenario: an all-null `channel.update`, a follow from `pixelpainter`, a follow from `Nightbot` (bot-filtered), `stream.online` with `started_at` 2026-09-25T09:02:20Z, then `stream.offline`.
+  - WebSocket transport: twitch4j objects published on an `EventManager` wired by `registerEventSub`.
+  - Webhook transport: signed JSON POSTed through `EventSubWebhookApi.create` on the Tapir stub, with distinct message ids. No health observe, so no `TwitchLinkUp` is on the bus.
+  - Each bus is drained with `tryReceive`. The test asserts the webhook list equals `[ChannelUpdated("somechannel","",""), Followed("pixelpainter"), StreamStarted("somechannel","","",Some(start)), StreamEnded("somechannel", between(start, now))]`, and that the WebSocket list equals the webhook list.
+
+### Red, then green
+
+- Red: after the tests were written and before the production change, `./mill --no-daemon test.testOnly 'twitchscreen.relay.twitch.*'` failed at `test.compile` with 7 errors in `TwitchEventHandlersSuite.scala` (lines 31, 40, 51, 58, 59, 60, 62). The cause was that `channelUpdatePayload`, `followPayload` and `streamOnlinePayload` did not exist yet.
+- Green: after the change, the same command passed. 11 suites, 113 tests, 0 failed. `TwitchEventHandlersSuite` has 6 tests and `EventSubTransportParitySuite` has 1.
+
+### Mutation proof (reverted afterwards from a backup copy; `grep -c 'Some(event'` afterwards gives 0)
+
+| Mutation | Result |
+|---|---|
+| `channelUpdatePayload`: `title = Some(event.getTitle)` | 3 failed: "RLY-21: an update with every field missing ..." (TwitchEventHandlersSuite:32), "K-064: the handlers registerEventSub wires publish null-normalised events" (:80), "K-042: the WebSocket and webhook transports publish identical events ..." (EventSubTransportParitySuite:102) |
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.twitch.*'` | SUCCESS. 11 suites, 113 tests, 0 failed. |
+| `./mill --no-daemon compile` | SUCCESS (`-Werror`) |
+| `./mill --no-daemon test` | SUCCESS. 40 suites, 457 tests, 0 failed. |
+| `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS (162 sources) |
+| `grep -rn 'TwitchEventHandlers.channelUpdated\|mirrors the webhook mapping' twitch-screen-relay/` | no matches (exit 1) |
+| `git diff --check` | clean |
