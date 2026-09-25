@@ -1,0 +1,20 @@
+[
+  {
+    "package": "commons-configuration:commons-configuration",
+    "version": "1.10",
+    "advisory": "GHSA-pvp8-3xj6-8c6x",
+    "expires": "2026-10-25",
+    "owner": "relay maintainers",
+    "reason": "Twitch4J/Feign-Hystrix/Archaius legacy dependency. Only operator-controlled JVM/classpath configuration reaches its property loaders; no relay endpoint or Twitch event supplies configurations. No patched 1.x exists. See tasks/review-dependencies.md for pinned-source reachability and migration follow-up. Reassess before expiry or any configuration-input change.",
+    "reviewed": "2026-09-25"
+  },
+  {
+    "package": "commons-lang:commons-lang",
+    "version": "2.6",
+    "advisory": "GHSA-j288-q9x7-2f5v",
+    "expires": "2026-10-25",
+    "owner": "relay maintainers",
+    "reason": "Legacy Commons Configuration uses ClassUtils.getClass only through configuration bean/constant/expression lookup. Those inputs are operator-controlled; relay HTTP/device/Twitch payloads do not supply class names or Commons configuration. No patched same-namespace release exists. See tasks/review-dependencies.md; reassess before expiry or input-path changes.",
+    "reviewed": "2026-09-25"
+  }
+]
