@@ -13,10 +13,6 @@ inline void clearDecor(lv_obj_t *object) {
   lv_obj_set_clickable(object, false);
 }
 
-inline void setLabelIfChanged(lv_obj_t *label, const char *text) {
-  if (strcmp(lv_label_get_text(label), text) != 0) lv_label_set_text(label, text);
-}
-
 template <size_t N>
 inline void setStaticLabel(lv_obj_t *label, char (&storage)[N], const char *text) {
   if (strcmp(storage, text) == 0) return;

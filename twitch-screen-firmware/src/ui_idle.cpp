@@ -5,6 +5,7 @@
 
 #include "assets/twitch_glitch.h"
 #include "presentation.h"
+#include "stats_render_plan.h"
 #include "ui_common.h"
 
 // Layout for the 240x240 round panel (radius 120, center 120,120).
@@ -59,7 +60,8 @@ static_assert(sizeof(twitch_glitch_84) == 84u * 84u * sizeof(uint16_t), "84px as
 lv_image_dsc_t glitch48, glitch84;
 
 bool curLive = false;
-int64_t shownViewers = -1;
+// What the panel shows; every STATS is planned against it (stats_render_plan.h).
+StatsShown shown;
 
 // §6.5 local uptime ticking. uptime_s is a snapshot taken at server_time and
 // STATS only arrives every 5 s, so the label would step in 5 s jumps. Anchor
@@ -119,25 +121,23 @@ void viewersAnim(void *var, int32_t v) {
   setStaticLabel(static_cast<lv_obj_t *>(var), viewersText, text);
 }
 
-void setViewers(uint32_t v) {
-  if ((int64_t)v == shownViewers) return;
+// `from` is the previously shown value (-1 = unknown), the count-up origin.
+void setViewers(int64_t from, uint32_t v) {
   lv_anim_delete(viewersValue, viewersAnim);
   if (v >= 10000) {
     char text[8];
     formatCount(text, sizeof(text), v);
     setStaticLabel(viewersValue, viewersText, text);
-    shownViewers = v;
     return;
   }
   lv_anim_t a;
   lv_anim_init(&a);
   lv_anim_set_var(&a, viewersValue);
-  lv_anim_set_values(&a, shownViewers < 0 || shownViewers >= 10000 ? (int32_t)v : (int32_t)shownViewers, (int32_t)v);
+  lv_anim_set_values(&a, from < 0 || from >= 10000 ? (int32_t)v : (int32_t)from, (int32_t)v);
   lv_anim_set_duration(&a, COUNT_ANIM_MS);
   lv_anim_set_exec_cb(&a, viewersAnim);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
   lv_anim_start(&a);
-  shownViewers = v;
 }
 
 void formatUptime(char *buf, size_t n, uint32_t sec) {
@@ -324,20 +324,22 @@ void buildConnect(lv_obj_t *scr) {
   dotsTimer = lv_timer_create(dotsCb, 450, nullptr);
 }
 
+// Applies the plan for the cached STATS: only the visible group, only the
+// fields whose shown text or value changed.
 void renderVisibleStats() {
-  if (!linkUp || covered) return;
-  char text[16];
-  formatCount(text, sizeof(text), latestStats.msgTotal);
-  setLabelIfChanged(curLive ? chipChat : offChipChat, text);
-  formatCount(text, sizeof(text), latestStats.followers);
-  setLabelIfChanged(curLive ? chipFoll : offChipFoll, text);
-  formatCount(text, sizeof(text), latestStats.subs);
-  setLabelIfChanged(curLive ? chipSubs : offChipSubs, text);
-  if (!curLive) return;
-  renderUptime();
-  setViewers(latestStats.viewers);
-  const int32_t rate = latestStats.chatRate > 100 ? 100 : latestStats.chatRate;
-  if (lv_arc_get_value(edgeArc) != rate) lv_arc_set_value(edgeArc, rate);
+  const StatsRenderPlan plan = planStatsRender(shown, latestStats, linkUp, covered);
+  if (plan.group == StatsGroup::None) return;
+  const bool live = plan.group == StatsGroup::Live;
+  const int64_t previousViewers = shown.viewers;
+  // Commit first: the chips then point at the mirror's own storage.
+  commitStatsPlan(shown, plan);
+  const ChipTexts &texts = live ? shown.live : shown.offline;
+  if (plan.chat) lv_label_set_text_static(live ? chipChat : offChipChat, texts.chat);
+  if (plan.foll) lv_label_set_text_static(live ? chipFoll : offChipFoll, texts.foll);
+  if (plan.subs) lv_label_set_text_static(live ? chipSubs : offChipSubs, texts.subs);
+  if (plan.uptime) renderUptime();
+  if (plan.viewers) setViewers(previousViewers, plan.viewersValue);
+  if (plan.arc) lv_arc_set_value(edgeArc, plan.arcValue);
 }
 
 void startSpinner() {
@@ -353,11 +355,12 @@ void startSpinner() {
 }
 
 void applyVisibility() {
+  const StatsGroup group = visibleStatsGroup(linkUp, covered, curLive);
   const bool connecting = !covered && !linkUp;
-  const bool live = !covered && linkUp && curLive;
+  const bool live = group == StatsGroup::Live;
   lv_obj_set_hidden(connectGroup, !connecting);
   lv_obj_set_hidden(liveGroup, !live);
-  lv_obj_set_hidden(offlineGroup, covered || !linkUp || curLive);
+  lv_obj_set_hidden(offlineGroup, group != StatsGroup::Offline);
   lv_timer_pause(dotsTimer);
   lv_timer_pause(uptimeTimer);
   lv_anim_delete(connectSpinner, spinAnim);
@@ -373,7 +376,7 @@ void applyVisibility() {
     startPulse(liveDot, 255, 60, 700);
   } else {
     lv_anim_delete(viewersValue, viewersAnim);
-    shownViewers = -1;
+    forgetLiveViewers(shown);
   }
   renderVisibleStats();
 }
@@ -390,6 +393,7 @@ void uiIdleBuild() {
   buildLive(scr);
   buildOffline(scr);
   buildConnect(scr);
+  initStatsShown(shown);
   applyVisibility();  // starts in CONNECTING state until the link is up
 }
 
