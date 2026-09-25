@@ -470,3 +470,38 @@ None added. This is a structural move with no behaviour change, and `Main.run` i
 - `./mill --no-daemon test`: PASS on the first run (exit 0, SUCCESS), 48 suites / 519 tests, 0 failed. The SequenceExhaustionSuite flake did not show up.
 - `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: the first run failed with 1 misformatted file, which was the rewrapped LogBuffer scaladoc. After `reformatAll`, which only rewrapped that comment, the check passed and `compile` passed again.
 - `git diff --check`: PASS. `git status` lists only the three source files and this record.
+
+## test(relay): pin heartbeat PING drop counting and attach log only on successful attach
+
+Findings: **K-151** (Nit) Heartbeat PING drops uncounted. **K-148** (Nit) 'attached as #N' logged on refused attach. The production fixes were already in place (heartbeat counts a `false` from `trySendOrClosed` via `counters.recordDropped()`, and the attach log is guarded by `hub.link(connection).isDefined`), but no test pinned either behaviour. This unit adds seams and the missing tests without changing behaviour.
+
+### Change
+
+- `src/twitchscreen/relay/device/DeviceSession.scala`:
+  - `heartbeat` is now `private[device]`, and its body is `sleep(config.pingInterval); offerPing(outbound, counters, clock)`.
+  - New `private[device] def offerPing(outbound, counters, clock): Unit` holds the unchanged match: `false` (queue full) calls `counters.recordDropped()`, while `true` and `ChannelClosed` (teardown) do nothing. Its scaladoc notes that a full queue counts as a dropped frame (K-151).
+  - New `private[device] def attachAndAnnounce(hub, request): ConnectionId` calls `hub.attach` and logs `Device <id> attached as #N from <remote> (last_seq=<n>)` only when `hub.link(connection).isDefined`. The text is byte-identical to before, because `request.remoteAddress` is the same `remote` string. Its scaladoc notes that `hub.attach` returns a fresh id even when it refuses (stopping / reclaim limit) and queues a final BYE (K-148). `serve` now calls it.
+- `test/src/twitchscreen/relay/device/DeviceSessionSeamsSuite.scala` (new), 5 tests:
+  - K-151 direct: a `Channel.buffered[Outbound](1)` pre-filled with one PING, then `offerPing`. Asserts `framesDropped == 1` and that the original PING is still the queued element.
+  - K-151 loop: `heartbeat` forked with `pingInterval = 1.second`, polled under `timeout(5.seconds)` until `framesDropped >= 1`. 1 s is the smallest interval the config accepts: `copy` re-runs `DeviceLinkConfig.validate()`, which requires whole seconds of at least 1, so the planned 10 ms is not constructible.
+  - K-151 control: an empty queue receives the PING (token = the clock's epoch second), and a `done()` queue does not throw. Both leave `framesDropped == 0`.
+  - K-148 reclaim path: a logback `ListAppender` on `DeviceSession`'s logger, a fixed clock, and 17 admitted `attachAndAnnounce` calls for `DeviceId("test")` (1 initial plus 16 reclaims). The 18th call gets `Bye(RateLimit, Zero, 60s, "reclaim rate exceeded")` and `hub.link(refused) == None`. No INFO line contains `attached as #<refused> ` (trailing space, so #1 does not match #18). There are exactly 17 "attached as" lines, one for each admitted id.
+  - K-148 stopping path: `hub.shutdown()` (0 devices), then `attachAndAnnounce`. The queue gets a BYE with `ServerShutdown`, `hub.link(refused) == None`, and there are no "attached as" lines.
+
+### Mutation check
+
+The mutation replaced `offerPing`'s match with `counters.discard; outbound.trySendOrClosed(...).discard`. (A plain `.discard` does not compile under `-Werror`, because it leaves an unused parameter.) It also removed the `if hub.link(connection).isDefined` guard. With both applied, `testOnly DeviceSessionSeamsSuite` had 4 of 5 failing:
+- K-151 direct: `framesDropped` was 0 where 1 was expected.
+- K-151 loop: TimeoutException after 5 s.
+- K-148 reclaim: the "attached as #18 " line was present.
+- K-148 stopping: one unexpected "attached as" line.
+
+The control test still passed. The source was restored from a backup, and the diff was confirmed to show only the intended change.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly twitchscreen.relay.device.DeviceSessionSeamsSuite`: PASS, 5/5.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.*'`: run 3 times, PASS each time, 13 suites / 110 tests, 0 failed. The timing-based loop test was stable.
+- `./mill --no-daemon test`: the first run had 1 failure, `DeviceLinkSuite` "an attached device appears in the hub's link list with its counters in bytes": `bytesSent` read 32 where 72 was expected, because the device read STATS before the writer recorded its byte count. This is a pre-existing read-after-write race on the writer's counter, and this unit does not touch the writer or the counters. Two further full runs gave PASS (exit 0), 49 suites / 524 tests, 0 failed, with no `[warn]` lines. The previous full run was 48 / 519, so this unit adds 1 suite and 5 tests.
+- `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS.
+- `git diff --check` (with the new suite intent-added): PASS. `git status` lists only `DeviceSession.scala`, the new `DeviceSessionSeamsSuite.scala` and this record.

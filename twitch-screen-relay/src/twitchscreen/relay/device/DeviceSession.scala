@@ -152,11 +152,10 @@ private[device] object DeviceSession:
     import io.*
     val outbound = Channel.buffered[Outbound](config.outboundQueueCapacity)
     val drained = Channel.buffered[Unit](1)
-    val connection = hub.attach(
+    val connection = attachAndAnnounce(
+      hub,
       AttachRequest(hello.deviceId, remote, Tsb3.Version, hello.lastSeq, caps, outbound, counters, socket, drained)
     )
-    if hub.link(connection).isDefined then
-      logger.info(s"Device ${hello.deviceId.value} attached as #${connection.value} from $remote (last_seq=${hello.lastSeq.value})")
     try
       forkDiscard:
         try writeLoop(io, outbound)
@@ -164,6 +163,17 @@ private[device] object DeviceSession:
       forkDiscard(heartbeat(outbound, config, counters, clock))
       hub.detach(connection, readLoop(reader, idle, io))
     finally outbound.doneOrClosed().discard
+
+  /** Attaches the connection and logs it. `hub.attach` returns a fresh [[ConnectionId]] even when it refuses (stopping / reclaim limit) and
+    * queues a final BYE instead; only an admitted connection is logged (K-148).
+    */
+  private[device] def attachAndAnnounce(hub: DeviceHub, request: AttachRequest): ConnectionId =
+    val connection = hub.attach(request)
+    if hub.link(connection).isDefined then
+      logger.info(
+        s"Device ${request.device.value} attached as #${connection.value} from ${request.remoteAddress} (last_seq=${request.lastSeq.value})"
+      )
+    connection
 
   /** Drains the outbound queue onto the socket. Each step has one of three outcomes: a written frame continues the loop; a write or
     * encoding failure closes the socket, which is what ends the session; and a drained queue (the final BYE was sent, or the device was
@@ -205,12 +215,16 @@ private[device] object DeviceSession:
 
   /** Both peers ping periodically and answer promptly; either side can detect a half-open connection (§12).
     */
-  private def heartbeat(outbound: Channel[Outbound], config: DeviceLinkConfig, counters: LinkCounters, clock: Clock): Unit =
+  private[device] def heartbeat(outbound: Channel[Outbound], config: DeviceLinkConfig, counters: LinkCounters, clock: Clock): Unit =
     forever:
       sleep(config.pingInterval)
-      outbound.trySendOrClosed(Outbound(RelayMessage.Ping(Token.fromWire(clock.instant().getEpochSecond)))) match
-        case false => counters.recordDropped()
-        case _     => ()
+      offerPing(outbound, counters, clock)
+
+  /** One heartbeat tick. A full queue counts as a dropped frame (K-151); a closed queue is teardown, not a drop. */
+  private[device] def offerPing(outbound: Channel[Outbound], counters: LinkCounters, clock: Clock): Unit =
+    outbound.trySendOrClosed(Outbound(RelayMessage.Ping(Token.fromWire(clock.instant().getEpochSecond)))) match
+      case false => counters.recordDropped()
+      case _     => ()
 
   @tailrec
   private def readLoop(reader: FrameReader, idle: FrameBudget, io: SessionIo): DisconnectReason =
