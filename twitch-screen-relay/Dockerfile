@@ -5,6 +5,11 @@
 # ---------------------------------------------------------------------------
 FROM eclipse-temurin:25-jdk@sha256:97014c4b396021f9ddb7d592a7dbedb0c4e4215c29e03dc01c393558aefb71c2 AS build
 
+# The Mill launcher downloads its verified executable on a clean image.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /src
 
 # The build definition alone first, so editing a source file does not re-download the dependency tree.
