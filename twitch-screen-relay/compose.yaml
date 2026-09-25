@@ -1,4 +1,4 @@
-# A relay on the LAN the ESP32 can reach. `docker compose up` is enough to get a screen lighting up:
+# A relay on the LAN the ESP32 can reach. Set management credentials before `docker compose up`:
 # with twitch.mode = simulated it generates events itself, so no Twitch credentials are needed to test the firmware.
 services:
   relay:
@@ -9,6 +9,10 @@ services:
       - "8099:8099"   # device link
     environment:
       RELAY_TWITCH_MODE: simulated
+      # Configure at least one complete method. Missing/invalid credentials fail startup.
+      RELAY_HTTP_AUTH_API_TOKEN: ${RELAY_HTTP_AUTH_API_TOKEN:-}
+      RELAY_HTTP_AUTH_BASIC_USERNAME: ${RELAY_HTTP_AUTH_BASIC_USERNAME:-}
+      RELAY_HTTP_AUTH_BASIC_PASSWORD_HASH: ${RELAY_HTTP_AUTH_BASIC_PASSWORD_HASH:-}
       # For a real channel, set these instead and change the mode to `live`:
       # RELAY_TWITCH_MODE: live
       # RELAY_TWITCH_CHANNEL: yourchannel
@@ -17,6 +21,8 @@ services:
       # Then open http://localhost:8080/api/v1/twitch/authorize once to grant the broadcaster token.
     volumes:
       - relay-data:/home/relay/data   # the granted Twitch token
+    # Starting budget; measure under your stream/device load before raising limits.
+    mem_limit: 512m
     restart: unless-stopped
 
 volumes:

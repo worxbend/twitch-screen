@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Build: Mill produces one self-contained jar.
 # ---------------------------------------------------------------------------
-FROM eclipse-temurin:25-jdk AS build
+FROM eclipse-temurin:25-jdk@sha256:97014c4b396021f9ddb7d592a7dbedb0c4e4215c29e03dc01c393558aefb71c2 AS build
 
 WORKDIR /src
 
@@ -19,7 +19,7 @@ RUN ./mill assembly
 # ---------------------------------------------------------------------------
 # Run: a JRE, the jar and nothing else.
 # ---------------------------------------------------------------------------
-FROM eclipse-temurin:25-jre
+FROM eclipse-temurin:25-jre@sha256:bb036ed6cfdc57e3da7c22634d15f1b840d2caf76183861c80e81ca4b5104abb
 
 # curl is here for HEALTHCHECK; the image has no shell tooling otherwise.
 RUN apt-get update \
@@ -42,7 +42,7 @@ ENV RELAY_HTTP_HOST=0.0.0.0 \
     RELAY_DEVICE_HOST=0.0.0.0 \
     RELAY_DEVICE_PORT=8099 \
     RELAY_TWITCH_MODE=disabled \
-    JAVA_OPTS=""
+    JAVA_OPTS="-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError"
 
 # 8080: management API and Swagger UI. 8099: the firmware's persistent TCP link.
 EXPOSE 8080 8099

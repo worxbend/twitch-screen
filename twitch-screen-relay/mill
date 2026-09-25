@@ -119,6 +119,28 @@ esac
 
 MILL="${MILL_FINAL_DOWNLOAD_FOLDER}/$MILL_VERSION$ARTIFACT_SUFFIX"
 
+# Repository-pinned digests of the Mill 1.1.9 artifacts published on Maven Central.
+# Update these alongside mill-version; verify cached downloads as well as new ones.
+verify_mill() {
+  case "$MILL_VERSION$ARTIFACT_SUFFIX" in
+    1.1.9) MILL_EXPECTED_SHA256="6285c6f3b336e86f3e3de94730495e1fde37b0d14ae73586a7591d22860ab9ea" ;;
+    1.1.9-native-linux-amd64) MILL_EXPECTED_SHA256="9712a25ebc340f5e41aa9ce97bd486309fa616850e6c874ce1ae77328b4f6bad" ;;
+    1.1.9-native-linux-aarch64) MILL_EXPECTED_SHA256="7dc992ba9850fde59e16f9e38eef754f0e3e9f862f93336866b0722e403601e4" ;;
+    1.1.9-native-mac-amd64) MILL_EXPECTED_SHA256="ecaa0fc97285301791ae2c4ad60a23171ef6702ea967418bc805d4e41f8a0b77" ;;
+    1.1.9-native-mac-aarch64) MILL_EXPECTED_SHA256="f9cdcaacfa2523ae095735c5ada78a07c334defbba828dc0a2f6ef753f99d405" ;;
+    *) echo "No pinned checksum for Mill $MILL_VERSION$ARTIFACT_SUFFIX; update the launcher pins." >&2; return 1 ;;
+  esac
+  if command -v sha256sum >/dev/null 2>&1; then
+    MILL_ACTUAL_SHA256=$(sha256sum "$1" | cut -d ' ' -f1)
+  else
+    MILL_ACTUAL_SHA256=$(shasum -a 256 "$1" | cut -d ' ' -f1)
+  fi
+  if [ "$MILL_ACTUAL_SHA256" != "$MILL_EXPECTED_SHA256" ]; then
+    echo "Mill checksum mismatch: $1" >&2
+    return 1
+  fi
+}
+
 # If not already downloaded, download it
 if [ ! -s "${MILL}" ] || [ "$MILL_TEST_DRY_RUN_LAUNCHER_SCRIPT" = "1" ] ; then
   case $MILL_VERSION in
@@ -171,6 +193,7 @@ if [ ! -s "${MILL}" ] || [ "$MILL_TEST_DRY_RUN_LAUNCHER_SCRIPT" = "1" ] ; then
   echo "Downloading mill ${MILL_VERSION} from ${MILL_DOWNLOAD_URL} ..." 1>&2
   curl -f -L -o "${MILL_TEMP_DOWNLOAD_FILE}" "${MILL_DOWNLOAD_URL}"
 
+  verify_mill "${MILL_TEMP_DOWNLOAD_FILE}"
   chmod +x "${MILL_TEMP_DOWNLOAD_FILE}"
 
   mkdir -p "${MILL_FINAL_DOWNLOAD_FOLDER}"
@@ -179,6 +202,8 @@ if [ ! -s "${MILL}" ] || [ "$MILL_TEST_DRY_RUN_LAUNCHER_SCRIPT" = "1" ] ; then
   unset MILL_TEMP_DOWNLOAD_FILE
   unset MILL_DOWNLOAD_SUFFIX
 fi
+
+verify_mill "${MILL}"
 
 MILL_FIRST_ARG=""
 if [ "$1" = "--bsp" ] || [ "${1#"-i"}" != "$1" ] || [ "$1" = "--interactive" ] || [ "$1" = "--no-server" ] || [ "$1" = "--no-daemon" ] || [ "$1" = "--help" ] ; then

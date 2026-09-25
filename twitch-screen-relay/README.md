@@ -9,7 +9,8 @@ MacWire for wiring. No effect system, no `Future`. Built with [Mill](https://mil
 downloads the pinned Mill version and a Temurin 25 JDK on first use.
 
 ```sh
-./mill test                     # 100 tests
+./mill test                     # unit, HTTP and real-socket regressions
+export RELAY_HTTP_AUTH_API_TOKEN="$(openssl rand -hex 32)"
 ./mill run                      # http://localhost:8080/docs, device link on 8099
 ./mill assembly                 # one self-contained jar
 ```
@@ -17,12 +18,15 @@ downloads the pinned Mill version and a Temurin 25 JDK on first use.
 ## Try it without Twitch
 
 `twitch.mode = simulated` generates a fixed, repeating script of follows, subs, gifts, raids, cheers and chat, so the
-firmware and the enclosure can be worked on without credentials. This replaces what `demo-server/twitch_server.py`
+firmware and the enclosure can be worked on without Twitch credentials. This replaces what `demo-server/twitch_server.py`
 used to do, speaking the same protocol through the same code paths as the real integration.
 
 ```sh
+export RELAY_HTTP_AUTH_API_TOKEN="$(openssl rand -hex 32)"
 RELAY_TWITCH_MODE=simulated ./mill run
+# In another shell with the same management token:
 curl -X POST localhost:8080/api/v1/notifications \
+  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"type":"alert","title":"Rack A","body":"78C"}'
 ```
@@ -58,8 +62,9 @@ Three pieces are worth knowing about:
 **`DeviceHub` is an actor.** It assigns sequence numbers, keeps the 64-frame replay buffer and holds every attached
 device. Running on a single thread is what makes sequence numbers monotonic *on the wire*: two events published at the
 same instant cannot interleave their frames, so a device never sees a lower `seq` after a higher one and never
-silently discards a notification it has not shown. The actor therefore never blocks — a device whose queue is full
-loses a frame (recovered by replay on its next reconnect) rather than freezing the hub.
+advances over a notification dropped from its outbound queue. The actor never blocks: an EVENT enqueue failure
+closes that connection before a later EVENT can cross the gap; STATS may be dropped. Replay is bounded by retained
+history and the current relay process. TSB/3 does not promise durable delivery across relay restarts.
 
 **Each device connection is one virtual thread.** `DeviceLinkServer` accepts, forks a session, and the session's
 reader runs in its own thread with the writer and heartbeat as forks beside it. Blocking socket I/O on a virtual
@@ -117,6 +122,39 @@ segment after a colon (`POST /devices/7:disconnect`).
 
 Every error, including decode failures and unmatched routes, comes back as `{"error": "..."}`.
 
+## Management authentication
+
+At least one management credential must be configured, even in simulated mode.
+Either valid Basic credentials or a valid Bearer token authorizes protected routes;
+callers do not need both. Partial Basic configuration and malformed verifiers
+fail startup. There is no default password, token or unauthenticated fallback.
+
+- `RELAY_HTTP_AUTH_API_TOKEN`: random token of at least 32 UTF-8 bytes. Generate
+  one with `openssl rand -hex 32` and send `Authorization: Bearer <token>`.
+- `RELAY_HTTP_AUTH_BASIC_USERNAME` and `RELAY_HTTP_AUTH_BASIC_PASSWORD_HASH`:
+  configure both for Basic Auth. Run `python3 tools/hash_management_password.py`
+  to generate a salted verifier without storing the plaintext password.
+  The format is `pbkdf2-sha256$600000$<base64 salt>$<base64 key>`; quote it with
+  single quotes in shell assignments so dollar signs remain literal.
+
+Health, aggregate stats and documentation remain public. The exact EventSub and
+OAuth callbacks remain public with independent HMAC/timestamp/delivery-ID and
+expiring single-use OAuth state checks. All other operations in the table above
+require management authentication, including OAuth authorize/revoke and reads
+of configuration, logs, history and device diagnostics. Browser Basic actions
+also enforce cross-site request protection; CORS alone is insufficient.
+
+Use HTTPS for credential-bearing network requests, directly or through a trusted
+TLS proxy. Localhost commands are local development examples. Rotate credentials
+by changing the environment and restarting. The verifier and token are masked in
+configuration output. Never place credentials in URLs or commit `.env` files.
+
+Notification POST returns HTTP 200 after publication; retries are **not
+idempotent** and can create another card. A lost response does not prove the first
+request failed. List `pageSize` values must be within 1–500. Device listings are
+bounded by the listener's connection admission limit; the TCP listener trusts
+its LAN and has no device authentication.
+
 ## Configuration
 
 [`resources/application.conf`](resources/application.conf) is the reference, and every setting has an environment
@@ -124,6 +162,8 @@ variable override, so the container needs no config file. The most useful ones:
 
 | Variable | Default | What |
 |---|---|---|
+| `RELAY_HTTP_AUTH_API_TOKEN` | — | Required unless complete Basic credentials are configured |
+| `RELAY_HTTP_AUTH_BASIC_USERNAME` / `_PASSWORD_HASH` | — | Optional Basic alternative; both fields are required together |
 | `RELAY_HTTP_PORT` | `8080` | Management API |
 | `RELAY_DEVICE_PORT` | `8099` | Device link |
 | `RELAY_TWITCH_MODE` | `disabled` | `disabled`, `simulated` or `live` |
@@ -149,7 +189,8 @@ is configured with. The broadcaster's user token is obtained at runtime:
 
 1. Register `http://localhost:8080/api/v1/twitch/callback` (or your `RELAY_TWITCH_REDIRECT_URL`) as an OAuth
    Redirect URL of the application.
-2. Start the relay and open `http://localhost:8080/api/v1/twitch/authorize` in a browser, logged in to Twitch as the
+2. Configure Basic management credentials for browser use (or request the authorize URL with a Bearer-capable
+   client). Start the relay and open `http://localhost:8080/api/v1/twitch/authorize` in a browser, logged in to Twitch as the
    broadcaster.
 3. Approve the consent screen. Twitch redirects back to the callback, and the relay exchanges the code for an access
    and refresh token, writes them to `data/twitch-token.json` (owner-only permissions) and starts EventSub and the
@@ -178,17 +219,20 @@ rather than the poll.
 
 `websocket` is the right EventSub transport for a Raspberry Pi: the relay dials out and needs no inbound
 connectivity. `webhook` requires a publicly reachable HTTPS callback and a shared secret; the callback is
-authenticated by its HMAC signature alone, and replays are rejected on the message timestamp.
+authenticated by its HMAC signature and timestamp, with a bounded delivery-ID cache suppressing duplicates.
 
 ## Docker
 
 ```sh
+export RELAY_HTTP_AUTH_API_TOKEN="$(openssl rand -hex 32)"
 docker compose up --build       # simulated mode, ports 8080 and 8099
 ```
 
 The image is a Temurin 25 JRE plus one jar, running unprivileged, with a health check on `/api/v1/health`. The
 granted Twitch token lives in `/home/relay/data`, which compose mounts as the `relay-data` volume so that consent
-survives rebuilds. Note that
+survives rebuilds. Base images and Mill launcher downloads are pinned by digest. Compose applies a 512 MiB
+starting memory budget; Java uses up to 70% for heap and exits on heap exhaustion. The container smoke tests this
+budget in simulated mode; size it from real stream/device load before production. Note that
 the assembly is around 73 MB — twitch4j brings a large transitive stack (Jackson, OkHttp, Hystrix, Feign).
 
 ## Observability
@@ -224,12 +268,12 @@ src/twitchscreen/relay/
   health/                liveness and readiness
   http/                  shared endpoint scaffolding and the server
   observability/         OpenTelemetry, metrics, the log buffer
-test/src/…               100 tests; DeviceLinkSuite uses real sockets
+test/src/…               MUnit suites; DeviceLinkSuite uses real sockets
 ```
 
 One file is not Scala: [`twitch/EventSubFactory.java`](src/twitchscreen/relay/twitch/EventSubFactory.java). twitch4j
 generates its EventSub conditions with Lombok's `@SuperBuilder`, whose recursive generics do not survive Scala's
-wildcard capture — the setters return an unnameable `builder.B`. Nine one-line Java factories keep the rest of the
+wildcard capture — the setters return an unnameable `builder.B`. Small Java factories keep the rest of the
 integration in Scala.
 
 ## Working on it
@@ -238,15 +282,17 @@ integration in Scala.
 ./mill compile                                   # must stay at zero warnings
 ./mill test
 ./mill test.testOnly twitchscreen.relay.http.ApiSuite
-./mill mill.scalalib.scalafmt.ScalafmtModule/     # format every source
+./mill mill.scalalib.scalafmt/                   # format sources
+./mill mill.scalalib.scalafmt/checkFormatAll
 RELAY_HTTP_PORT=8095 ./mill run                   # when 8080 is taken
 ```
 
 Adding an endpoint: write it in its feature package using `.handle` / `.handleSuccess` (never `.serverLogic`), have
 the class extend `ServerEndpoints`, and add it as a constructor parameter of `Apis` — `wireList` picks it up, so
-there is no second list to keep in step.
+the group is collected automatically. Declare its public, callback or sensitive access using the `Http` endpoint bases;
+unclassified endpoints refuse startup. Protected operations advertise both authentication alternatives in OpenAPI.
 
-The build fails on warnings by policy (`-Wunused:all -Wvalue-discard -Wnonunit-statement`). Version numbers live in
+The build enables `-Werror` with `-Wunused:all -Wvalue-discard -Wnonunit-statement`. Version numbers live in
 `build.mill`; the relay's own version lives in `RelayVersion.scala`.
 
 ## What has and has not been exercised

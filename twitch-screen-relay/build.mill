@@ -30,6 +30,7 @@ object `package` extends ScalaModule {
   def jvmId = Versions.jvm
 
   def scalacOptions = Seq(
+    "-Werror",
     "-deprecation",
     "-feature",
     "-Wunused:all",
@@ -48,7 +49,7 @@ object `package` extends ScalaModule {
     mvn"com.softwaremill.sttp.tapir::tapir-swagger-ui-bundle:${Versions.tapir}",
     mvn"com.softwaremill.sttp.tapir::tapir-opentelemetry-metrics:${Versions.tapir}",
     mvn"com.softwaremill.sttp.tapir::tapir-opentelemetry-tracing:${Versions.tapir}",
-    // JSON, for both the HTTP bodies and the NDJSON device protocol.
+    // JSON for HTTP responses, Twitch OAuth and EventSub bodies. The device protocol is binary TSB/3.
     mvn"com.github.plokhotnyuk.jsoniter-scala::jsoniter-scala-macros:${Versions.jsoniter}",
     // Typed HOCON configuration.
     mvn"com.github.pureconfig::pureconfig-core:${Versions.pureconfig}",

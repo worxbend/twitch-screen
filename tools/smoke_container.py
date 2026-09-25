@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Build-independent container smoke: public HTTP, protected HTTP and TSB/3."""
+
+import json
+import os
+import secrets
+import socket
+import struct
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+
+def docker(*args, **kwargs):
+    return subprocess.check_output(["docker", *args], text=True, **kwargs).strip()
+
+
+def read_frame(connection):
+    def read_exact(size):
+        data = bytearray()
+        while len(data) < size:
+            chunk = connection.recv(size - len(data))
+            if not chunk:
+                raise RuntimeError("Device connection closed before the expected frame")
+            data.extend(chunk)
+        return bytes(data)
+
+    header = read_exact(8)
+    assert header[:3] == bytes.fromhex("a7 53 03"), header.hex()
+    assert header[7] == (0xFF ^ (sum((i + 1) * b for i, b in enumerate(header[:7])) & 0xFF))
+    return header[3], read_exact(struct.unpack_from("<H", header, 4)[0])
+
+
+def main():
+    image = sys.argv[1] if len(sys.argv) == 2 else "twitch-screen-relay:review"
+    token = secrets.token_hex(32)
+    container = docker(
+        "run", "-d", "--memory=512m", "--memory-swap=512m",
+        "-p", "127.0.0.1::8080", "-p", "127.0.0.1::8099",
+        "-e", "RELAY_HTTP_AUTH_API_TOKEN", "-e", "RELAY_TWITCH_MODE=simulated",
+        image, env={**os.environ, "RELAY_HTTP_AUTH_API_TOKEN": token}
+    )
+    try:
+        ports = json.loads(docker("inspect", "--format", "{{json .NetworkSettings.Ports}}", container))
+        base = "http://127.0.0.1:" + ports["8080/tcp"][0]["HostPort"]
+
+        def request(path, credential=None):
+            headers = {} if credential is None else {"Authorization": "Bearer " + credential}
+            try:
+                with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers), timeout=3) as response:
+                    return response.status, response.read()
+            except urllib.error.HTTPError as error:
+                return error.code, error.read()
+
+        deadline = time.monotonic() + 90
+        while True:
+            try:
+                if request("/api/v1/health")[0] == 200:
+                    break
+            except (OSError, urllib.error.URLError):
+                pass
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Container did not become healthy within 90 seconds")
+            time.sleep(0.5)
+
+        for path in ("/api/v1/health", "/api/v1/stats", "/docs/"):
+            assert request(path)[0] == 200, path
+        for path in ("/api/v1/config", "/api/v1/devices", "/api/v1/status"):
+            for credential in (None, "incorrect"):
+                status, body = request(path, credential)
+                assert status == 401, (path, status)
+                assert isinstance(json.loads(body), dict), path
+            status, body = request(path, token)
+            assert status == 200, (path, status)
+            assert token.encode() not in body, "Management token leaked in response"
+
+        # Fresh HELLO from normative V1; successful WELCOME proves both listeners are live.
+        hello = bytes.fromhex(
+            "a7 53 03 01 3c 00 00 79 00 00 00 00 07 00 00 00 "
+            "00 01 00 00 72 6f 75 6e 64 6c 63 64 2d 30 31 00 "
+            "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 "
+            "00 00 00 00 31 2e 30 2e 30 00 00 00 00 00 00 00 "
+            "00 00 00 00"
+        )
+        with socket.create_connection(("127.0.0.1", int(ports["8099/tcp"][0]["HostPort"])), timeout=5) as connection:
+            connection.sendall(hello)
+            kind, payload = read_frame(connection)
+            assert kind == 0x20 and len(payload) == 24, "Expected TSB/3 WELCOME"
+        print("Container smoke passed: public HTTP, protected HTTP, secret redaction and TSB/3 WELCOME (512 MiB limit).")
+    finally:
+        docker("rm", "-fv", container)
+
+
+if __name__ == "__main__":
+    main()
