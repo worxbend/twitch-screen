@@ -220,3 +220,51 @@ PlatformIO Core 6.2.0).
   `lv_port.cpp`. Also check that a WARNING/ALERT card still pulses and that the
   next routine card shows a solid ring. None of this has been observed on
   hardware.
+
+## K-116: magic numbers (viewer animation threshold, retry-counter saturation)
+
+Finding K-116 (Low, firmware), "Magic numbers (3072, 15000, shift caps 6/5,
+watchdog 10)". Status: fixed. Most of the literals the finding names already had
+constants before this change: 3072 is `CLOSE_STACK_BYTES`, 15000 is
+`WIFI_RETRY_MS` (`src/link_transport_esp32.cpp`), the shift caps are
+`BACKOFF_MAX_SHIFT` (+1) (`src/link_client.cpp`), and watchdog 10 is
+`WATCHDOG_TIMEOUT_S` (`src/main.cpp`). This change names the two behavioural
+literals that were still bare.
+
+### Change
+
+- `src/ui_idle.cpp`: added `constexpr uint32_t VIEWER_ANIM_MAX = 10000;` next to
+  `COUNT_ANIM_MS`, with a comment. Counts at or above it skip the count-up and are
+  drawn directly. `formatCount` (`src/presentation.h`) shows them as "10K" and
+  up. `setViewers` uses the constant at both sites that repeated `10000`. The
+  `from` comparison is written `from >= (int64_t)VIEWER_ANIM_MAX`, so it stays a
+  signed 64-bit comparison exactly as it was with the `int` literal.
+- `src/link_client.cpp`: added `constexpr uint8_t FAILURES_SATURATE = 31;` below
+  `BACKOFF_MAX_SHIFT`. Its comment says the bound stops the `uint8_t` counter
+  wrapping to 0 (which would reset the ramp to 1 s) and keeps any
+  `(failures - 1)` shift below the 32-bit width. It is guarded by
+  `static_assert(FAILURES_SATURATE > BACKOFF_MAX_SHIFT + 1 && FAILURES_SATURATE < 32, ...)`.
+  `scheduleRetry` now reads `if (failures < FAILURES_SATURATE) ++failures;`.
+- The backoff math, log text, the reset on a stable stream, and the tests are
+  unchanged. No includes were added.
+
+### Evidence (in `twitch-screen-firmware/`)
+
+`pio` is the same scratchpad wrapper as for K-107 (PlatformIO Core 6.2.0).
+
+- Naming is not testable at runtime, so no runtime test was added. The existing
+  `test_link_session` backoff cases pass unchanged, which shows the behaviour is
+  preserved.
+- static_assert mutation: setting `FAILURES_SATURATE` to 6 and then to 32 each
+  failed `pio test -e native -f test_link_session` to compile (`static assertion
+  failed: retry counter bound must cover the backoff ramp ...`). Both were
+  reverted to 31, and the suite passed again (1/1).
+- Baseline before the edit: `pio run -e esp32dev` SUCCESS, RAM 67,276 B, Flash
+  1,154,981 B.
+- After: `pio run -e esp32dev` SUCCESS, RAM 67,276 B (+0), Flash 1,154,981 B (+0).
+- `pio test -e native -e native-sanitized`: 10 test cases, 10 succeeded
+  (5 suites x 2 environments).
+- `git -C .. diff --check`: clean.
+- `grep -n "10000" src/ui_idle.cpp` returns only line 23, the
+  `VIEWER_ANIM_MAX` definition. `grep -n "< 31" src/link_client.cpp` returns
+  nothing.

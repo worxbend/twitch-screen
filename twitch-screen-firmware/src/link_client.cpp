@@ -26,6 +26,13 @@ constexpr uint32_t RX_TIMEOUT_MS      = 45000;   // inbound silence of any kind
 constexpr uint32_t BACKOFF_BASE_MS    = 1000;
 constexpr uint32_t BACKOFF_MAX_MS     = 30000;
 constexpr uint8_t BACKOFF_MAX_SHIFT = 5;
+// Saturation bound for the uint8_t retry counter. It stops ++failures wrapping
+// to 0 (which would drop the ramp back to 1 s) and keeps any (failures - 1)
+// shift below the 32-bit width of BACKOFF_BASE_MS. The ramp itself saturates
+// much earlier, at BACKOFF_MAX_SHIFT.
+constexpr uint8_t FAILURES_SATURATE = 31;
+static_assert(FAILURES_SATURATE > BACKOFF_MAX_SHIFT + 1 && FAILURES_SATURATE < 32,
+              "retry counter bound must cover the backoff ramp and stay below uint32 shift width");
 
 // §12 — the relay's own timers, which WELCOME reports (§6.2). They differ from
 // the device's on purpose (the relay is more patient), so a WELCOME is checked
@@ -119,7 +126,7 @@ struct LinkSession {
   // log line that explains it. BYE(9 REPLACED) takes the cap too, so two devices
   // sharing an id do not evict each other at 1 s.
   void scheduleRetry(uint32_t floorMs, bool forceMax) {
-    if (failures < 31) ++failures;
+    if (failures < FAILURES_SATURATE) ++failures;
     uint32_t backoff = forceMax
         ? BACKOFF_MAX_MS
         : (BACKOFF_BASE_MS << (failures > BACKOFF_MAX_SHIFT + 1 ? BACKOFF_MAX_SHIFT : (uint8_t)(failures - 1)));

@@ -18,6 +18,9 @@
 namespace {
 
 constexpr uint32_t COUNT_ANIM_MS = 800;
+// Viewer counts at or above this skip the count-up animation and are drawn
+// directly; formatCount shows them as whole thousands or more ("10K" and up).
+constexpr uint32_t VIEWER_ANIM_MAX = 10000;
 
 const lv_color_t COL_BG = lv_color_hex(0x0E0E10);
 const lv_color_t COL_PURPLE = lv_color_hex(0x9146FF);
@@ -124,7 +127,7 @@ void viewersAnim(void *var, int32_t v) {
 // `from` is the previously shown value (-1 = unknown), the count-up origin.
 void setViewers(int64_t from, uint32_t v) {
   lv_anim_delete(viewersValue, viewersAnim);
-  if (v >= 10000) {
+  if (v >= VIEWER_ANIM_MAX) {
     char text[8];
     formatCount(text, sizeof(text), v);
     setStaticLabel(viewersValue, viewersText, text);
@@ -133,7 +136,7 @@ void setViewers(int64_t from, uint32_t v) {
   lv_anim_t a;
   lv_anim_init(&a);
   lv_anim_set_var(&a, viewersValue);
-  lv_anim_set_values(&a, from < 0 || from >= 10000 ? (int32_t)v : (int32_t)from, (int32_t)v);
+  lv_anim_set_values(&a, from < 0 || from >= (int64_t)VIEWER_ANIM_MAX ? (int32_t)v : (int32_t)from, (int32_t)v);
   lv_anim_set_duration(&a, COUNT_ANIM_MS);
   lv_anim_set_exec_cb(&a, viewersAnim);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
