@@ -1,68 +1,71 @@
 ---
 name: twitch-protocol-testing
-description: End-to-end testing of the twitch-screen device against the demo server — run the Twitch simulator, trigger events, watch serial logs, and exercise reconnect/replay. Use when testing firmware behavior, the wire protocol v2, or server-client interaction without real Twitch credentials.
+description: Test the TSB/3 firmware and relay together using simulated Twitch events, native/socket suites and authorized device observations. Use for handshake, replay, timeout and reconnect behavior without a live Twitch account.
 ---
 
-# Protocol v2 end-to-end testing
+# TSB/3 protocol testing
 
-Contract: `twitch-screen-firmware/docs/PROTOCOL.md` — NDJSON over TCP, port
-8099. Ops: client→server `hello`, `pong`; server→client `welcome`, `stats`,
-`notify`, `ping`. Heartbeat: client ping every 15 s, link dead after 45 s of
-silence; `hello.last_seq` drives replay of up to 64 buffered events.
+Contract: `twitch-screen-firmware/docs/PROTOCOL.md`. Binary framed TCP on
+8099; incompatible with retired NDJSON v2 and `demo-server/twitch_server.py`.
+Read relevant contract sections before changing behavior. ACK is informational;
+WELCOME supplies heartbeat timing. Replay is finite and best effort across
+relay process restarts; do not claim durable or exactly-once delivery.
 
-## Demo server (Twitch simulator)
+## Start the supported simulator
 
-`demo-server/twitch_server.py` — stdlib-only Python, no deps:
+From the repository root:
 
-```bash
-python3 demo-server/twitch_server.py            # TCP :8099, trigger HTTP :8098
-python3 demo-server/twitch_server.py --port 8099 --trigger-port 8098
+```sh
+export RELAY_HTTP_AUTH_API_TOKEN="$(openssl rand -hex 32)"
+cd twitch-screen-relay
+RELAY_TWITCH_MODE=simulated ./mill run
 ```
 
-Behavior: stats random-walk every 5 s; weighted random events every 6-18 s
-(follow 28, chat 30, sub 14, gift 8, raid 9, bits 11); 64-event replay buffer.
-Manual event for demos:
+The simulator uses the real relay pipeline. Management endpoints require the
+configured Basic credentials or Bearer token, even in simulation. Health,
+aggregate stats, `/docs`, and exact Twitch callbacks remain public; callbacks
+still enforce their own signature/state checks.
 
-```bash
-curl -X POST localhost:8098/trigger
+In a shell with the same token, inject a card:
+
+```sh
+curl --fail-with-body -X POST http://localhost:8080/api/v1/notifications \
+  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"alert","title":"Test","body":"TSB/3 notification"}'
 ```
 
-Firmware must point at the host: `SERVER_HOST` in the git-ignored
-`src/credentials.h` (LAN IP of the machine running the simulator, e.g.
-192.168.1.x). Ops note from PLAN.md: `ufw` must allow TCP 8099 from the LAN.
+Point the ignored firmware configuration at the relay's reachable LAN address
+and TCP 8099. Use HTTPS for credential-bearing network requests; localhost
+examples are for local development. Device TCP is intended for a trusted LAN.
 
-## Serial observation
+## Automated checks
 
-```bash
-~/.platformio/penv/bin/pio device monitor   # 115200 baud
+From `twitch-screen-relay/`:
+
+```sh
+./mill test
+./mill test.testOnly twitchscreen.relay.device.DeviceLinkSuite
 ```
 
-Log tags: `[wifi]`, `[link]` (connect/welcomed/down/retry), `[app]` (baseline,
-new events). Server logs: `[accept]`, `[hello]` (shows replay count), `[gen]`,
-`[trigger]`, `[drop]`.
+From the repository root: `python3 tools/check_protocol_vectors.py`.
+Run firmware native, sanitizer and ESP32 build commands from the firmware
+workflow skill or firmware README. Never run concurrent PlatformIO builds.
 
-## Test scenarios (proven procedures from PLAN.md)
+## Observable scenarios
 
-- **Server bounce / reconnect-replay:** with the device running, kill the
-  server, wait, restart it. Expect: device detects death (peer closed or 45 s
-  heartbeat timeout) → connecting widget appears → backoff retries
-  (1 s→30 s, jittered) → `hello` with old `last_seq` → server replays missed
-  events → queued cards show back-to-back. Verified working 2026-09.
-- **WiFi loss:** known open issue — blocking `wifiEnsureConnected()` freezes
-  the connecting animation up to 10 s; don't report as new.
-- **Event burst:** `curl -X POST localhost:8098/trigger` rapidly >8 times →
-  8-slot queue drops oldest silently (known design limit).
-- **Fresh boot baseline:** power-cycle the device → `last_seq=0` → no replay,
-  adopts `latest_seq`.
+- Fresh boot: `HELLO.last_seq=0`, WELCOME baseline, no historical replay.
+- Same-process reconnect: retained later EVENTs replay in order; distinguish
+  that from a full relay restart, where v3 lacks persisted sequence ownership.
+- Burst beyond eight cards: bounded queue admission must preserve its replay
+  mark; observe recovery/backpressure and keep UI progress responsive.
+- Slow/nonreading TCP peer: independent deadline tears it down; later EVENTs
+  must not cross an outbound EVENT gap on the same connection.
+- Brief and prolonged WiFi outage: display keeps pumping; a disconnect edge
+  invalidates the old session even if association quickly recovers.
+- Duplicate device ID: replacement/backoff is deliberate; use distinct devices.
+- Long/dark text and large counts: inspect both layouts on the round display.
 
-## Expected steady-state timings
-
-Stats frame → dashboard update within ~5 s; `notify` → card slides in
-(350 ms), holds 3.5 s, slides out (280 ms); queued cards show back-to-back.
-
-## Real backend
-
-`twitch-screen-relay/` (Scala 3, Mill) is the future production server — as of
-2026-09 it is a skeleton (health endpoint only), so all end-to-end testing
-goes through the demo server. Run relay checks with `./mill test` from
-`twitch-screen-relay/`.
+Use an already-authorized serial session at 115200 baud for hardware evidence.
+Record which checks were native, real sockets, simulated, or physical hardware.
+Do not label physical recovery/rendering verified from a build alone.
