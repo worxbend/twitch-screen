@@ -206,6 +206,18 @@ class DeviceLinkSuite extends munit.FunSuite:
         val record = events(device.receiveMany(1)).head
         assertEquals((record.kind, record.seq.value), (NotificationKind.Follow, 2L))
 
+  test("§6.1: the generic kinds are withheld from a device without CAP_GENERIC"):
+    supervised:
+      val (hub, port) = TestRelay.start()
+      withDevice(port): device =>
+        device.hello("roundlcd-01", lastSeq = 0, caps = TestDevice.NoGenericCaps)
+        device.receiveMany(2).discard
+        hub.publish(EventRequest(NotificationKind.Info, actor = "relay", text = "hello", ttl = 30.seconds)).discard
+        hub.publish(follow("newfriend")).discard
+        // The Info card was still sequenced — it holds seq 1 — but a device without CAP_GENERIC is not sent it.
+        val record = events(device.receiveMany(1)).head
+        assertEquals((record.kind, record.seq.value), (NotificationKind.Follow, 2L))
+
   test("the relay's own chat policy narrows what a device asked for, and cannot widen it"):
     supervised:
       val (hub, port) = TestRelay.start(chat = ChatNotifications.Hide)

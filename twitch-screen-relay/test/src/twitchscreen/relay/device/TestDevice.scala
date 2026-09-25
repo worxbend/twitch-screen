@@ -80,6 +80,9 @@ private[device] object TestDevice:
   /** A device with no UTF-8 font and no appetite for chat, which is what §6.1's degradation rules are for. */
   val AsciiOnlyCaps: Capabilities = Capabilities.Ack | Capabilities.Generic
 
+  /** A device without CAP_GENERIC: it takes audience events and chat, but not the Info/Message/Warning/Alert cards (§6.1). */
+  val NoGenericCaps: Capabilities = Capabilities.Ack | Capabilities.Chat
+
 private[device] object TestRelay:
   /** Waits up to `budget` for the first `DeviceDisconnected` on `events` and returns its reason, skipping every other event. */
   def detachReason(events: Source[BusEvent], budget: FiniteDuration): Option[String] =

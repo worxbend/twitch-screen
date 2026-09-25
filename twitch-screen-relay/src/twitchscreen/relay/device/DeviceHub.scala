@@ -282,7 +282,7 @@ private[device] final class DeviceHubState(
     notificationsPublished += 1
     transition.foreach(stats => latestObservedStats = stats)
     broadcast(RelayMessage.Event(record))
-    if (record.kind == NotificationKind.StreamStart || record.kind == NotificationKind.StreamEnd) && (transition.isDefined || latestObservedStats != StreamStats.Unknown)
+    if record.kind.isLifecycle && (transition.isDefined || latestObservedStats != StreamStats.Unknown)
     then
       // The stats fold supplies the lifecycle card and post-transition snapshot in this same actor operation.
       // Manually posted lifecycle cards leave the observed state unchanged.

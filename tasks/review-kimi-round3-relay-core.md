@@ -181,3 +181,36 @@ Findings: **K-160** (Nit) Negative uptime on backward clock step. The fix was al
 - `./mill --no-daemon test`: PASS (SUCCESS), 40 suites / 456 tests, 0 failed.
 - `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS on the first run, so no reformat was needed.
 - `git diff --check`: PASS. `git status` lists only ApiSuite.scala and this record. No production source changed.
+
+## refactor(relay): add NotificationKind.isLifecycle and pin per-kind policy through the encoder and hub
+
+Findings: **K-034** (Medium-smell) Per-kind policy scattered across four matches. Most of the fix was already on main. `defaultTtl`, `foldsToPlaceholder`, `isGeneric` and `isDurable` are fields of the `NotificationKind` enum, and the encoder, `DisplayTtl`, `ReplayBuffers` and `DeviceHub` read them. Two gaps were left. (1) One per-kind equality check remained in `DeviceHub.sequenced`: `record.kind == StreamStart || record.kind == StreamEnd` decides whether a STATS snapshot follows the EVENT. (2) No test withheld a generic kind from a device without CAP_GENERIC, and no test checked `foldsToPlaceholder` per kind through the encoder.
+
+### Change
+
+- `src/twitchscreen/relay/protocol/NotificationKind.scala`: added the enum parameter `val isLifecycle: Boolean = false` as the last parameter. `StreamStart` and `StreamEnd` now pass `isLifecycle = true` by name. The scaladoc explains that lifecycle kinds are followed by a STATS snapshot when the stats state is known.
+- `src/twitchscreen/relay/device/DeviceHub.scala:285`: `if record.kind.isLifecycle && (transition.isDefined || latestObservedStats != StreamStats.Unknown)`. The import stays as it was, because DeviceHub uses the wildcard `twitchscreen.relay.protocol.*`. Behaviour does not change, and neither do the wire bytes.
+
+### Tests (written first)
+
+- NEW `test/src/twitchscreen/relay/protocol/NotificationKindPolicySuite.scala`, 3 tests:
+  - "K-034: every NotificationKind has an expected policy row…": the literal table's `keySet == values.toSet`.
+  - "K-034: isGeneric, isDurable, foldsToPlaceholder and isLifecycle are pinned for every kind": Info/Message/Warning/Alert are (generic, durable, no placeholder, not lifecycle). Follow/Sub/Gift/Raid/Bits are (not generic, durable, placeholder, not lifecycle). Chat is (not generic, not durable, placeholder, not lifecycle). StreamStart/StreamEnd are (not generic, durable, no placeholder, lifecycle).
+  - "K-034: an emoji-only actor folds to the placeholder…": for every kind, it encodes an EVENT with actor `"🎉🎉🎉"` using `Tsb3Encoder.toDevice(..., text = TextPolicy.AsciiFolded)` and decodes it with `Tsb3Decoder.fromRelay(WireBytes.frameOf(...))`. The expected actor comes from a literal `PlaceholderKinds` set rather than from `kind.foldsToPlaceholder`: `WireStrings.FoldedPlaceholder` for Follow/Sub/Gift/Raid/Chat/Bits, and `""` for Info/Message/Warning/Alert/StreamStart/StreamEnd.
+- `test/src/twitchscreen/relay/device/TestDevice.scala`: added `NoGenericCaps = Ack | Chat`.
+- `test/src/twitchscreen/relay/device/DeviceLinkSuite.scala`: added "§6.1: the generic kinds are withheld from a device without CAP_GENERIC". The device sends HELLO with `NoGenericCaps` and drains WELCOME and STATS. The test publishes an Info card, then a Follow, and asserts the next EVENT is `(Follow, seq 2)`: Info took seq 1 and was withheld.
+- Red step: before the production change, `./mill --no-daemon test.compile` failed at `NotificationKindPolicySuite.scala:42` with "value isLifecycle is not a member of twitchscreen.relay.protocol.NotificationKind".
+
+### Revert checks (each file restored from a copy afterwards; `git diff src/` then showed only the intended two-file change)
+
+1. `isLifecycle = true` removed from `StreamEnd`. `test.testOnly 'twitchscreen.relay.device.*' 'twitchscreen.relay.protocol.*'`: FAIL, 2 failed / 197 in 16 suites. The table test failed at `NotificationKindPolicySuite.scala:43`, and LifecycleOrderingSuite "each lifecycle EVENT is followed by its post-transition STATS in the running pipeline" failed at `LifecycleOrderingSuite.scala:43` (called from `:26`), 1 failed / 1. The DeviceLinkSuite lifecycle tests still passed, so they do not cover the StreamEnd STATS follow-up on their own. LifecycleOrderingSuite does.
+2. `DeviceHub.scala:409` changed to `case RelayMessage.Event(record) if record.kind.isGeneric => true`. `test.testOnly 'twitchscreen.relay.device.*'`: FAIL, 1 failed / 85 in 9 suites. The new DeviceLinkSuite test failed at `DeviceLinkSuite.scala:219`, 1 failed / 43.
+3. `foldsToPlaceholder = true` removed from `Follow`. `test.testOnly 'twitchscreen.relay.protocol.*'`: FAIL, 3 failed / 112 in 7 suites. The encoder test failed at `NotificationKindPolicySuite.scala:54` ("folded actor of Follow"), and the table test failed at `:43`. The existing ProtocolBoundarySuite "ASCII fallback applies only to audience display names" also failed, at `ProtocolBoundarySuite.scala:39`.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.*' 'twitchscreen.relay.protocol.*'`: PASS, 16 suites / 197 tests, 0 failed. This includes NotificationKindPolicySuite 3 / 3, DeviceLinkSuite 43 / 43 and LifecycleOrderingSuite 1 / 1.
+- `./mill --no-daemon test`: PASS (SUCCESS), 42 suites / 464 tests, 0 failed. Tsb3GoldenVectorSuite passed 23 / 23, so the wire bytes did not change.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS on the first run, so no reformat was needed.
+- `git diff --check`: PASS.
+- `grep -rnE 'NotificationKind\.(StreamStart|StreamEnd)' src`: the only hits are `device/NotificationRouter.scala:96` and `:104`, where the router builds those events. DeviceHub no longer appears.
