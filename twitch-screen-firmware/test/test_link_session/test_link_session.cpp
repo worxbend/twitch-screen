@@ -95,6 +95,34 @@ void testWifiEdgeAndBackoff() {
   attempts = t.attempts; t.time += 1001; pump(t, 1);
   check(t.attempts == (int)attempts, "short streaming session preserves exponential ramp");
 }
+void testProlongedOutage() {
+  FakeTransport t; reset(t); greet(t);
+  t.wifi = false; pump(t, 1);
+  check(!linkIsUp() && t.closed, "WiFi loss without latched edge tears down streaming");
+  const int attempts = t.attempts; t.outbound.clear();
+  bool stayedDown = true, noAttempts = true;
+  // 120 s outage in 1 s steps; pump() returning at all proves linkLoop keeps returning.
+  for (int s = 0; s < 120; ++s) {
+    t.time += 1000; pump(t, 3);
+    if (linkIsUp()) stayedDown = false;
+    if (t.attempts != attempts) noAttempts = false;
+  }
+  check(stayedDown, "link stays down for a prolonged WiFi outage");
+  check(noAttempts, "no connect attempts while WiFi is down, even past backoff deadlines");
+  check(t.outbound.empty(), "no bytes written during WiFi outage");
+  // Stale edge latched during the outage must not tear down the recovered session.
+  t.edge = true; t.wifi = true; t.connecting = LinkTransport::Connect::Ready;
+  pump(t, 1);
+  check(t.attempts == attempts && !t.edge, "stale outage edge is consumed without an attempt");
+  pump(t, 1);
+  check(t.attempts == attempts + 1, "exactly one new attempt after WiFi returns");
+  pump(t, 3);
+  check(t.attempts == attempts + 1, "no duplicate attempt while connecting");
+  check(t.outbound.size() >= tsb::HEADER_SIZE && t.outbound[3] == tsb::T_HELLO, "HELLO re-sent after outage");
+  const int welcomesBefore = welcomes; greet(t);
+  check(linkIsUp() && welcomes == welcomesBefore + 1 && t.attempts == attempts + 1,
+        "recovered session reaches streaming on the same attempt");
+}
 void testWritesAndAck() {
   FakeTransport t; reset(t); t.writeChunk = 3; greet(t); pump(t, 30);
   check(t.outbound.size() >= 56, "partial writes retain complete HELLO bytes");
@@ -202,7 +230,7 @@ void testRefusalAndInvalidHandshake() {
 }
 }
 int main() {
-  testHandshakeAndTimeouts(); testWifiEdgeAndBackoff(); testWritesAndAck();
+  testHandshakeAndTimeouts(); testWifiEdgeAndBackoff(); testProlongedOutage(); testWritesAndAck();
   testBurst(); testRefusalAndInvalidHandshake();
   testHeartbeatCapsAndBye(); testStableRecoveryAndWrap();
   testPausedQueueTimersAndWrongVersion();

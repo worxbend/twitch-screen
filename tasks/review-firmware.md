@@ -33,7 +33,7 @@ Other owners' rows refer to their separate execution reports.
 
 | ID | Groomed status | Scope / acceptance |
 |---|---|---|
-| FW-01 | Resolved | Async WiFi/DNS/connect, atomic disconnect latch; native short/prolonged outage sessions. |
+| FW-01 | Resolved | Async WiFi/DNS/connect, atomic disconnect latch; native short/prolonged outage sessions (`testWifiEdgeAndBackoff`, `testProlongedOutage`). |
 | FW-02 | Resolved | Watch loop after eliminating network waits; log reset reason; physical stall test remains manual. |
 | FW-03 | Resolved | Font-height title in default/chat layout; physical long-name visual check remains manual. |
 | FW-04 | Resolved | Pump first frame before networking; connected means WELCOME. |
@@ -101,6 +101,8 @@ Other owners' rows refer to their separate execution reports.
   5,379, session 70, presentation 18, parser fuzz 3,000 (9,316 per environment).
   ASan/UBSan reported no faults. The fuzz seed is fixed and chunk invariance is
   compared across arbitrary bytes, mutated vectors and intact vectors.
+- Round 2 (FW-01): `testProlongedOutage` added (120 s fake-clock outage via
+  `wifi=false`); session now 81 assertions, 9,327 per environment, both envs pass.
 - A regression assertion reproduced resync unit mismatch (5 rejected windows
   versus 21 discarded octets), then passed after aligning the counter.
 - Root's review reproduced delayed version rejection with a full queue. The
