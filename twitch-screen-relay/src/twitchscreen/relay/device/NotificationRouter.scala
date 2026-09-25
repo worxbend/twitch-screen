@@ -104,9 +104,9 @@ private[relay] object NotificationRouter:
 
       // The two relay-internal cards. §6.4.3's generic kinds: a title and a body, every numeric field 0.
       case RelayEvent.TwitchLinkDown(reason) =>
-        Some(EventRequest.of(NotificationKind.Warning, actor = "Twitch link lost", text = reason))
+        Some(EventRequest.of(NotificationKind.Warning, actor = "Twitch link lost", text = WireStrings.sanitise(reason)))
 
       case RelayEvent.RelayFailure(source, message) =>
-        Some(EventRequest.of(NotificationKind.Alert, actor = s"$source failed", text = message))
+        Some(EventRequest.of(NotificationKind.Alert, actor = WireStrings.sanitise(s"$source failed"), text = WireStrings.sanitise(message)))
 
       case _ => None
