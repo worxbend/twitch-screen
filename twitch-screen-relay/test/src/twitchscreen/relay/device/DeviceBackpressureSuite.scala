@@ -86,6 +86,47 @@ class DeviceBackpressureSuite extends munit.FunSuite:
       assertEquals(queue.receive().message.messageType, MessageType.Stats)
       assert(queue.receiveOrClosed().isInstanceOf[ox.channels.ChannelClosed])
 
+  test("STATS overflow is counted and dropped without closing the connection or skipping a seq"):
+    supervised:
+      val bus = EventBus(clock, 32)
+      val hub = DeviceHub.start(TestRelay.config, ChatNotifications.Show, clock, bus)
+      val queue = Channel.buffered[Outbound](2)
+      val closed = AtomicBoolean(false)
+      val transport: Closeable = () => closed.set(true)
+      val counters = LinkCounters(clock)
+      hub
+        .attach(
+          AttachRequest(
+            DeviceId("test").toOption.get,
+            "test",
+            3,
+            SeqNo.Zero,
+            TestDevice.FullCaps,
+            queue,
+            counters,
+            transport,
+            Channel.buffered[Unit](1)
+          )
+        )
+        .discard
+      // The undrained greeting fills both slots, so this snapshot cannot be enqueued.
+      hub.broadcastStats(StreamStats.Unknown)
+      // `links` is an actor ask, so it is ordered after the `broadcastStats` tell.
+      assertEquals(hub.links.size, 1)
+      assert(!closed.get(), "a dropped STATS must not close the transport")
+      assertEquals(hub.connectedCount, 1)
+      assertEquals(counters.traffic.framesDropped, 1L)
+      assertEquals(queue.receive().message.messageType, MessageType.Welcome)
+      val next = hub.publish(EventRequest.of(NotificationKind.Follow, "after-stats", ""))
+      assertEquals(next.seq, SeqNo(1L).toOption.get)
+      assertEquals(queue.receive().message.messageType, MessageType.Stats)
+      queue.receive().message match
+        case RelayMessage.Event(record) => assertEquals(record.seq, next.seq)
+        case other                      => fail(s"expected the next EVENT, got $other")
+      assert(!closed.get())
+      assertEquals(hub.links.size, 1)
+      assertEquals(counters.traffic.framesDropped, 1L)
+
   test("operator disconnect retains its reason on the event bus"):
     supervised:
       val bus = EventBus(clock, 32)

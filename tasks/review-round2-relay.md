@@ -159,3 +159,26 @@ Residual:
 - No live Twitch: the proof is a local signed verification plus a recording source.
 - `StartupOrderSuite` picks the port with a close-then-bind step, so there is a small TOCTOU window. A collision would fail this suite at bind, not pass it silently.
 - Async token maintenance started in `LiveTwitchSource.create` may still run before binding, as review-security.md already notes. Only `startIngestion` is ordered after bind.
+
+## PROTO-03 — STATS overflow is lossy-but-connected
+
+Change (test only, no production code): `DeviceBackpressureSuite` gets a new test, "STATS overflow is counted and dropped without closing the connection or skipping a seq". It sits right after the unchanged EVENT-overflow test, so EVENT drops and STATS drops are now covered separately.
+- Setup mirrors the EVENT-overflow case. `Channel.buffered[Outbound](2)` is filled by the undrained greeting (WELCOME + STATS), then `hub.broadcastStats(StreamStats.Unknown)` is called.
+- Checks after the drop:
+  - AC1: `counters.traffic.framesDropped == 1`.
+  - AC2: `hub.links.size == 1`, the transport is not closed, and `connectedCount == 1`. `links` is an actor ask, so it is ordered after the tell. The link is never detached, so no `DeviceDisconnected` is published.
+- AC3: after WELCOME is drained, `hub.publish(Follow)` returns seq 1. The queue delivers the greeting STATS, then `RelayMessage.Event` with `seq == 1`, so there is no gap. At the end the transport is still open, one link remains and `framesDropped` is still 1.
+
+Mutation check (not committed; the source was restored and `git status` shows only the test changed): the `case _ => ()` branch in `DeviceHubState.send` was changed to detach and close as the Event case does. The new test then fails at `hub.links.size` (DeviceBackpressureSuite.scala:115), and the other 5 still pass.
+
+Validation (run from twitch-screen-relay):
+- `./mill --no-daemon test.testOnly twitchscreen.relay.device.DeviceBackpressureSuite` ×4 → 6/6, 0 failed each time.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.device.DeviceBackpressureSuite twitchscreen.relay.device.DeviceLinkSuite` → 6 + 37, 0 failed.
+- `./mill --no-daemon compile` (`-Werror`) → SUCCESS.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` → SUCCESS; `git diff --check` clean.
+- `./mill --no-daemon test` → 29 suites, 339 tests (was 338), 0 failed on runs 2 and 3 (consecutive).
+  - Run 1 hit the known load-sensitive `LifecycleOrderingSuite` (1) and `DeviceLinkSuite` (1) flakes. Re-run alone, they passed: 1/1 and 37/37.
+
+Residual:
+- STATS is still lossy by design. A dropped snapshot is only replaced by the next STATS broadcast.
+- RLY-16 (greeting capacity) is separate and unchanged here.
