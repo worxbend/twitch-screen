@@ -167,7 +167,10 @@ private[device] object DeviceSession:
       hub.detach(connection, readLoop(reader, idle, io))
     finally outbound.doneOrClosed().discard
 
-  /** Drains the outbound queue onto the socket. A failed write closes the socket, which is what ends the session.
+  /** Drains the outbound queue onto the socket. Each step has one of three outcomes: a written frame continues the loop; a write or
+    * encoding failure closes the socket, which is what ends the session; and a drained queue (the final BYE was sent, or the device was
+    * detached) closes the socket too. The last two share an action but not a meaning, so queue completion never passes through
+    * [[WriteResult]].
     *
     * §10.1 puts the encoding here rather than in the hub: a per-frame buffer inside the hub would break the ordering guarantee that makes
     * sequence numbers mean anything, and the text policy is per connection anyway — one device may have a UTF-8 font while another does not
@@ -175,13 +178,13 @@ private[device] object DeviceSession:
     */
   @tailrec
   private def writeLoop(io: SessionIo, outbound: Source[Outbound]): Unit =
-    val next = outbound.receiveOrClosed() match
-      case frame: Outbound            => writeFrame(io, frame)
-      case ChannelClosed.Done         => WriteResult.Failed
+    outbound.receiveOrClosed() match
+      case frame: Outbound =>
+        writeFrame(io, frame) match
+          case WriteResult.Written => writeLoop(io, outbound)
+          case WriteResult.Failed  => closeQuietly(io.socket) // a write or encoding failure ends the session
+      case ChannelClosed.Done         => closeQuietly(io.socket) // the queue drained: final BYE sent, or detached
       case ChannelClosed.Error(cause) => throw cause
-    next match
-      case WriteResult.Written => writeLoop(io, outbound)
-      case WriteResult.Failed  => closeQuietly(io.socket)
 
   private def writeFrame(io: SessionIo, frame: Outbound): WriteResult =
     import io.*
@@ -189,13 +192,18 @@ private[device] object DeviceSession:
     if encoded.length > config.maxFrameLength then
       counters.recordDropped()
       logger.warn(s"Dropped a ${frame.message.messageType} frame of ${encoded.length} bytes, past the ${config.maxFrameLength} limit")
-      frame.message match
-        case _: RelayMessage.Event => WriteResult.Failed // later EVENTs must never cross this gap
-        case _                     => WriteResult.Written // replaceable frames may be skipped
+      oversizedFramePolicy(frame.message)
     else
       frame.message match
         case _: RelayMessage.Bye => sink.writeFinal(encoded)
         case _                   => sink.write(encoded)
+
+  /** What the writer does after dropping a frame past the length limit. An EVENT stops the writer, because a later EVENT must never cross
+    * the gap its sequence number leaves; any other frame is replaceable and may be skipped.
+    */
+  private[device] def oversizedFramePolicy(message: RelayMessage): WriteResult = message match
+    case _: RelayMessage.Event => WriteResult.Failed
+    case _                     => WriteResult.Written
 
   /** Both peers ping periodically and answer promptly; either side can detect a half-open connection (§12).
     */
@@ -381,5 +389,8 @@ private[device] final class FrameSink(target: OutputStream, counters: LinkCounte
     closed = true
     written
 
+/** The outcome of writing one frame. `Failed` means only a write or encoding failure (or an EVENT that could not be sent), never queue
+  * completion.
+  */
 private[device] enum WriteResult:
   case Written, Failed

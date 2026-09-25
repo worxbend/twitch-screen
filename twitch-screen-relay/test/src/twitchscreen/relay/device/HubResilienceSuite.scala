@@ -143,3 +143,9 @@ class HubResilienceSuite extends munit.FunSuite:
       assert(timeoutOption(2.seconds)(server.join()).isDefined, "the session ends without waiting for the 60 s idle timeout")
       assertEquals(device.drain(), Nil, "no PONG reaches the device, and the connection ends")
       assertEquals(hub.links, Nil)
+
+  test("K-086: an oversized EVENT stops the writer; an oversized replaceable frame is skipped"):
+    val event = RelayMessage.Event(EventRequest.of(NotificationKind.Info, "title", "body").record(SeqNo.fromWire(1), Instant.EPOCH))
+    assertEquals(DeviceSession.oversizedFramePolicy(event), WriteResult.Failed, "later EVENTs must never cross the dropped one")
+    assertEquals(DeviceSession.oversizedFramePolicy(RelayMessage.Ping(Token.fromWire(1))), WriteResult.Written)
+    assertEquals(DeviceSession.oversizedFramePolicy(RelayMessage.Stats(StreamStats.Unknown, Some(Instant.EPOCH))), WriteResult.Written)

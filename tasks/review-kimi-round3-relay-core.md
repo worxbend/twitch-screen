@@ -283,3 +283,36 @@ NEW `test/src/twitchscreen/relay/device/AttachedDeviceSuite.scala`, 8 tests. The
 - `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS. The reformat was a no-op; `cmp` against the pre-format copy matched.
 - `grep -nE '\.outbound|\.counters|\.connection\.close|\.drained' src/twitchscreen/relay/device/DeviceHub.scala`: 6 hits. `:220` and `:222` are `request.outbound` in the pre-attach `queueFinalBye` refusals, which take an `AttachRequest`, not an `AttachedDevice`. `:409`, `:410` and `:412` are the private val initialisers inside `AttachedDevice`, and `:449` is `_.drained` inside the `AttachedDevice` companion. No `device.outbound`, `device.counters`, `device.connection` or `device.drained` remains in the facade or in `DeviceHubState`.
 - `git diff --check`: PASS.
+
+## refactor(relay): separate queue drain from write failure in DeviceSession writeLoop
+
+Findings: **K-086** (Low) Boolean blindness in DeviceSession write loop (`DeviceSession.scala:181-207` in the review). An earlier round replaced the Boolean with `enum WriteResult { Written, Failed }`. But `writeLoop` still mapped normal queue completion (`ChannelClosed.Done`) to `WriteResult.Failed`, so a drained queue (final BYE sent, or detached) and a real write or encoding failure collapsed into one value named `Failed`.
+
+### Change (`src/twitchscreen/relay/device/DeviceSession.scala` only)
+
+- `writeLoop` now matches `receiveOrClosed()` directly. A frame goes through `writeFrame`: `Written` recurses and `Failed` closes the socket. `ChannelClosed.Done` calls `closeQuietly(io.socket)` itself, and `ChannelClosed.Error` rethrows. The recursive call stays in tail position, and `@tailrec` still compiles. The scaladoc names the three outcomes: continue, write failure and drained.
+- The oversized-frame decision is now a pure function, `private[device] def oversizedFramePolicy(message: RelayMessage): WriteResult`, on the `DeviceSession` object. An EVENT gives `Failed` and anything else gives `Written`. `writeFrame` calls it after it records the drop and logs the warning, so the behavior is unchanged.
+- `enum WriteResult` has a scaladoc saying that `Failed` means only a write or encoding failure (or an EVENT that could not be sent), never queue completion. With this, the KIMI-D09 wording in `tasks/review-kimi-device.md` ("separates queue completion ... and socket failure") is accurate, and that file is not edited.
+- `grep -n "ChannelClosed.Done" src/twitchscreen/relay/device/DeviceSession.scala`: 1 hit, `:186 case ChannelClosed.Done => closeQuietly(io.socket)`.
+- `grep -n "WriteResult.Failed" src/twitchscreen/relay/device/DeviceSession.scala`: `:185` is the writeLoop failure branch, `:205` the oversize policy, `:254` the PONG write result consumed in the read loop (`WriteFailed`), and `:369` and `:381` the `FrameSink.write` failure paths (`writeFinal` delegates to `write`). None of these is queue completion.
+
+### Tests (test first)
+
+NEW test in `test/src/twitchscreen/relay/device/HubResilienceSuite.scala`: "K-086: an oversized EVENT stops the writer; an oversized replaceable frame is skipped". An EVENT (built through `EventRequest.of(...).record(...)`, as AttachedDeviceSuite does) gives `Failed`. A PING and a STATS each give `Written`. The end-to-end path cannot be reached, because `Config.scala` requires the frame limit to be exactly 256.
+
+- Red: before the production change, `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.HubResilienceSuite'` failed to compile with 3 errors: `value oversizedFramePolicy is not a member of object twitchscreen.relay.device.DeviceSession`.
+- Green: the same command passed, 7 / 7.
+
+### Revert checks (the production file was restored from a copy after each check; `cmp` confirmed it matched)
+
+1. `case ChannelClosed.Done => ()`, so the writer no longer closes on drain. Running `test.testOnly DeviceLinkSuite ApplicationShutdownSuite` still PASSED, 43 / 43 and 2 / 2. DeviceLinkSuite took 6.9 s instead of about 2 s. The operator-disconnect test (EVENT, BYE, EOF) still sees EOF because the `AttachedDevice.drainThenClose` backstop closes the transport after its 2 s deadline (see K-081 revert note 2 above). To be honest about coverage: the Done-branch close is pinned only by timing, as the first closer. No test fails without it.
+2. `oversizedFramePolicy` returned `Written` for Event. Running `test.testOnly HubResilienceSuite` gave FAIL, 1 failed / 7: the K-086 test at `HubResilienceSuite.scala:149`.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.HubResilienceSuite'`: PASS, 7 / 7.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.DeviceLinkSuite' 'twitchscreen.relay.device.ApplicationShutdownSuite' 'twitchscreen.relay.device.DeviceBackpressureSuite' 'twitchscreen.relay.device.AttachedDeviceSuite'`: PASS, 43 / 43, 2 / 2, 7 / 7 and 8 / 8. No existing test was modified. This includes the final-BYE drain test (EVENT, BYE, EOF), the SERVER_SHUTDOWN BYE drain, EVENT overflow and the stalled-write deadline.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.*'`: PASS, 11 suites / 98 tests, 0 failed. The previous record was 97, so this is +1.
+- `./mill --no-daemon test`: PASS (SUCCESS), 45 suites / 491 tests, 0 failed, with no `[warn]` or `[error]` lines under `-Werror`. The baseline on this lane branch is 45 / 490, which includes the relay-twitch commits `234eb5e` and `2bcca20` merged since the K-081 record, so this is +1 test.
+- `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS. The reformat was a no-op; `cmp` against the pre-format copies matched.
+- `git diff --check`: PASS. `git status` lists only `DeviceSession.scala`, `HubResilienceSuite.scala` and this record.
