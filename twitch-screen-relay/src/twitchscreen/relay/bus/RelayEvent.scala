@@ -88,3 +88,10 @@ private[relay] object RelayEvent:
       case _: (DeviceConnected | DeviceDisconnected)                                             => EventCategory.Device
       case _: NotificationPublished                                                              => EventCategory.Notification
       case _: RelayFailure                                                                       => EventCategory.Failure
+
+    /** Refines [[EventCategory.Channel]]: true for polled audience totals (viewer, follower and subscriber counts), which are samples of
+      * state rather than things that happened. Metrics count them apart from Twitch events.
+      */
+    def isObservation: Boolean = event match
+      case _: (ViewersObserved | FollowersObserved | SubscribersObserved) => true
+      case _                                                              => false

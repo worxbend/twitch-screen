@@ -358,3 +358,38 @@ NEW test in `DeviceBackpressureSuite`, "K-140: an idle established session with 
 - `./mill --no-daemon test`: PASS (SUCCESS), 46 suites / 503 tests, 0 failed, with no `[warn]` or `[error]` lines under `-Werror`.
 - `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS. The reformat only rewrapped lines in `DeviceSession.scala` (`inFlight.get().foreach` chain) and `WriteDeadlineSuite.scala` (blank line); `DeviceBackpressureSuite.scala` was unchanged.
 - `git diff --check`: PASS. `git status` lists only `DeviceSession.scala`, `DeviceBackpressureSuite.scala`, the new `WriteDeadlineSuite.scala`, `tasks/review-kimi-device.md` and this record.
+
+## refactor(relay): derive RelayMetrics counters from RelayEvent.category
+
+Findings: **K-095** (Low) Three parallel RelayEvent classifications (`bus/ RelayEvent`; fix: "Single classification on RelayEvent"). The retained gap was that `RelayMetrics.observe` was a third exhaustive match that re-listed all 18 cases and re-derived what `category` already says. `summary` stays as it is, because it is a text rendering, not a classification.
+
+### Change
+
+- `src/twitchscreen/relay/bus/RelayEvent.scala`: a new extension `def isObservation: Boolean` sits next to `category`. It is true for `ViewersObserved | FollowersObserved | SubscribersObserved` and false otherwise, and its Scaladoc says it refines `EventCategory.Channel`. `EventCategory`, `category` and `summary` are unchanged.
+- `src/twitchscreen/relay/observability/RelayMetrics.scala`: the 18-case match is replaced by `private def counterFor(event): LongCounter = event.category match`. It maps Notification to notifications, Failure to failures, Twitch to twitchLinks, and Device to an inner split (`DeviceConnected` to connections, otherwise disconnections). `Channel if event.isObservation` goes to observations, and `Channel | Audience` to twitchEvents. `observe` becomes `counterFor(event).add(1)`. The outer match has no wildcard. The class Scaladoc now says the counters are derived from `RelayEvent.category` plus `isObservation`. `grep` finds no Channel or Audience case names left in RelayMetrics.scala. The only case it still names is `RelayEvent.DeviceConnected`. Metric names and descriptions are unchanged.
+
+### Tests (test first)
+
+NEW `test/src/twitchscreen/relay/observability/RelayMetricsSuite.scala`, 3 tests:
+1. "K-095: the table has one row for every RelayEvent case": the table's `ordinal` set equals `0 until caseCount[RelayEvent]`, and its size equals the case count. The count comes from `constValue[Tuple.Size[Mirror.SumOf[T]#MirroredElemLabels]]` through an inline helper.
+2. "K-095: every RelayEvent case increments exactly its expected counter": 18 rows. Each row gets a fresh SDK, `CollectingReader` and `RelayMetrics`, observes one event, and asserts that the non-zero long sums equal `Map(expected -> 1L)`.
+3. "K-095: isObservation holds for exactly the polled audience totals": over the same table, the set of ordinals where `isObservation` is true is exactly those of the three `*Observed` cases.
+- The existing `DiagnosticsSuite` test "Twitch event metrics exclude observations and link transitions" is unchanged.
+- Red: before `isObservation` existed, `test.testOnly RelayMetricsSuite` failed to compile (`RelayMetricsSuite.scala:83`, `isObservation` not a member). In a first draft, the Mirror count sat in a local `val`, and `-Werror` rejected it as an unused local and unused import. It was moved into an inline helper.
+- Green before the refactor: with `isObservation` added and the old 18-case `observe` still in place, `test.testOnly 'twitchscreen.relay.observability.*'` passed: RelayMetricsSuite 3/3, DiagnosticsSuite 5/5, OtelLinkageSuite 3/3. That shows the table pins the behaviour as it was before the change.
+- Green after the refactor: the same results.
+
+### Mutation checks (each file was restored from a copy afterwards; `cmp` confirmed it matched)
+
+- m1: `ViewersObserved` removed from `isObservation`. The result was FAIL, 2 failed: the K-095 table (`RelayMetricsSuite.scala:82`, where the event went to twitch.events) and the isObservation test (`:93`).
+- m2: the two Device branches swapped. The result was FAIL, 1 failed: the K-095 table (`:82`).
+- m3: `EventCategory.Twitch => twitchEvents` was set directly, which failed to compile under `-Werror` because `twitchLinks` became unused. A variant that keeps `twitchLinks` referenced (`if event eq null then twitchLinks else twitchEvents`) gave FAIL, 2 failed: the K-095 table and DiagnosticsSuite "Twitch event metrics exclude observations and link transitions".
+- m4: the `Raided` row was removed from the table. The result was FAIL, 1 failed: the completeness guard (`:76`).
+- m5 (extra): the `EventCategory.Failure` branch was removed, which gave a compile error: "match may not be exhaustive. It would fail on pattern case: Failure" at `RelayMetrics.scala:50`, under `-Werror`. This confirms that the guarded `Channel` case does not hide the exhaustiveness check.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.observability.*' 'twitchscreen.relay.bus.*'`: PASS. RelayMetricsSuite 3/3, DiagnosticsSuite 5/5, OtelLinkageSuite 3/3, EventBusSuite 11/11.
+- `./mill --no-daemon test`: PASS (exit 0), 47 suites / 515 tests, 0 failed. This unit adds 1 suite and 3 tests. The last full run recorded above was 46 / 503, so the other 9 tests came from units recorded in between; this unit does not account for them. The log has no `[warn]` or `[error]` lines under `-Werror`.
+- `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS.
+- `git diff --check`: PASS. `git status` lists only `RelayEvent.scala`, `RelayMetrics.scala`, the new `RelayMetricsSuite.scala` and this record.

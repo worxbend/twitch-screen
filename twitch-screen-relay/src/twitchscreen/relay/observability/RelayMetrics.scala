@@ -4,13 +4,14 @@ import io.opentelemetry.api.OpenTelemetry
 import io.opentelemetry.api.metrics.LongCounter
 import ox.{Ox, discard, useCloseableInScope}
 import twitchscreen.relay.RelayVersion
-import twitchscreen.relay.bus.{EventBus, RelayEvent}
+import twitchscreen.relay.bus.{EventBus, EventCategory, RelayEvent}
 import twitchscreen.relay.device.DeviceHub
 
 /** The relay's own metrics, alongside the HTTP ones Tapir's interceptor records.
   *
   * They are fed from the event bus rather than from call sites, so instrumentation never has to be remembered when a new producer is added
-  * — anything that reaches the bus is counted.
+  * — anything that reaches the bus is counted. Which counter an event moves is derived from `RelayEvent.category`, refined only by
+  * `isObservation` and the device connect/disconnect split, never from a separate list of event cases.
   */
 private[relay] final class RelayMetrics(otel: OpenTelemetry):
   private val meter = otel.meterBuilder("twitch-screen-relay").setInstrumentationVersion(RelayVersion.current).build()
@@ -45,16 +46,19 @@ private[relay] final class RelayMetrics(otel: OpenTelemetry):
   private val twitchLinks: LongCounter =
     meter.counterBuilder("relay.twitch.link.transitions").setDescription("Twitch connectivity state changes").build()
 
-  private[observability] def observe(event: RelayEvent): Unit = event match
-    case _: RelayEvent.NotificationPublished                                                             => notifications.add(1)
-    case _: RelayEvent.DeviceConnected                                                                   => deviceConnections.add(1)
-    case _: RelayEvent.DeviceDisconnected                                                                => deviceDisconnections.add(1)
-    case _: RelayEvent.RelayFailure                                                                      => failures.add(1)
-    case _: (RelayEvent.ViewersObserved | RelayEvent.FollowersObserved | RelayEvent.SubscribersObserved) => observations.add(1)
-    case _: (RelayEvent.TwitchLinkUp | RelayEvent.TwitchLinkDown)                                        => twitchLinks.add(1)
-    case _: (RelayEvent.StreamStarted | RelayEvent.StreamEnded | RelayEvent.ChannelUpdated | RelayEvent.Followed | RelayEvent.Subscribed |
-          RelayEvent.SubscriptionGifted | RelayEvent.Raided | RelayEvent.BitsCheered | RelayEvent.ChatMessaged) =>
-      twitchEvents.add(1)
+  /** Exhaustive over [[EventCategory]] with no wildcard, so a new category fails to compile here until it is given a counter. */
+  private def counterFor(event: RelayEvent): LongCounter = event.category match
+    case EventCategory.Notification => notifications
+    case EventCategory.Failure      => failures
+    case EventCategory.Twitch       => twitchLinks
+    case EventCategory.Device =>
+      event match
+        case _: RelayEvent.DeviceConnected => deviceConnections
+        case _                             => deviceDisconnections
+    case EventCategory.Channel if event.isObservation   => observations
+    case EventCategory.Channel | EventCategory.Audience => twitchEvents
+
+  private[observability] def observe(event: RelayEvent): Unit = counterFor(event).add(1)
 
 private[relay] object RelayMetrics:
   def start(otel: OpenTelemetry, bus: EventBus, hub: DeviceHub)(using Ox): RelayMetrics =
