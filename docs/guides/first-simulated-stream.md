@@ -28,7 +28,7 @@ Use a Linux or macOS terminal with Git, `curl`, OpenSSL, and Python 3 available.
 
 This walkthrough uses the repository defaults except for binding both listeners to your own computer. It creates an ignored `.env.tutorial` file in the relay directory for a temporary management token.
 
-## Running the examples
+## Get the checkout
 
 The existing relay is the runnable example; no separate Scala example module is needed. Start a fresh checkout in **terminal 1**:
 
@@ -168,6 +168,59 @@ flowchart LR
 An ESP32 initiates a persistent TCP connection to port 8099. The relay sends binary `EVENT` and `STATS` frames there; the firmware does not poll this HTTP API. This tutorial bound that listener to loopback. The [firmware setup guide](firmware-setup.md) explains the LAN address and listener settings for a physical device.
 
 The complete runnable example is the existing relay in simulated mode, which you have just exercised from source through its HTTP boundary. Its companion implementation is [SimulatedTwitchSource.scala](../../twitch-screen-relay/src/twitchscreen/relay/twitch/SimulatedTwitchSource.scala). The existing [container smoke script](../../tools/smoke_container.py) extends automated verification through a real TSB/3 handshake and shutdown; its run commands are in the [development guide](development.md#container-checks).
+
+### Running the examples
+
+<details>
+<summary>Complete two-terminal workflow</summary>
+
+This is the same workflow in one place. To replay it from scratch, stop the earlier relay first and begin in a parent directory without an existing `twitch-screen` checkout. Keep terminal 1 running after the final command:
+
+```sh
+git clone https://github.com/worxbend/twitch-screen.git
+cd twitch-screen/twitch-screen-relay
+test -f .env.tutorial || (umask 077; openssl rand -hex 32 > .env.tutorial)
+export RELAY_HTTP_AUTH_API_TOKEN="$(cat .env.tutorial)"
+RELAY_HTTP_HOST=127.0.0.1 RELAY_DEVICE_HOST=127.0.0.1 \
+  RELAY_TWITCH_MODE=simulated ./mill --no-server run
+```
+
+- `git clone` creates the checkout; `cd` enters the runnable relay module directly.
+- `test` preserves an existing tutorial token; the parenthesized command creates a private random token when absent.
+- `export` loads that token for the relay.
+- The final two lines bind both listeners to loopback and start the simulated source in the foreground.
+
+Wait for the management startup message. Open terminal 2 in the same parent directory where you cloned the repository, then run:
+
+```sh
+cd twitch-screen/twitch-screen-relay
+export RELAY_HTTP_AUTH_API_TOKEN="$(cat .env.tutorial)"
+curl -fsS http://127.0.0.1:8080/api/v1/health
+curl -sS -i http://127.0.0.1:8080/api/v1/status
+curl -fsS -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
+  http://127.0.0.1:8080/api/v1/status | python3 -m json.tool
+curl -fsS http://127.0.0.1:8080/api/v1/stats | python3 -m json.tool
+sleep 35
+curl -fsS http://127.0.0.1:8080/api/v1/stats | python3 -m json.tool
+curl -fsS -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
+  'http://127.0.0.1:8080/api/v1/notifications?pageSize=5' | python3 -m json.tool
+curl -fsS -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"info","title":"Hello round display","body":"This card came through HTTP","ttlMs":8000}' \
+  http://127.0.0.1:8080/api/v1/notifications | python3 -m json.tool
+curl -fsS -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
+  http://127.0.0.1:8080/api/v1/devices | python3 -m json.tool
+```
+
+- `cd` selects the same module; `export` gives this second terminal the server's token.
+- The health request checks public liveness. The first status request deliberately omits authentication; the second supplies the Bearer token.
+- The two statistics requests surround a 35-second observation interval.
+- The first notification request lists recent records. The second authenticates, declares JSON, posts an eight-second info card, and formats its assigned record.
+- The final request inspects connected devices. Each `python3 -m json.tool` formats the preceding JSON response.
+
+Expect public health `Up`, unauthenticated status `401`, authenticated status `200`, changing simulated statistics, a newly assigned notification sequence, and an empty device list. No physical screen is required. Finish with the next section's Ctrl+C and token cleanup steps.
+
+</details>
 
 ## 6. Stop the simulation and understand reset
 
