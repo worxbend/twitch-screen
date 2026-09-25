@@ -157,7 +157,7 @@ curl --silent --show-error --user admin --request DELETE \
   http://localhost:8080/api/v1/twitch/authorization
 ```
 
-HTTP `204` means the relay cleared the local grant and attempted revocation at Twitch; `404` means none was held. If Twitch cannot confirm revocation, the relay logs that limitation. Reauthorize after changing the broadcaster, application credentials, or requested scopes. Editing the scopes setting cannot add permissions to an existing grant.
+HTTP `204` means the relay cleared the in-memory grant and attempted saved-file deletion and revocation at Twitch; `404` means none was held. File-deletion and provider failures are logged; confirm that the saved token file is gone before relying on sign-out across a restart. Reauthorize after changing the broadcaster, application credentials, or requested scopes. Editing the scopes setting cannot add permissions to an existing grant.
 
 ## Optional: use EventSub webhooks 📬
 

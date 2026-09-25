@@ -200,7 +200,7 @@ The OAuth endpoints exist only in live mode:
 - **`GET /twitch/authorize`** returns `302` with a Twitch `Location` URL and `Cache-Control: no-store`. It starts a single-use, ten-minute state. Do not follow it with a client that would forward management credentials to Twitch.
 - **`GET /twitch/callback`** receives Twitch's `code` and `state`, or its error parameters. It returns HTML with `200` or `400`. Start at `/authorize`, not a manually constructed callback.
 - **`GET /twitch/authorization`** returns `authorized`, optional `login`/`userId`/`expiresAt`, `scopes`, `missingScopes`, and `authorizeUrl`. `authorized` reports that a grant is held; readiness is separate. Tokens are never returned.
-- **`DELETE /twitch/authorization`** clears the held grant and saved file and attempts provider revocation. It returns `204`, or `404` when none is held.
+- **`DELETE /twitch/authorization`** clears the in-memory grant and attempts saved-file deletion and provider revocation. It returns `204`, or `404` when none is held. File-deletion and provider failures are logged; confirm that the saved token file is gone before relying on sign-out across a restart.
 
 Follow [Twitch setup](../guides/twitch-app-setup.md) for app registration, login identity, and callback routing.
 
