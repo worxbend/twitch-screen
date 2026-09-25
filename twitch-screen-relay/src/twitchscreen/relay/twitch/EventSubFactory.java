@@ -43,12 +43,20 @@ final class EventSubFactory {
   }
 
   /**
+   * twitch4j serializes the request's {@code type} and {@code version} from {@code rawType}/{@code rawVersion}, and its
+   * builder does not derive them from {@code type}; without them Twitch answers 400 "invalid subscription type and
+   * version".
+   */
+  private static EventSubSubscription.EventSubSubscriptionBuilder typed(SubscriptionType<?, ?, ?> type) {
+    return EventSubSubscription.builder().type(type).rawType(type.getName()).rawVersion(type.getVersion());
+  }
+
+  /**
    * A WebSocket subscription. The socket fills in its own session id before sending this to Twitch, which is why the
    * transport carries only the method.
    */
   static EventSubSubscription webSocketSubscription(SubscriptionType<?, ?, ?> type, EventSubCondition condition) {
-    return EventSubSubscription.builder()
-        .type(type)
+    return typed(type)
         .condition(condition)
         .transport(EventSubTransport.builder().method(EventSubTransportMethod.WEBSOCKET).build())
         .build();
@@ -57,8 +65,7 @@ final class EventSubFactory {
   /** A webhook subscription for Twitch to create. {@code type} is a Scala keyword, which is the other reason this is Java. */
   static EventSubSubscription webhookSubscription(
       SubscriptionType<?, ?, ?> type, EventSubCondition condition, String callbackUrl, String secret) {
-    return EventSubSubscription.builder()
-        .type(type)
+    return typed(type)
         .condition(condition)
         .transport(
             EventSubTransport.builder()
