@@ -12,7 +12,7 @@ run their vector suites under a command the repository configures. Before this f
 the firmware's only ran if a human typed a g++ line out of a comment, so a future
 edit that moved `actor` from +24 to +28 left `pio run` green and shipped.
 
-    ~/.platformio/penv/bin/pio test -e native
+    ../.venv-pio/bin/pio test -e native   # from twitch-screen-firmware; see README.md
 
 Each suite prints one summary line, `<checks> checks, <failures> failures`, and
 exits non-zero if anything failed. A non-zero exit is already fatal to PlatformIO;

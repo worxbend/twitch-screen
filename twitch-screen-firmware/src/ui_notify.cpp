@@ -47,7 +47,7 @@ void animOpa(void *var, int32_t v) {
 }
 
 void animate(lv_obj_t *obj, lv_anim_exec_xcb_t cb, int32_t from, int32_t to,
-             uint32_t duration, lv_anim_path_cb_t path, lv_anim_ready_cb_t ready) {
+             uint32_t duration, lv_anim_path_cb_t path, lv_anim_completed_cb_t ready) {
   lv_anim_t a;
   lv_anim_init(&a);
   lv_anim_set_var(&a, obj);
@@ -55,7 +55,7 @@ void animate(lv_obj_t *obj, lv_anim_exec_xcb_t cb, int32_t from, int32_t to,
   lv_anim_set_duration(&a, duration);
   lv_anim_set_exec_cb(&a, cb);
   lv_anim_set_path_cb(&a, path);
-  if (ready) lv_anim_set_ready_cb(&a, ready);
+  if (ready) lv_anim_set_completed_cb(&a, ready);
   lv_anim_start(&a);
 }
 
@@ -95,7 +95,7 @@ void slideIn() {
   lv_anim_set_exec_cb(&a, animOpa);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
   lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-  lv_anim_set_playback_duration(&a, 600);
+  lv_anim_set_reverse_duration(&a, 600);
   lv_anim_start(&a);
 }
 
@@ -380,8 +380,8 @@ void uiNotifyShow(const Notification &n) {
   lv_anim_set_duration(&a, ALERT_MS);
   lv_anim_set_exec_cb(&a, animOpa);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-  lv_anim_set_playback_duration(&a, ALERT_MS);
+  lv_anim_set_reverse_duration(&a, ALERT_MS);
   lv_anim_set_repeat_count(&a, 2);  // 3 pulses total
-  lv_anim_set_ready_cb(&a, flashDone);
+  lv_anim_set_completed_cb(&a, flashDone);
   lv_anim_start(&a);
 }

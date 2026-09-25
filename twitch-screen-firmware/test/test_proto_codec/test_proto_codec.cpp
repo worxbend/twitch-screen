@@ -24,7 +24,7 @@
 // what platformio.ini's [env:native] is for (`default_envs = esp32dev` keeps
 // `pio run` building the firmware alone):
 //
-//   ~/.platformio/penv/bin/pio test -e native
+//   ../.venv-pio/bin/pio test -e native   (from twitch-screen-firmware; see README.md)
 //
 // It runs on the host, with no framework and no allocation beyond the stack, so
 // it also compiles standalone when bisecting:

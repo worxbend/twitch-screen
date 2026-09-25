@@ -20,7 +20,7 @@
 // §17: this runs under a command the repository configures, which is the whole
 // reason platformio.ini has an [env:native] and a `default_envs = esp32dev`:
 //
-//   ~/.platformio/penv/bin/pio test -e native
+//   ../.venv-pio/bin/pio test -e native   (from twitch-screen-firmware; see README.md)
 //
 // It still compiles standalone, which is what makes it quick to bisect:
 //

@@ -78,3 +78,46 @@
   - As a no-op sanity check, `platformio test -d twitch-screen-firmware -e native` passed
     5/5, and `./mill test.testOnly twitchscreen.relay.protocol.Tsb3GoldenVectorSuite`
     passed 23 of 23 tests.
+
+## FW-08 / FW-24: deprecated LVGL aliases removed, stale pio paths fixed
+
+- Changes:
+  - FW-08: in `src/ui_idle.cpp:107` and `src/ui_notify.cpp:98,383`,
+    `lv_anim_set_playback_duration` became `lv_anim_set_reverse_duration`. In
+    `src/ui_notify.cpp:58,385`, `lv_anim_set_ready_cb` became `lv_anim_set_completed_cb`.
+    The `animate()` parameter type at `src/ui_notify.cpp:50` changed from
+    `lv_anim_ready_cb_t` to `lv_anim_completed_cb_t`. In LVGL 9.6.0 each old name is an
+    api_map `#define` of the new one, so behavior is unchanged.
+  - FW-08 guard: `[env:esp32dev]` build_flags in `platformio.ini` now include
+    `-D LV_DISABLE_API_MAPPING=1`. Any deprecated LVGL name that comes back is now an
+    undeclared-identifier error. The flag is not on the native envs, because they
+    compile only `proto_codec.cpp` and `link_client.cpp` and never compile LVGL.
+  - FW-24: the comments at `platformio.ini:68`, `test/test_custom_runner.py:15`,
+    `test/test_link_wire/test_link_wire.cpp:23` and
+    `test/test_proto_codec/test_proto_codec.cpp:27` now give
+    `../.venv-pio/bin/pio test -e native`, run from twitch-screen-firmware, and point
+    to README.md. `README.md:28` is unchanged on purpose: it names the old global pio
+    as the case to avoid.
+- Red check (the flag only, with the source unchanged):
+  `platformio run -d twitch-screen-firmware -e esp32dev` exited with code 1:
+  ```
+  src/ui_idle.cpp:107:3: error: 'lv_anim_set_playback_duration' was not declared in this scope
+  src/ui_notify.cpp:50:57: error: 'lv_anim_ready_cb_t' has not been declared
+  src/ui_notify.cpp:58:14: error: 'lv_anim_set_ready_cb' was not declared in this scope
+  src/ui_notify.cpp:98:3: error: 'lv_anim_set_playback_duration' was not declared in this scope
+  src/ui_notify.cpp:383:3: error: 'lv_anim_set_playback_duration' was not declared in this scope
+  src/ui_notify.cpp:385:3: error: 'lv_anim_set_ready_cb' was not declared in this scope
+  ```
+  No errors came from the LVGL or TFT_eSPI sources.
+- Green check (after the renames), using the main checkout's `.venv-pio`, PlatformIO 6.1.18:
+  - `platformio run -d twitch-screen-firmware -e esp32dev` reports SUCCESS with
+    `-Wall -Wextra -Werror`. RAM is 67,256 B (20.5%) and flash is 1,152,845 B (36.6%),
+    which is in line with earlier builds.
+  - `platformio test -d twitch-screen-firmware -e native -e native-sanitized -v`: all
+    10 test cases passed. Each env ran these checks with 0 failures: codec 5,379,
+    presentation 18, fuzz 3,000, wire 849, session 91. There was no ASan or UBSan output.
+  - `grep -rnE 'lv_anim_set_playback_|lv_anim_set_ready_cb|lv_anim_ready_cb_t' src include`
+    found nothing (exit code 1).
+  - `grep -n 'LV_DISABLE_API_MAPPING=1' platformio.ini` matches one line, line 49, in `[env:esp32dev]`.
+  - `grep -rn 'penv/bin' twitch-screen-firmware --exclude-dir=.pio` matches only `README.md:28`.
+  - `git diff --check` is clean. `src/credentials.h` is not staged.

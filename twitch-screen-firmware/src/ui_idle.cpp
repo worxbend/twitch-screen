@@ -104,7 +104,7 @@ void startPulse(lv_obj_t *obj, lv_opa_t lo, lv_opa_t hi, uint32_t ms) {
   lv_anim_set_exec_cb(&a, pulseAnim);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
   lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-  lv_anim_set_playback_duration(&a, ms);
+  lv_anim_set_reverse_duration(&a, ms);
   lv_anim_start(&a);
 }
 
