@@ -5,6 +5,7 @@ import ox.{Ox, discard}
 import twitchscreen.relay.bus.{EventBus, RelayEvent}
 import twitchscreen.relay.config.NotificationsConfig
 import twitchscreen.relay.protocol.*
+import twitchscreen.relay.observability.DiagnosticText
 
 /** The policy layer between "something happened on Twitch" and "the screen lights up".
   *
@@ -104,9 +105,9 @@ private[relay] object NotificationRouter:
 
       // The two relay-internal cards. §6.4.3's generic kinds: a title and a body, every numeric field 0.
       case RelayEvent.TwitchLinkDown(reason) =>
-        Some(EventRequest.of(NotificationKind.Warning, actor = "Twitch link lost", text = WireStrings.sanitise(reason)))
+        Some(EventRequest.of(NotificationKind.Warning, actor = "Twitch link lost", text = DiagnosticText(reason)))
 
       case RelayEvent.RelayFailure(source, message) =>
-        Some(EventRequest.of(NotificationKind.Alert, actor = WireStrings.sanitise(s"$source failed"), text = WireStrings.sanitise(message)))
+        Some(EventRequest.of(NotificationKind.Alert, actor = DiagnosticText(s"$source failed"), text = DiagnosticText(message)))
 
       case _ => None

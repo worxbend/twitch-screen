@@ -14,6 +14,11 @@ class NotificationRouterSuite extends munit.FunSuite:
   private def routed(event: RelayEvent): EventRequest =
     NotificationRouter.toRequest(event).getOrElse(fail(s"expected $event to be routed"))
 
+  test("failure cards redact credentials and remove injected control bytes"):
+    val request = routed(RelayEvent.RelayFailure("upstream", "Bearer private-token\nforged\u001b[31m"))
+    assert(!request.text.contains("private-token"))
+    assert(!request.text.exists(_.isControl))
+
   test("a follow puts the follower in the actor slot and leaves value at 0"):
     val request = routed(RelayEvent.Followed("newfriend"))
     assertEquals((request.kind, request.actor, request.text, request.value.value), (NotificationKind.Follow, "newfriend", "", 0L))
