@@ -189,12 +189,17 @@ private[twitch] object EventSubWebhookApi:
 
   /** Reconcile only this callback and broadcaster's subscriptions. Application credentials are selected by the client with no default user
     * token.
+    *
+    * Every call here uses the application token, so a 401 from any of them calls `appTokenRejected` to have the session rebuild the client
+    * with a fresh token. Iteration deliberately continues: each remaining kind is still observed as failed on this pass, so no component
+    * keeps a stale healthy status, and the rebuild itself is paced by the maintenance loop rather than by this method.
     */
   def reconcileSubscriptions(
       helix: TwitchHelix,
       config: TwitchConfig,
       subscriptions: List[(SubscriptionType[?, ?, ?], EventSubCondition)],
-      observe: (String, Option[String]) => Unit
+      observe: (String, Option[String]) => Unit,
+      appTokenRejected: () => Unit
   ): Unit =
     subscriptions.foreach: (kind, condition) =>
       try
@@ -223,7 +228,10 @@ private[twitch] object EventSubWebhookApi:
             kind.getName,
             if usable.exists(_.getStatus == EventSubSubscriptionStatus.ENABLED) then None else Some("awaiting callback verification")
           )
-      catch case NonFatal(error) => observe(kind.getName, Some(s"registration failed (${error.getClass.getSimpleName}); retrying"))
+      catch
+        case NonFatal(error) =>
+          if HelixPoller.isUnauthorized(error) then appTokenRejected()
+          observe(kind.getName, Some(s"registration failed (${error.getClass.getSimpleName}); retrying"))
 
   extension [E, T](either: Either[E, T])
     private def tapRight(effect: T => Unit): Either[E, T] =

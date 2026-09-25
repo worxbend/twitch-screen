@@ -9,7 +9,7 @@ combined validation are recorded in [review-judge.md](review-judge.md).
 |---|---|---|
 | RLY-01 | Addressed | [review-security](review-security.md) |
 | RLY-02 | Addressed | [review-security](review-security.md) |
-| RLY-03 | Addressed | [review-security](review-security.md) |
+| RLY-03 | Addressed | [review-security](review-security.md); app-token 401 rebuild addendum in [review-round2-relay](review-round2-relay.md) |
 | RLY-04 | Addressed | [review-repository](review-repository.md) |
 | RLY-05 | Addressed | [review-security](review-security.md) |
 | RLY-06 | Addressed | [review-security](review-security.md) |

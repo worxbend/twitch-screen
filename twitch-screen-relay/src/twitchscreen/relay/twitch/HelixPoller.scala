@@ -19,7 +19,12 @@ import twitchscreen.relay.protocol.Count
 private[twitch] object HelixPoller:
   private val logger = LoggerFactory.getLogger(getClass)
 
-  /** `userToken` is read on every poll, so totals appear from the first poll after consent and follow each refresh. */
+  /** `userToken` is read on every poll, so totals appear from the first poll after consent and follow each refresh.
+    *
+    * The two rejection callbacks are deliberately separate. A 401 on a user-token call (followers, subscribers) calls `unauthorized`, which
+    * withholds the broadcaster grant until it is refreshed. A 401 on the application-token call (streams) calls `appTokenRejected`, which
+    * asks the owning session to rebuild the client and so fetch a fresh application token. Neither ever triggers the other.
+    */
   def start(
       helix: TwitchHelix,
       config: TwitchConfig,
@@ -29,19 +34,20 @@ private[twitch] object HelixPoller:
       bus: EventBus,
       clock: Clock,
       health: TwitchRuntimeHealth,
-      unauthorized: () => Unit
+      unauthorized: () => Unit,
+      appTokenRejected: () => Unit
   )(using Ox): Unit =
     logger.info(s"Polling Helix for '${config.channel}' every ${config.pollInterval}")
     forkDiscard:
       forever:
         // Polled before the first sleep, so a freshly started relay has real numbers to show immediately.
-        try poll(helix, config, broadcasterId, userToken, tracker, bus, clock, health, unauthorized)
+        try poll(helix, config, broadcasterId, userToken, tracker, bus, clock, health, unauthorized, appTokenRejected)
         catch
           case NonFatal(error) =>
             health.observe("poll", Some(error.getClass.getSimpleName))
         sleep(config.pollInterval)
 
-  private def poll(
+  private[twitch] def poll(
       helix: TwitchHelix,
       config: TwitchConfig,
       broadcasterId: String,
@@ -50,22 +56,25 @@ private[twitch] object HelixPoller:
       bus: EventBus,
       clock: Clock,
       health: TwitchRuntimeHealth,
-      unauthorized: () => Unit
+      unauthorized: () => Unit,
+      appTokenRejected: () => Unit
   ): Unit =
-    pollStream(helix, config, tracker, bus, clock, health)
+    pollStream(helix, config, tracker, bus, clock, health, appTokenRejected)
     userToken("moderator:read:followers").foreach(token => pollFollowers(helix, token, broadcasterId, bus, health, unauthorized))
     userToken("channel:read:subscriptions").foreach(token => pollSubscribers(helix, token, broadcasterId, bus, health, unauthorized))
     health.observe("poll", None)
 
-  private def pollStream(
+  /** Streams are read with the application token (`null` credential), so a 401 here means that token is no longer valid. */
+  private[twitch] def pollStream(
       helix: TwitchHelix,
       config: TwitchConfig,
       tracker: ChannelStateTracker,
       bus: EventBus,
       clock: Clock,
-      health: TwitchRuntimeHealth
+      health: TwitchRuntimeHealth,
+      appTokenRejected: () => Unit
   ): Unit =
-    attempt("streams", health):
+    attempt("streams", health, appTokenRejected):
       helix.getStreams(null, null, null, 1, null, null, null, List(config.channel).asJava).execute()
     .foreach: streams =>
       streams.getStreams.asScala.headOption match
@@ -111,7 +120,7 @@ private[twitch] object HelixPoller:
   /** One Helix endpoint failing must not cost the others their poll — a missing `moderator:read:followers` scope should not hide the viewer
     * count. This is the boundary where twitch4j's exceptions become values.
     */
-  private def attempt[T](source: String, health: TwitchRuntimeHealth, unauthorized: () => Unit = () => ())(call: => T): Option[T] =
+  private def attempt[T](source: String, health: TwitchRuntimeHealth, unauthorized: () => Unit)(call: => T): Option[T] =
     try
       val result = call
       health.observe(source, None)

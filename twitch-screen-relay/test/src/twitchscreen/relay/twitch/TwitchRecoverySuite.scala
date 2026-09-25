@@ -4,10 +4,11 @@ import com.fasterxml.jackson.databind.MapperFeature
 import com.fasterxml.jackson.databind.json.JsonMapper
 import com.github.twitch4j.helix.TwitchHelix
 import com.github.twitch4j.helix.domain.{EventSubSubscriptionList, UserList}
-import com.netflix.hystrix.{HystrixCommand, HystrixCommandGroupKey}
+import com.netflix.hystrix.{HystrixCommand, HystrixCommandGroupKey, HystrixCommandProperties}
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import java.time.Clock
-import ox.{fork, supervised}
+import java.util.concurrent.atomic.AtomicBoolean
+import ox.{discard, fork, supervised}
 import scala.concurrent.duration.*
 import twitchscreen.relay.bus.{EventBus, RelayEvent}
 import twitchscreen.relay.config.*
@@ -25,13 +26,41 @@ class TwitchRecoverySuite extends munit.FunSuite:
   )
   private val mapper = JsonMapper.builder().enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS).build()
 
-  private def command[A](body: => A): HystrixCommand[A] = new HystrixCommand[A](HystrixCommandGroupKey.Factory.asKey("relay-test")):
+  /** The breaker is disabled so scripted failures in one test can never short-circuit a later test's command and hide its cause. Production
+    * keeps twitch4j's per-method breakers, which these call rates (one poll and one reconciliation pass per 30 seconds) cannot trip.
+    */
+  private val commandSetup = HystrixCommand.Setter
+    .withGroupKey(HystrixCommandGroupKey.Factory.asKey("relay-test"))
+    .andCommandPropertiesDefaults(HystrixCommandProperties.Setter().withCircuitBreakerEnabled(false))
+
+  private def command[A](body: => A): HystrixCommand[A] = new HystrixCommand[A](commandSetup):
     override def run(): A = body
 
   private def helix(call: (String, Array[Object]) => Object): TwitchHelix =
     val handler = new InvocationHandler:
       override def invoke(proxy: Object, method: Method, arguments: Array[Object]): Object = call(method.getName, arguments)
     Proxy.newProxyInstance(classOf[TwitchHelix].getClassLoader, Array(classOf[TwitchHelix]), handler).asInstanceOf[TwitchHelix]
+
+  /** Twitch4J's own decoder applied to a real 401 response, i.e. exactly what a rejected token raises inside a Helix command. */
+  private def unauthorizedCause(path: String): Throwable =
+    val request = feign.Request.create(
+      feign.Request.HttpMethod.GET,
+      s"https://api.twitch.tv/helix/$path",
+      java.util.Map.of[String, java.util.Collection[String]](),
+      Array.emptyByteArray,
+      java.nio.charset.StandardCharsets.UTF_8,
+      feign.RequestTemplate()
+    )
+    val response = feign.Response
+      .builder()
+      .status(401)
+      .reason("Unauthorized")
+      .request(request)
+      .body("{\"error\":\"Unauthorized\",\"status\":401}", java.nio.charset.StandardCharsets.UTF_8)
+      .build()
+    com.github.twitch4j.helix.TwitchHelixErrorDecoder(null, null).decode(path, response)
+
+  private val emptySubscriptions = """{"data":[]}"""
 
   test("failed broadcaster resolution retries the actual Helix adapter and recovers"):
     var calls = 0
@@ -49,6 +78,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
     assertEquals(delays, List(1.second, 2.seconds))
 
   test("webhook registration failure is observable and the next reconciliation recovers using app credentials"):
+    val rejected = AtomicBoolean(false)
     var attempts = 0
     var results = List.empty[Option[String]]
     val client = helix: (method, arguments) =>
@@ -65,10 +95,222 @@ class TwitchRecoverySuite extends munit.FunSuite:
             )
         case other => fail(s"unexpected method $other")
     val subscription = EventSubWebhookApi.unscopedSubscriptions("123").take(1)
-    EventSubWebhookApi.reconcileSubscriptions(client, config, subscription, (_, result) => results = results :+ result)
-    EventSubWebhookApi.reconcileSubscriptions(client, config, subscription, (_, result) => results = results :+ result)
+    EventSubWebhookApi.reconcileSubscriptions(
+      client,
+      config,
+      subscription,
+      (_, result) => results = results :+ result,
+      () => rejected.set(true)
+    )
+    EventSubWebhookApi.reconcileSubscriptions(
+      client,
+      config,
+      subscription,
+      (_, result) => results = results :+ result,
+      () => rejected.set(true)
+    )
     assert(results.head.isDefined)
     assertEquals(results.last, None)
+    assert(!rejected.get(), "a failure unrelated to authorization must not rebuild the client")
+
+  test("webhook reconciliation requests a client rebuild when Twitch rejects the application token"):
+    val rejected = AtomicBoolean(false)
+    var results = List.empty[(String, Option[String])]
+    val client = helix: (method, arguments) =>
+      assertEquals(arguments(0), null, "webhook Helix calls use the app-token fallback")
+      method match
+        case "getEventSubSubscriptions"   => command(mapper.readValue(emptySubscriptions, classOf[EventSubSubscriptionList]))
+        case "createEventSubSubscription" => command[EventSubSubscriptionList](throw unauthorizedCause("eventsub/subscriptions"))
+        case other                        => fail(s"unexpected method $other")
+    EventSubWebhookApi.reconcileSubscriptions(
+      client,
+      config,
+      EventSubWebhookApi.unscopedSubscriptions("123").take(1),
+      (kind, result) => results = results :+ (kind -> result),
+      () => rejected.set(true)
+    )
+    assert(rejected.get())
+    assertEquals(results.map(_._1), List("stream.online"))
+    assert(results.head._2.exists(_.startsWith("registration failed")))
+
+  test("listing subscriptions with a rejected application token requests a rebuild before any creation"):
+    val rejected = AtomicBoolean(false)
+    var creations = 0
+    var results = List.empty[Option[String]]
+    val client = helix: (method, _) =>
+      method match
+        case "getEventSubSubscriptions" => command[EventSubSubscriptionList](throw unauthorizedCause("eventsub/subscriptions"))
+        case "createEventSubSubscription" =>
+          creations += 1
+          command(mapper.readValue(emptySubscriptions, classOf[EventSubSubscriptionList]))
+        case other => fail(s"unexpected method $other")
+    EventSubWebhookApi.reconcileSubscriptions(
+      client,
+      config,
+      EventSubWebhookApi.unscopedSubscriptions("123"),
+      (_, result) => results = results :+ result,
+      () => rejected.set(true)
+    )
+    assert(rejected.get())
+    assertEquals(creations, 0)
+    assertEquals(results.size, EventSubWebhookApi.unscopedSubscriptions("123").size, "every kind is still observed as failed")
+    assert(results.forall(_.isDefined))
+
+  private def streamsFailing(error: => Throwable): TwitchHelix = helix: (method, arguments) =>
+    method match
+      case "getStreams" =>
+        assertEquals(arguments(0), null, "streams are polled with the app token")
+        command[com.github.twitch4j.helix.domain.StreamList](throw error)
+      case "getChannelFollowers" =>
+        command(mapper.readValue("""{"data":[],"total":7}""", classOf[com.github.twitch4j.helix.domain.InboundFollowers]))
+      case "getSubscriptions" =>
+        command(mapper.readValue("""{"data":[],"total":3}""", classOf[com.github.twitch4j.helix.domain.SubscriptionList]))
+      case other => fail(s"unexpected method $other")
+
+  test("a streams poll with a rejected application token requests a rebuild without rejecting the user grant"):
+    supervised:
+      val bus = EventBus(Clock.systemUTC(), 64)
+      val health = TwitchRuntimeHealth(config, bus)
+      val appRejected = AtomicBoolean(false)
+      val userRejected = AtomicBoolean(false)
+      HelixPoller.poll(
+        streamsFailing(unauthorizedCause("streams")),
+        config,
+        "123",
+        _ => Some("user-token"),
+        ChannelStateTracker(config.channel, Clock.systemUTC()),
+        bus,
+        Clock.systemUTC(),
+        health,
+        () => userRejected.set(true),
+        () => appRejected.set(true)
+      )
+      assert(appRejected.get())
+      assert(!userRejected.get(), "an application-token 401 must never withhold the broadcaster grant")
+      assert(health.failure("streams").isDefined)
+      assertEquals(health.failure("followers"), None)
+      assertEquals(health.status.health, TwitchHealth.Degraded)
+
+  test("a user-token rejection withholds the grant without rebuilding the client"):
+    supervised:
+      val bus = EventBus(Clock.systemUTC(), 64)
+      val health = TwitchRuntimeHealth(config, bus)
+      val appRejected = AtomicBoolean(false)
+      val userRejected = AtomicBoolean(false)
+      val client = helix: (method, _) =>
+        method match
+          case "getStreams"          => command(mapper.readValue("""{"data":[]}""", classOf[com.github.twitch4j.helix.domain.StreamList]))
+          case "getChannelFollowers" => command[Unit](throw unauthorizedCause("channels/followers"))
+          case "getSubscriptions"    => command[Unit](throw unauthorizedCause("subscriptions"))
+          case other                 => fail(s"unexpected method $other")
+      HelixPoller.poll(
+        client,
+        config,
+        "123",
+        _ => Some("user-token"),
+        ChannelStateTracker(config.channel, Clock.systemUTC()),
+        bus,
+        Clock.systemUTC(),
+        health,
+        () => userRejected.set(true),
+        () => appRejected.set(true)
+      )
+      assert(userRejected.get())
+      assert(!appRejected.get(), "a user-token 401 must never rebuild the client")
+      assertEquals(health.failure("streams"), None)
+
+  test("a streams failure unrelated to authorization does not request a rebuild"):
+    supervised:
+      val bus = EventBus(Clock.systemUTC(), 64)
+      val health = TwitchRuntimeHealth(config, bus)
+      val appRejected = AtomicBoolean(false)
+      HelixPoller.pollStream(
+        streamsFailing(IllegalStateException("network timeout")),
+        config,
+        ChannelStateTracker(config.channel, Clock.systemUTC()),
+        bus,
+        Clock.systemUTC(),
+        health,
+        () => appRejected.set(true)
+      )
+      assert(!appRejected.get())
+      assert(health.failure("streams").isDefined)
+
+  test("an application-token rejection sets the session restart flag and reports why"):
+    supervised:
+      val health = TwitchRuntimeHealth(config, EventBus(Clock.systemUTC(), 64))
+      val restart = AtomicBoolean(false)
+      val rejected = LiveTwitchSource.appTokenRejected(health, restart)
+      rejected()
+      rejected()
+      assert(restart.get())
+      assert(health.failure("startup").exists(_.contains("application token rejected")))
+
+  test("a session ended by an application-token rejection is closed and a fresh client is built"):
+    var restartRequests = List.empty[Boolean]
+    var builds = 0
+    var closed = List.empty[Int]
+    var pauses = List.empty[FiniteDuration]
+    val stopped =
+      try
+        supervised:
+          val health = TwitchRuntimeHealth(config, EventBus(Clock.systemUTC(), 64))
+          LiveTwitchSource.superviseSessions[Int](
+            () => { builds += 1; Right(builds) },
+            client => closed = closed :+ client,
+            _ => (),
+            duration => pauses = pauses :+ duration
+          ): client =>
+            if client == 2 then throw InterruptedException("stop after observing the rebuild")
+            val restart = AtomicBoolean(false)
+            HelixPoller.pollStream(
+              streamsFailing(unauthorizedCause("streams")),
+              config,
+              ChannelStateTracker(config.channel, Clock.systemUTC()),
+              EventBus(Clock.systemUTC(), 64),
+              Clock.systemUTC(),
+              health,
+              LiveTwitchSource.appTokenRejected(health, restart)
+            )
+            // What maintainSubscriptions does with the flag: the session returns so its scope closes the client.
+            restartRequests = restartRequests :+ restart.get()
+        false
+      catch case _: InterruptedException => true
+    assert(stopped)
+    assertEquals(restartRequests, List(true), "the rejected poll must request the rebuild")
+    assertEquals(builds, 2)
+    assertEquals(closed, List(1, 2))
+    assertEquals(pauses, List(1.second))
+
+  test("a rejected application token during broadcaster lookup fails the session and rebuilds after a bounded pause"):
+    val rejecting = helix: (method, _) =>
+      assertEquals(method, "getUsers")
+      command[UserList](throw unauthorizedCause("users"))
+    val rejection = intercept[ApplicationTokenRejected](LiveTwitchSource.resolveBroadcasterId(rejecting, config))
+    assertEquals(rejection.getCause, null, "no provider detail travels with the rejection")
+    var builds = 0
+    var startup = List.empty[String]
+    var pauses = List.empty[FiniteDuration]
+    val stopped =
+      try
+        supervised:
+          LiveTwitchSource.superviseSessions[Int](
+            () => { builds += 1; Right(builds) },
+            _ => (),
+            reason => startup = startup :+ reason,
+            duration => pauses = pauses :+ duration
+          ): client =>
+            if client == 2 then throw InterruptedException("stop after observing the rebuild")
+            TwitchRetry
+              .untilReady(() => LiveTwitchSource.resolveBroadcasterId(rejecting, config), _ => (), _ => fail("401 must not retry"))
+              .discard
+        false
+      catch case _: InterruptedException => true
+    assert(stopped)
+    assertEquals(builds, 2)
+    assertEquals(pauses, List(LiveTwitchSource.SessionFailurePause))
+    assert(LiveTwitchSource.SessionFailurePause >= 30.seconds)
+    assertEquals(startup, List("session failed (ApplicationTokenRejected); rebuilding client"))
 
   test("concurrent health changes publish ordered link transitions and repeated failures do not flood the bus"):
     supervised:
@@ -109,22 +351,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
     assertEquals(pauses.takeRight(3), List.fill(3)(60.seconds))
 
   test("Twitch4J unauthorized responses remain recognizable through Hystrix wrapping"):
-    val request = feign.Request.create(
-      feign.Request.HttpMethod.GET,
-      "https://api.twitch.tv/helix/channels/followers",
-      java.util.Map.of[String, java.util.Collection[String]](),
-      Array.emptyByteArray,
-      java.nio.charset.StandardCharsets.UTF_8,
-      feign.RequestTemplate()
-    )
-    val response = feign.Response
-      .builder()
-      .status(401)
-      .reason("Unauthorized")
-      .request(request)
-      .body("{\"error\":\"Unauthorized\",\"status\":401}", java.nio.charset.StandardCharsets.UTF_8)
-      .build()
-    val cause = com.github.twitch4j.helix.TwitchHelixErrorDecoder(null, null).decode("followers", response)
+    val cause = unauthorizedCause("channels/followers")
     val wrapped =
       try
         command[Unit](throw cause).execute()
