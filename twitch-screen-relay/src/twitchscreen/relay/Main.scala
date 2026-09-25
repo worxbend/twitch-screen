@@ -24,5 +24,5 @@ object Main extends OxApp.Simple:
     val startedAt = clock.instant()
     val config = Config.read.tap(Config.log)
     val dependencies = Dependencies.create(config, clock, startedAt)
-    dependencies.httpApi.start(_ => dependencies.twitch.startIngestion()).discard
+    dependencies.serve().discard
     () => dependencies.hub.shutdown().discard

@@ -3,6 +3,7 @@ package twitchscreen.relay
 import com.softwaremill.macwire.{autowire, autowireMembersOf}
 import java.time.{Clock, Instant}
 import ox.{Ox, discard}
+import sttp.tapir.server.netty.sync.NettySyncServerBinding
 import twitchscreen.relay.activity.ActivityLog
 import twitchscreen.relay.alerts.{AlertMonitor, AlertRule, AlertStore}
 import twitchscreen.relay.bus.EventBus
@@ -14,7 +15,11 @@ import twitchscreen.relay.stats.StatsAggregator
 import twitchscreen.relay.twitch.{BotFilter, TwitchSource}
 
 /** What [[Main]] holds on to once the relay is assembled. */
-private[relay] final case class Dependencies(httpApi: HttpApi, hub: DeviceHub, twitch: TwitchSource)
+private[relay] final case class Dependencies(httpApi: HttpApi, hub: DeviceHub, twitch: TwitchSource):
+  /** Binds HTTP (webhook and OAuth callbacks), then starts Twitch ingestion, whose webhook registration Twitch verifies by calling back
+    * (RLY-43).
+    */
+  def serve()(using Ox): NettySyncServerBinding = httpApi.start(_ => twitch.startIngestion())
 
 /** The relay's assembly, in one place and in dependency order.
   *

@@ -1,9 +1,6 @@
 package twitchscreen.relay.twitch
 
-import java.nio.charset.StandardCharsets.UTF_8
 import java.time.{Clock, Instant, ZoneOffset}
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
 import ox.supervised
 import scala.concurrent.duration.DurationInt
 import sttp.client4.*
@@ -36,9 +33,7 @@ class EventSubWebhookSuite extends munit.FunSuite:
   )
 
   private def sign(messageId: String, timestamp: String, body: String): String =
-    val mac = Mac.getInstance("HmacSHA256")
-    mac.init(SecretKeySpec(secret.getBytes(UTF_8), "HmacSHA256"))
-    "sha256=" + mac.doFinal((messageId + timestamp + body).getBytes(UTF_8)).map(byte => f"$byte%02x").mkString
+    EventSubSigning.sign(secret, messageId, timestamp, body)
 
   private def post(
       messageType: String,

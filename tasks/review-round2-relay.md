@@ -121,3 +121,41 @@ Residual:
 - A poll-live with no `started_at` is not filtered by the pushed-end guard. It is still suppressed only inside the grace.
 - The optional 2-consecutive-live-polls rule after a pushed offline was not implemented.
 - There is no live-Twitch acceptance: the behavior is proven with a movable clock only.
+
+## RLY-43 — prove the EventSub webhook callback is reachable after bind
+
+Change (behavior unchanged; one production refactor, the rest is tests):
+- `Dependencies.serve()(using Ox): NettySyncServerBinding = httpApi.start(_ => twitch.startIngestion())`, with Scaladoc covering the RLY-43 ordering. `Main.run` now calls `dependencies.serve().discard` instead of inlining the same wiring.
+- New shared test helper `test/src/twitchscreen/relay/twitch/EventSubSigning.scala` (`sign`, `headers`). It is now the only HMAC signing implementation in the test sources:
+  - `EventSubWebhookSuite.sign` delegates to it. The unused `Mac`, `SecretKeySpec` and `UTF_8` imports were dropped.
+  - `ManagementRoutesSuite` test 2 uses `EventSubSigning.headers(secret, "delivery", ...)` and keeps the forged-signature assertion.
+- `ManagementRoutesSuite.withServer` afterBind hook, after the /health and OAuth-callback asserts:
+  - POSTs an unauthenticated, signed `webhook_callback_verification` (message id `after-bind`, challenge `after-bind-challenge`) to `/api/v1/twitch/eventsub`.
+  - Asserts 200 and the echoed challenge, with the clue "EventSub webhook callback verifies when ingestion is allowed to start".
+  - An `AtomicBoolean afterBindRan` is asserted right after `startOnPort` returns, so the hook cannot be skipped silently.
+  - Each `withServer` call builds a fresh live source, and the ids differ ("after-bind" vs test 2's "delivery"), so deduplication cannot clash.
+- New `test/src/twitchscreen/relay/StartupOrderSuite.scala` (1 test):
+  - The HTTP port comes from a closed `ServerSocket(0)`, because `Port` must be 1..65535.
+  - A recording `TwitchSource` (no endpoints) opens a TCP connection to the port inside `startIngestion`, then GETs `/api/v1/health`.
+  - `Dependencies(HttpApi(List(HealthApi(), recorder), ...), hub, recorder).serve()` is run inside `supervised`.
+  - Asserts `calls == 1` and `Observation(connected = true, healthStatus = Some(200))`.
+
+Red → green: StartupOrderSuite first failed to compile ("value serve is not a member of twitchscreen.relay.Dependencies"). After `serve` was added, it passed 1/1.
+
+Mutation checks (sources restored and verified with `cmp` after each):
+- Hook expects `"wrong-challenge"` → ManagementRoutesSuite 4/4 fail at the new body assertion with the RLY-43 clue.
+- `twitch` removed from `apis` (replaced by a second `HealthApi()`) → 4/4 fail inside the afterBind hook. The first hook assertion to trip is the OAuth-callback check, before the EventSub POST.
+- `serve()` rewritten to `twitch.startIngestion(); httpApi.start()` → StartupOrderSuite fails with `healthStatus = None` (connection refused, so no HTTP). This is the negative control.
+
+Validation (run from twitch-screen-relay):
+- `./mill --no-daemon test.testOnly twitchscreen.relay.StartupOrderSuite twitchscreen.relay.http.ManagementRoutesSuite twitchscreen.relay.twitch.EventSubWebhookSuite` ×4 → 1 + 4 + 13, 0 failed each time.
+- `./mill --no-daemon compile` (`-Werror`) → SUCCESS. The first attempt caught an unused `UTF_8` import in EventSubWebhookSuite, which was fixed.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` → SUCCESS; `git diff --check` clean.
+- `./mill --no-daemon test` → 29 suites, 338 tests (was 28/337), 0 failed on runs 1, 3 and 4 (runs 3 and 4 consecutive).
+  - Run 0 hit the known `device.LifecycleOrderingSuite` flake, which passed alone (1/1).
+  - Run 2 had one `device.DeviceLinkSuite` failure, which passed alone 3/3 (37/37). It is load-sensitive, uses its own port-0 relay and does not touch the changed code.
+
+Residual:
+- No live Twitch: the proof is a local signed verification plus a recording source.
+- `StartupOrderSuite` picks the port with a close-then-bind step, so there is a small TOCTOU window. A collision would fail this suite at bind, not pass it silently.
+- Async token maintenance started in `LiveTwitchSource.create` may still run before binding, as review-security.md already notes. Only `startIngestion` is ordered after bind.

@@ -8,8 +8,9 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.time.{Clock, Instant, ZoneOffset}
 import java.util.Base64
-import javax.crypto.{Mac, SecretKeyFactory}
-import javax.crypto.spec.{PBEKeySpec, SecretKeySpec}
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 import ox.{discard, supervised}
 import pureconfig.ConfigSource
 import twitchscreen.relay.activity.{ActivityApi, ActivityLog}
@@ -20,7 +21,7 @@ import twitchscreen.relay.device.{DeviceApi, DeviceHub, NotificationApi}
 import twitchscreen.relay.health.{HealthApi, StatusApi}
 import twitchscreen.relay.observability.LogsApi
 import twitchscreen.relay.stats.StatsApi
-import twitchscreen.relay.twitch.{BotFilter, TwitchSource}
+import twitchscreen.relay.twitch.{BotFilter, EventSubSigning, TwitchSource}
 
 /** Real assembled API groups, including the live-mode callback/auth routes, without starting external Twitch ingestion. */
 class ManagementRoutesSuite extends munit.FunSuite:
@@ -91,6 +92,7 @@ class ManagementRoutesSuite extends munit.FunSuite:
         ConfigApi(source),
         twitch
       )
+      val afterBindRan = AtomicBoolean(false)
       val binding = HttpApi(apis, config.http.copy(host = Hostname("127.0.0.1").toOption.get), OpenTelemetry.noop()).startOnPort(
         0,
         port =>
@@ -100,7 +102,21 @@ class ManagementRoutesSuite extends munit.FunSuite:
             400,
             "callback handler is reachable when ingestion is allowed to start"
           )
+          // RLY-43: Twitch verifies a webhook subscription by calling back as soon as ingestion registers it.
+          val challenge = """{"subscription":{"type":"stream.online"},"challenge":"after-bind-challenge"}"""
+          val verification =
+            send(
+              port,
+              "POST",
+              "twitch/eventsub",
+              body = challenge,
+              headers = EventSubSigning.headers(secret, "after-bind", now.toString, challenge)
+            )
+          assertEquals(verification.statusCode(), 200, "EventSub webhook callback verifies when ingestion is allowed to start")
+          assertEquals(verification.body(), "after-bind-challenge", "EventSub webhook callback verifies when ingestion is allowed to start")
+          afterBindRan.set(true)
       )
+      assert(afterBindRan.get(), "afterBind hook ran before startOnPort returned")
       test(binding.port)
     finally Files.deleteIfExists(directory.resolve("token.json")).discard
     Files.deleteIfExists(directory).discard
@@ -142,15 +158,7 @@ class ManagementRoutesSuite extends munit.FunSuite:
       assertEquals(send(port, "GET", "stats").statusCode(), 200)
       assertEquals(send(port, "GET", "twitch/callback?code=unissued&state=unissued").statusCode(), 400)
       val body = """{"subscription":{"type":"stream.online"},"challenge":"verified"}"""
-      val mac = Mac.getInstance("HmacSHA256")
-      mac.init(SecretKeySpec(secret.getBytes(UTF_8), "HmacSHA256"))
-      val signature = "sha256=" + mac.doFinal(("delivery" + now.toString + body).getBytes(UTF_8)).map(byte => f"$byte%02x").mkString
-      val headers = List(
-        "Twitch-Eventsub-Message-Id" -> "delivery",
-        "Twitch-Eventsub-Message-Timestamp" -> now.toString,
-        "Twitch-Eventsub-Message-Type" -> "webhook_callback_verification",
-        "Twitch-Eventsub-Message-Signature" -> signature
-      )
+      val headers = EventSubSigning.headers(secret, "delivery", now.toString, body)
       assertEquals(send(port, "POST", "twitch/eventsub", body = body, headers = headers).body(), "verified")
       val forged = headers.filterNot(_._1.endsWith("Signature")) :+ ("Twitch-Eventsub-Message-Signature" -> "forged")
       assertEquals(send(port, "POST", "twitch/eventsub", Some(s"Bearer $token"), body, forged).statusCode(), 401)
