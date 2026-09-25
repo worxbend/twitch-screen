@@ -152,6 +152,25 @@ int main() {
     for (size_t i = 0; i < sizeof(routine) / sizeof(routine[0]); ++i)
       check(entranceFor(false, routine[i]) == Entrance::Slide, "routine live cards only slide");
   }
+  // K-118: only severe live cards pay for the full-panel ring pulse during the hold.
+  check(!ringPulses(Entrance::None), "replay ring is static");
+  check(!ringPulses(Entrance::Slide), "routine ring is static");
+  check(ringPulses(Entrance::FlashThenSlide), "severe ring pulses");
+  for (int code = 0; code < 256; ++code) {
+    const NotifyKind kind = kindFromCode(static_cast<uint8_t>(code));
+    const bool severe = kind == NotifyKind::Warning || kind == NotifyKind::Alert;
+    check(ringPulses(entranceFor(false, kind)) == severe,
+          "only live warning/alert pulse the ring, any code");
+    check(!ringPulses(entranceFor(true, kind)), "replay never pulses, any code");
+  }
+  {
+    const NotifyKind routine[] = {
+        NotifyKind::Info, NotifyKind::Message, NotifyKind::StreamStart, NotifyKind::StreamEnd,
+        NotifyKind::Follow, NotifyKind::Sub, NotifyKind::Gift, NotifyKind::Raid,
+        NotifyKind::Chat, NotifyKind::Bits, kindFromCode(0x18), kindFromCode(0xff)};
+    for (size_t i = 0; i < sizeof(routine) / sizeof(routine[0]); ++i)
+      check(!ringPulses(entranceFor(false, routine[i])), "routine live ring stays static");
+  }
   printf("%d checks, %d failures\n", checks, failures);
   return failures != 0;
 }

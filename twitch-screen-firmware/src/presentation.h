@@ -41,3 +41,10 @@ inline Entrance entranceFor(bool replay, NotifyKind kind) {
   return kind == NotifyKind::Warning || kind == NotifyKind::Alert ? Entrance::FlashThenSlide
                                                                   : Entrance::Slide;
 }
+
+// K-118: the hold-time accent-ring pulse is an object-wide style opa animation. Below COVER it
+// forces layered rendering, which repaints nearly the whole 240x240 panel on every frame for the
+// whole hold. Only severity (the cards that also flash) pays for it; routine and replayed cards
+// keep a static ring. Keyed off Entrance so severity is defined in one place and replay can never
+// pulse.
+inline bool ringPulses(Entrance e) { return e == Entrance::FlashThenSlide; }

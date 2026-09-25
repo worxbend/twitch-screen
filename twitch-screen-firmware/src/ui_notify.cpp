@@ -67,7 +67,7 @@ void hideReady(lv_anim_t *) {
 }
 
 void hideStart() {
-  lv_anim_delete(ring, animOpa);  // stop the hold-time ring pulse
+  lv_anim_delete(ring, animOpa);  // stop the severe-card ring pulse, if any
   lv_obj_set_style_opa(ring, LV_OPA_COVER, 0);
   if (cardEntrance == Entrance::None) { hideReady(nullptr); return; }  // replay leaves at once
   uiIdleSetCovered(false);
@@ -81,23 +81,27 @@ void holdTimerCb(lv_timer_t *t) {
 
 void showReady(lv_anim_t *) { lv_timer_create(holdTimerCb, holdMs, nullptr); }
 
-// Slide the card in and keep the accent ring breathing while it is up. Reached
-// after the optional alert blink. Replay cards bypass this entirely.
+// Slide the card in. Only WARNING/ALERT keep the accent ring breathing while it
+// is up (ringPulses, K-118); routine rings stay static at full opacity. Reached
+// directly for routine cards or after the alert blink. Replay cards bypass this
+// entirely.
 void slideIn() {
   lv_obj_set_hidden(overlay, false);
   lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
   animate(overlay, animY, PANEL, 0, SLIDE_IN_MS, lv_anim_path_ease_out, showReady);
 
-  lv_anim_t a;
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, ring);
-  lv_anim_set_values(&a, LV_OPA_COVER, 100);
-  lv_anim_set_duration(&a, 600);
-  lv_anim_set_exec_cb(&a, animOpa);
-  lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-  lv_anim_set_reverse_duration(&a, 600);
-  lv_anim_start(&a);
+  if (ringPulses(cardEntrance)) {
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, ring);
+    lv_anim_set_values(&a, LV_OPA_COVER, 100);
+    lv_anim_set_duration(&a, 600);
+    lv_anim_set_exec_cb(&a, animOpa);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_reverse_duration(&a, 600);
+    lv_anim_start(&a);
+  }
 }
 
 void flashDone(lv_anim_t *) {
@@ -322,7 +326,8 @@ void playEntrance(const Notification &n) {
       showReady(nullptr);
       return;
     case Entrance::Slide:
-      // Routine cards only slide. Full-screen attention is reserved for severity.
+      // Routine cards only slide, with a static ring. Full-screen attention is
+      // reserved for severity.
       slideIn();
       return;
     case Entrance::FlashThenSlide:  // Warning and Alert blink, then flashDone slides in

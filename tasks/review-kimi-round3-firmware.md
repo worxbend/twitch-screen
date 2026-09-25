@@ -152,3 +152,71 @@ platformio` with `PYTHONPATH=~/.platformio/penv/lib/python3.13/site-packages`
 - `git -C .. diff --check`: clean.
 
 None of this has been observed on hardware.
+
+## K-118: routine-card ring pulse repaints the full panel
+
+Finding K-118 (Low, firmware), "Every live card pays two full-screen
+animations", at `ui_notify.cpp:370-386`. Remaining gap: `slideIn()` started an
+infinite 600 ms opacity pulse on the 232x232 accent `ring` for every live card.
+Object-wide style opa below COVER forces layered rendering, so a routine card
+repainted nearly the whole 240x240 panel on every frame for its whole hold.
+
+### Status
+
+Fixed in code with option (a): the ring is static on routine cards, and only
+live WARNING/ALERT cards keep the pulse. Not verified on hardware (see "Owed to
+owner").
+
+### Change
+
+- `src/presentation.h`: adds `inline bool ringPulses(Entrance e)`, which is true
+  only for `Entrance::FlashThenSlide`. It is keyed off `Entrance`, so severity is
+  defined once (in `entranceFor`) and a replayed card (`None`) can never pulse.
+- `src/ui_notify.cpp`: `slideIn()` starts the ring `lv_anim` only when
+  `ringPulses(cardEntrance)`. The overlay slide is unchanged. The comments on
+  `slideIn`, `hideStart` and the `Entrance::Slide` case now describe the static
+  routine ring. `hideStart` still deletes the ring animation and sets the ring to
+  `LV_OPA_COVER`. Both are no-ops after a routine card, and after a severe card
+  they reset the ring so the next routine card starts at COVER.
+- `test/test_presentation/test_presentation.cpp`: a K-118 block. `None` and
+  `Slide` do not pulse and `FlashThenSlide` does. For all 256 codes, a live card
+  pulses exactly when it is Warning/Alert, and a replayed card never pulses. The
+  10 routine kinds plus unknown codes `0x18` and `0xff` do not pulse when live.
+- Preserved: all timings (slide in/out, 600 ms pulse with reverse, hold), the
+  WARNING/ALERT flash and its colour, the severe pulse and its stop/reset in
+  `hideStart`, and replay (shown at once, static, leaves at once).
+
+### Evidence (in `twitch-screen-firmware/`)
+
+`pio` is the same scratchpad wrapper as for K-107 (`/usr/bin/python3 -m
+platformio` with `PYTHONPATH=~/.platformio/penv/lib/python3.13/site-packages`,
+PlatformIO Core 6.2.0).
+
+- Red: with only the tests added, `pio test -e native -f test_presentation`
+  failed to compile (`'ringPulses' was not declared in this scope`).
+- Green: `1371 checks, 0 failures` (844 before, 527 new: 3 + 512 + 12).
+- Mutation A: `ringPulses` returned `e != Entrance::None` (the old behaviour,
+  where every live card pulses). 267 checks failed: 254 "only live warning/alert
+  pulse the ring, any code", 12 "routine live ring stays static" and 1 "routine
+  ring is static". The change was reverted.
+- Mutation B: `ringPulses` returned `false`. A bare `return false;` did not
+  compile (unused parameter under the native warning flags), so the mutant was
+  `(void)e; return false;`. 3 checks failed: "severe ring pulses" and 2 "only
+  live warning/alert pulse the ring, any code" (Warning and Alert). The change
+  was reverted.
+- `pio test -e native -e native-sanitized`: 10 test cases, 10 succeeded
+  (5 suites x 2 environments).
+- `pio run -e esp32dev`: SUCCESS. RAM 67,276 B (+0). Flash 1,154,981 B (+8 B
+  against 1,154,973 B).
+- `git -C .. diff --check`: clean.
+- `grep -n ringPulses src/ui_notify.cpp src/presentation.h
+  test/test_presentation/test_presentation.cpp`: one definition, one use in
+  `slideIn`, and the tests.
+
+### Owed to owner
+
+- An on-device check that a routine card's hold no longer invalidates the full
+  panel. Use the LVGL perf monitor (`LV_USE_PERF_MONITOR`) or a flush-area log in
+  `lv_port.cpp`. Also check that a WARNING/ALERT card still pulses and that the
+  next routine card shows a solid ring. None of this has been observed on
+  hardware.
