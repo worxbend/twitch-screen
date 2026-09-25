@@ -12,6 +12,7 @@ object Versions {
 
   val ox = "1.0.8"
   val tapir = "1.13.31"
+  val netty = "4.2.18.Final"
   val jsoniter = "2.41.0"
   val pureconfig = "0.17.10"
   val macwire = "2.6.7"
@@ -37,6 +38,9 @@ object `package` extends ScalaModule {
     "-Wvalue-discard",
     "-Wnonunit-statement"
   )
+
+  // Keep Tapir and all transitive Netty modules on the same patched release.
+  def bomMvnDeps = Seq(mvn"io.netty:netty-bom:${Versions.netty}")
 
   def mvnDeps = Seq(
     // Structured concurrency on virtual threads.
