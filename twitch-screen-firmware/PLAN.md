@@ -44,7 +44,8 @@ far, and defines the desired final product.
 3. **Instant event notifications.** New chat highlights and Twitch events
    (follow, sub, gift sub, raid, bits) slide in as animated full-screen
    cards with kind-specific colors/icons, hold ~3.5 s, slide out, queue
-   back-to-back. Nothing is lost: missed events are replayed on reconnect.
+   back-to-back. Missed events are replayed within bounded retention; power loss
+   and relay sequence resets can lose history (PROTOCOL.md §10).
 4. **Beautiful, deliberate UI.** LVGL-based, Twitch palette
    (`#0E0E10` background, `#9146FF` purple, `#EB0400` live red), smooth
    ease-out animations, flicker-free partial rendering, layout designed
@@ -131,3 +132,24 @@ we need to send informations:
     - chat message, including the sender and content.
 
 events from the bots should be ignored (both chat messages and other events, bots - streamelements, nightbot, moobot, etc.).
+
+
+## 2026-09-25 review remediation
+
+- Loop-owned application callbacks and LVGL now use an asynchronous transport:
+  WiFi event edges latch atomically, DNS executes on the lwIP core, TCP I/O is
+  nonblocking, and one descriptor-close worker handles lwIP's potentially slow
+  close. Connect and pending output have 3 s deadlines; the loop watchdog uses
+  10 s. These are source/build/native-test results, not a new hardware outage test.
+- Full queues pause the next EVENT until cards make room. Defensive refusal
+  reconnects before any higher sequence can be accepted. Retry ramp resets only
+  after 60 s stable streaming; duplicate-ID REPLACED uses the maximum ramp.
+- One aligned 19,200-byte RGB565 buffer serves synchronous display flushes.
+  Titles have one font-line height, body truncation uses dots, dark chat colors
+  get a visible fallback, and counts fit four characters through u32 maximum.
+- Five host suites cover codec/wire/queue/session/presentation plus deterministic
+  chunking fuzz. Both `native` and Linux `native-sanitized` are project targets.
+  Use the isolated PlatformIO setup in README; the old global venv remains broken.
+- Physical acceptance remains: LCD band/color/text checks; short/prolonged WiFi
+  outages while animations run; intentional watchdog stall and reset reason.
+  No firmware upload was performed for this remediation.
