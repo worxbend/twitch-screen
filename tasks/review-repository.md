@@ -38,5 +38,6 @@ image digests were resolved from the official `eclipse-temurin` OCI manifests.
   through the Flatpak shell with `QT_QPA_PLATFORM=offscreen` worked.
 - CAD geometry was compared before/after, and assembly/wall checks ran against
   committed STEP/FCStd artifacts. No new render or physical print was required.
-- GitHub CI execution and final integration after the Twitch/dependency slices
-  remain pending; local commands are not represented as remote CI success.
+- Final combined relay build/test/format and image build/smoke pass after the
+  Twitch/dependency slices. GitHub CI execution is separate; local commands are
+  not represented as remote CI success. See [final judge evidence](review-judge.md).

@@ -129,7 +129,7 @@ Either valid Basic credentials or a valid Bearer token authorizes protected rout
 callers do not need both. Partial Basic configuration and malformed verifiers
 fail startup. There is no default password, token or unauthenticated fallback.
 
-- `RELAY_HTTP_AUTH_API_TOKEN`: random token of at least 32 UTF-8 bytes. Generate
+- `RELAY_HTTP_AUTH_API_TOKEN`: random token of at least 32 header-safe ASCII characters. Generate
   one with `openssl rand -hex 32` and send `Authorization: Bearer <token>`.
 - `RELAY_HTTP_AUTH_BASIC_USERNAME` and `RELAY_HTTP_AUTH_BASIC_PASSWORD_HASH`:
   configure both for Basic Auth. Run `python3 tools/hash_management_password.py`
@@ -148,6 +148,8 @@ Use HTTPS for credential-bearing network requests, directly or through a trusted
 TLS proxy. Localhost commands are local development examples. Rotate credentials
 by changing the environment and restarting. The verifier and token are masked in
 configuration output. Never place credentials in URLs or commit `.env` files.
+Password verification allows two concurrent derivations per server; additional
+Basic checks receive JSON HTTP 503 and can be retried.
 
 Notification POST returns HTTP 200 after publication; retries are **not
 idempotent** and can create another card. A lost response does not prove the first
@@ -193,19 +195,20 @@ is configured with. The broadcaster's user token is obtained at runtime:
    client). Start the relay and open `http://localhost:8080/api/v1/twitch/authorize` in a browser, logged in to Twitch as the
    broadcaster.
 3. Approve the consent screen. Twitch redirects back to the callback, and the relay exchanges the code for an access
-   and refresh token, writes them to `data/twitch-token.json` (owner-only permissions) and starts EventSub and the
-   follower/subscriber polls straight away. No restart is needed.
+   and refresh token and writes them to `data/twitch-token.json` (owner-only permissions). EventSub picks up
+   consent on the next 30-second maintenance cycle; scoped totals appear on the next configured poll. No restart is needed.
 
-The relay refreshes the token before it expires and validates it hourly, so consent is a one-time step per deployment.
+The relay refreshes the token before it expires and validates it hourly. A revoked grant can require consent again.
 `GET /api/v1/twitch/authorization` shows whose token is held and which scopes are missing, and
-`DELETE /api/v1/twitch/authorization` revokes it. The authorize request carries a single-use `state` that expires
+`DELETE /api/v1/twitch/authorization` clears the local token, shared client credential and saved file before attempting
+provider revocation. The authorize request carries a single-use `state` that expires
 after ten minutes, so a callback the relay did not start is refused.
 
 Twitch accepts a plain-http redirect only for `localhost`. For a relay on another machine, either tunnel the port
 (`ssh -L 8080:localhost:8080 pi`, then use the localhost URLs above) or serve the relay over HTTPS and set
 `RELAY_TWITCH_REDIRECT_URL` to the public callback URL.
 
-Each transport has one job, so no event arrives twice:
+Each transport handles a different event category:
 
 - **chat (IRC)** carries what chat sees: messages, subscriptions, gifted subs, cheers and raids. It connects
   anonymously, which reads any public channel but not subscriber-only chat.
@@ -220,6 +223,15 @@ rather than the poll.
 `websocket` is the right EventSub transport for a Raspberry Pi: the relay dials out and needs no inbound
 connectivity. `webhook` requires a publicly reachable HTTPS callback and a shared secret; the callback is
 authenticated by its HMAC signature and timestamp, with a bounded delivery-ID cache suppressing duplicates.
+
+The device and HTTP listeners bind before ingestion and subscription registration.
+Recoverable startup calls retry after 1, 2, 4, 8, 16, 32, then 60 seconds. Stored-token
+maintenance runs asynchronously and can start earlier. Chat and subscription checks run
+every 30 seconds; a WebSocket subscription failure or grant change rebuilds the scoped
+Twitch client. Expired or rejected user tokens are withheld until refresh succeeds.
+`GET /api/v1/status` reports Connecting, Connected, Degraded or Disconnected from current
+component observations. Initial live observation emits a stream-start card and initializes
+statistics; initial offline observation is silent.
 
 ## Docker
 

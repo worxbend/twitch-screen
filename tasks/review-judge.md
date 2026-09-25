@@ -6,16 +6,16 @@ required findings must be resolved before the final push.
 | Review | Required finding | Resolution |
 |---|---|---|
 | Root on deployment | Syntax validation missed missing `curl` in the clean JDK builder. | Added builder dependency; full image builds pass. |
-| Root on relay auth | Synthetic routes did not establish complete real-route classification, OpenAPI OR semantics or credential rotation. | Security owner adding the real-route matrix and rotation coverage. |
+| Root on relay auth | Synthetic routes did not establish complete real-route classification, OpenAPI OR semantics or credential rotation. | Real 16-operation matrix, Basic/Bearer OR docs, rotation and startup/export redaction tests pass. |
 | Root on firmware | Capacity pause preceded mandatory version check, delaying wrong-version EVENT teardown while full. | Reproduced with a failing regression, fixed guard ordering; root native/sanitized suites pass. |
 | Root on firmware transport | Nonblocking socket mode did not guarantee nonblocking `close`; pinned lwIP can wait up to 20 seconds. | Single persistent close worker owns one descriptor; UI loop cannot allocate another socket until it finishes. ESP32 build and source review pass. |
-| Root on webhook dedup | Arrival-time expiry could forget a delivery while its future signed timestamp remained fresh. | Security owner added timestamp-aware retention and inclusive replay-window endpoint regression. |
-| Root on health transitions | CAS followed by a separate read could publish nonadjacent or reordered health transitions. | Security owner moved state/publication to an actor with atomic read snapshot. |
+| Root on webhook dedup | Arrival-time expiry could forget a delivery while its future signed timestamp remained fresh. | Timestamp-aware retention and inclusive replay-window endpoint regression pass. |
+| Root on health transitions | CAS followed by a separate read could publish nonadjacent or reordered health transitions. | Actor-owned state/publication with atomic read snapshot; concurrency regression passes. |
 | Root on actual shutdown | Container SIGTERM interrupted writers before the Main finally block could drain BYE. | ApplicationLifetime keeps the nested service scope alive for bounded cleanup. Cancellation socket and hung-cleanup tests pass; actual Docker SIGTERM now produces BYE8 then EOF. |
-| Firmware reviewer on OAuth | Refresh side effects could reinstall a credential after sign-out or new consent. | Security owner serializes token state, shared library handle and persistence; concurrency regression added. |
-| Firmware reviewer on tracker | Concurrent transitions could publish END then START while the state was Offline. | Security owner serializes state transition and publication; concurrency regression added. |
-| Firmware reviewer on subscriptions | Success of one subscription could clear another failure, and reconnect did not recreate dropped registrations. | Security owner implementing per-kind reconciliation and focused recovery tests. |
-| Firmware reviewer on credentials | Header-invalid static bearer values could pass startup validation. | Security owner adding header-safe validation and regression. |
+| Firmware reviewer on OAuth | Refresh side effects could reinstall a credential after sign-out or new consent. | Actor serializes token state, shared library handle and persistence. Stale remote completion regressions pass; post-CAS ordering verified by source inspection. |
+| Firmware reviewer on tracker | Concurrent transitions could publish END then START while the state was Offline. | Actor serializes state transition and publication; blocked-publication concurrency regression passes. |
+| Firmware reviewer on subscriptions | Success of one subscription could clear another failure, and reconnect did not recreate dropped registrations. | Per-kind health and sticky full-client rebuild requests preserve failed registrations; focused recovery tests and source inspection pass. |
+| Firmware reviewer on credentials | Header-invalid static bearer values could pass startup validation. | Header-safe startup validation and regression pass. |
 | Root on dependencies | The resolved Maven audit found Netty/Jawn advisories and two unpatched legacy dependencies. | Netty/Jawn patched; root independently reviewed scanner and exception boundaries, ran seven offline tests and the live 182-coordinate audit. Two exact legacy exceptions expire 2026-10-25. |
 
 ## Verdicts
@@ -25,9 +25,9 @@ required findings must be resolved before the final push.
   was corrected during integration.
 - Relay runtime: root reviewed atomic alert transitions, input bounds, socket
   lifecycle, EVENT-gap teardown, coherent lifecycle stats, diagnostics and
-  scoped metrics. Required real-shutdown finding was corrected. Final combined
-  tests and container verification remain the integration gate.
-- Relay auth/Twitch: firmware agent's final verdict pending review corrections.
+  scoped metrics. Required real-shutdown finding was corrected. The combined 316-test suite and formatting gate pass. Final image build and actual HTTP/handshake/SIGTERM smoke also pass.
+- Relay auth/Twitch: independently approved in [judge-firmware-agent.md](judge-firmware-agent.md).
+  All six required findings were corrected; independent 74-test and final 30-test runs pass.
 - Dependency follow-up: root approves the focused version fixes and audit implementation.
   Strict coordinate parsing, complete result pairing, pagination bounds and exact
   expiring exceptions were reviewed and independently tested. The legacy
@@ -48,7 +48,13 @@ required findings must be resolved before the final push.
 - CI workflow passes actionlint; skill validators and discovery links pass.
 - Dependency audit passes with 182 coordinates, two explicit legacy exceptions
   and zero unexcepted matches. Seven offline scanner tests and updated actionlint pass.
-- Final relay suite, final image smoke and remote CI pending.
+- Combined relay compile with `-Werror`, all 316 tests (zero failures/errors/ignored),
+  and formatting of 125 Scala sources pass after security/runtime/dependency integration.
+- Final image syntax/build and 512 MiB container smoke pass: public/protected HTTP,
+  secret redaction, WELCOME and SIGTERM BYE8 followed by EOF.
+- Remote CI is triggered by the push; its results are
+  available in the branch
+  [Actions runs](https://github.com/worxbend/twitch-screen/actions?query=branch%3Afix%2Fconsolidated-review-20260925).
 
 See [review-status.md](review-status.md) for every finding's disposition.
 No physical display, WiFi outage, watchdog reset, real Twitch subscription or
