@@ -10,6 +10,7 @@ import sttp.tapir.*
 import sttp.tapir.json.jsoniter.jsonBody
 import sttp.tapir.server.ServerEndpoint
 import twitchscreen.relay.http.{ApiJson, Fail, Http, ServerEndpoints}
+import twitchscreen.relay.observability.DiagnosticText
 
 /** What the relay holds for Twitch. Never the token itself. */
 final case class TwitchAuthorization_OUT(
@@ -45,7 +46,7 @@ private[twitch] final class TwitchAuthApi(auth: TwitchAuth) extends ServerEndpoi
     (error, code, state) match
       case (Some(denied), _, _) =>
         // The user pressed Cancel, or Twitch refused the request. The state is left to expire rather than consumed: nothing was issued.
-        val reason = description.getOrElse(denied)
+        val reason = DiagnosticText(description.getOrElse(denied), 1024)
         logger.warn(s"Twitch authorization was not granted: $reason")
         (StatusCode.BadRequest, TwitchAuthApi.page("Twitch authorization was not granted", reason))
       case (None, Some(code), Some(state)) =>
@@ -56,7 +57,7 @@ private[twitch] final class TwitchAuthApi(auth: TwitchAuth) extends ServerEndpoi
             (StatusCode.Ok, TwitchAuthApi.page("Twitch connected", s"Authorized as ${granted.login}.$caveat You can close this window."))
           case Left(reason) =>
             logger.warn(s"Twitch authorization failed: $reason")
-            (StatusCode.BadRequest, TwitchAuthApi.page("Twitch authorization failed", reason))
+            (StatusCode.BadRequest, TwitchAuthApi.page("Twitch authorization failed", reason.message))
       case _ =>
         (
           StatusCode.BadRequest,
@@ -64,13 +65,14 @@ private[twitch] final class TwitchAuthApi(auth: TwitchAuth) extends ServerEndpoi
         )
 
   private def status(): TwitchAuthorization_OUT =
-    val held = auth.current
+    val view = auth.view
+    val held = view.held
     TwitchAuthorization_OUT(
-      authorized = held.isDefined,
+      authorized = view.usable.isDefined,
       login = held.map(_.login),
       userId = held.map(_.userId),
       scopes = held.fold(Nil)(_.scopes),
-      missingScopes = auth.missingScopes,
+      missingScopes = view.missingScopes,
       expiresAt = held.map(_.expiresAt),
       authorizeUrl = TwitchAuth.AuthorizePath
     )

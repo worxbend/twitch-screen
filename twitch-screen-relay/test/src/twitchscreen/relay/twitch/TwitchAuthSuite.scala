@@ -27,6 +27,8 @@ class TwitchAuthSuite extends munit.FunSuite:
   private final class ScriptedTwitch(clock: Clock) extends TwitchOAuthClient:
     var issued = 0
     var refreshFails = false
+    var refreshRejected = false
+    var refreshCalls = 0
     var beforeRefresh: () => Unit = () => ()
     val exchangedCodes = mutable.ListBuffer.empty[String]
     val revoked = mutable.ListBuffer.empty[String]
@@ -35,13 +37,17 @@ class TwitchAuthSuite extends munit.FunSuite:
       issued += 1
       UserToken(Sensitive(s"access-$issued"), Sensitive(s"refresh-$issued"), clock.instant().plusSeconds(4 * 3600), granted, "1234", login)
 
-    override def exchange(code: String): Either[String, UserToken] =
+    override def exchange(code: String): Either[TwitchCallFailure, UserToken] =
       exchangedCodes += code
-      if code == "bad" then Left("could not exchange the authorization code: 400") else Right(next("somechannel", scopes))
+      if code == "bad" then Left(TwitchCallFailure("exchange the authorization code", "Rejected", Some(400)))
+      else Right(next("somechannel", scopes))
 
-    override def refresh(token: UserToken): Either[String, UserToken] =
+    override def refresh(token: UserToken): Either[TwitchCallFailure, UserToken] =
       beforeRefresh()
-      if refreshFails then Left("could not refresh the user token: 400") else Right(next(token.login, token.scopes))
+      refreshCalls += 1
+      if refreshRejected then Left(TwitchCallFailure("refresh the user token", "Rejected", Some(400)))
+      else if refreshFails then Left(TwitchCallFailure("refresh the user token", "Unavailable", Some(503)))
+      else Right(next(token.login, token.scopes))
 
     override def isValid(token: UserToken): Option[Boolean] = Some(true)
 
@@ -67,7 +73,7 @@ class TwitchAuthSuite extends munit.FunSuite:
 
   private def newAuth(dir: Path, clock: MovableClock, twitch: ScriptedTwitch)(using Ox): TwitchAuth =
     val file = TokenFile(dir.resolve("data").resolve("twitch-token.json"))
-    TwitchAuth(twitchConfig(file.location), twitch, file, EventBus(clock, queueCapacity = 16), clock, file.load().toOption.flatten)
+    TwitchAuth.create(twitchConfig(file.location), twitch, file, EventBus(clock, queueCapacity = 16), clock, file.load().toOption.flatten)
 
   private def stateOf(url: String): String =
     Uri.unsafeParse(url).params.get("state").getOrElse(fail(s"no state in $url"))
@@ -94,7 +100,7 @@ class TwitchAuthSuite extends munit.FunSuite:
       assertEquals(granted.map(_.accessToken.value), Right("access-1"))
       assertEquals(auth.accessToken, Some("access-1"))
       assertEquals(auth.missingScopes, Nil)
-      assertEquals(auth.awaitCredential().getAccessToken, "access-1")
+      assertEquals(auth.credential.getOrElse(fail("missing credential")).getAccessToken, "access-1")
 
       val stored = dir.resolve("data").resolve("twitch-token.json")
       assert(Files.exists(stored))
@@ -140,7 +146,7 @@ class TwitchAuthSuite extends munit.FunSuite:
       val twitch = ScriptedTwitch(clock)
       val auth = newAuth(dir, clock, twitch)
       auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
-      val handle = auth.awaitCredential()
+      val handle = auth.credential.getOrElse(fail("missing credential"))
 
       auth.maintain()
       assertEquals(auth.accessToken, Some("access-1"), "four hours out, nothing to do")
@@ -171,7 +177,7 @@ class TwitchAuthSuite extends munit.FunSuite:
       val auth = newAuth(dir, clock, twitch)
       assert(!auth.signOut(), "nothing to sign out of yet")
       auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
-      val handle = auth.awaitCredential()
+      val handle = auth.credential.getOrElse(fail("missing credential"))
       assert(auth.signOut())
       assertEquals(handle.getAccessToken, "")
       assertEquals(auth.credential, None)
@@ -225,7 +231,7 @@ class TwitchAuthSuite extends munit.FunSuite:
       val twitch = ScriptedTwitch(clock)
       val auth = newAuth(dir, clock, twitch)
       auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
-      val handle = auth.awaitCredential()
+      val handle = auth.credential.getOrElse(fail("missing credential"))
       val entered = java.util.concurrent.CountDownLatch(1)
       val proceed = java.util.concurrent.CountDownLatch(1)
       twitch.beforeRefresh = () =>
@@ -240,6 +246,7 @@ class TwitchAuthSuite extends munit.FunSuite:
       refresh.join()
       assertEquals(auth.current, None)
       assertEquals(handle.getAccessToken, "")
+      assertEquals(twitch.revoked.toList, List("access-1", "access-2"))
       assert(!Files.exists(dir.resolve("data/twitch-token.json")))
 
   tempDir.test("new consent racing refresh retains the new grant in memory handle and file"): dir =>
@@ -248,7 +255,7 @@ class TwitchAuthSuite extends munit.FunSuite:
       val twitch = ScriptedTwitch(clock)
       val auth = newAuth(dir, clock, twitch)
       auth.completeAuthorization("first", stateOf(auth.beginAuthorization())).discard
-      val handle = auth.awaitCredential()
+      val handle = auth.credential.getOrElse(fail("missing credential"))
       val entered = java.util.concurrent.CountDownLatch(1)
       val proceed = java.util.concurrent.CountDownLatch(1)
       twitch.beforeRefresh = () =>
@@ -265,3 +272,43 @@ class TwitchAuthSuite extends munit.FunSuite:
       assertEquals(auth.accessToken, Some(expected))
       assertEquals(handle.getAccessToken, expected)
       assertEquals(newAuth(dir, clock, twitch).accessToken, Some(expected))
+
+  tempDir.test("a rejected refresh stops retries until a new consent grant arrives"): dir =>
+    supervised:
+      val clock = MovableClock(start)
+      val twitch = ScriptedTwitch(clock)
+      val auth = newAuth(dir, clock, twitch)
+      auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
+      twitch.refreshRejected = true
+      auth.rejectAccessToken()
+      auth.maintain()
+      auth.maintain()
+      assertEquals(twitch.refreshCalls, 1)
+      assertEquals(auth.accessToken, None)
+      assert(auth.current.isDefined)
+      twitch.refreshRejected = false
+      auth.completeAuthorization("new", stateOf(auth.beginAuthorization())).discard
+      assert(auth.accessToken.isDefined)
+
+  tempDir.test("authorization status exposes an expired or rejected retained grant as unusable"): dir =>
+    supervised:
+      val clock = MovableClock(start)
+      val auth = newAuth(dir, clock, ScriptedTwitch(clock))
+      auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
+      auth.rejectAccessToken()
+      val backend = TapirSyncStubInterpreter().whenServerEndpointsRunLogic(TwitchAuthApi(auth).endpoints).backend()
+      val status = basicRequest.get(uri"http://localhost:8080/api/v1/twitch/authorization").send(backend).body.getOrElse(fail("no status"))
+      assert(status.contains("\"authorized\":false"), status)
+      assert(status.contains("somechannel"), status)
+
+  tempDir.test("a concurrent rejection of the same grant does not discard a successful refresh"): dir =>
+    supervised:
+      val clock = MovableClock(start)
+      val twitch = ScriptedTwitch(clock)
+      val auth = newAuth(dir, clock, twitch)
+      auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
+      twitch.beforeRefresh = () => auth.rejectAccessToken("access-1")
+      clock.now = start.plusSeconds(4 * 3600)
+      auth.maintain()
+      assertEquals(auth.accessToken, Some("access-2"))
+      assertEquals(twitch.revoked.toList, Nil)
