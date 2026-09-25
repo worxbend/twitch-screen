@@ -446,3 +446,29 @@ Validation (run from twitch-screen-relay):
 Residuals:
 - Suites run in parallel, and `LogBuffer` is global. The unfiltered two-record check in "pageSize truncates" could in principle see an Error logged by another suite in the same microseconds. It was stable in 4 runs.
 - The production `{"error":` body for an invalid `minLevel` or `category` is covered only generically, by ManagementAuthSuite's unmatched route.
+
+## RLY-55: Injectable session-ID source for DeviceHub
+
+Change (commit `1e8e673`):
+- `src/twitchscreen/relay/device/DeviceHub.scala`
+  - Adds `DeviceHub.RandomSessionId: () => Long` (ThreadLocalRandom).
+  - `start(..., sessionIdSource: () => Long = RandomSessionId)` forwards to `startingAt(..., initialSequence, sessionIdSource = RandomSessionId)`. `startingAt` reads the source exactly once and passes `SessionId.fromWire(sessionIdSource())` into `DeviceHubState`.
+  - The new `sessionId: SessionId` constructor parameter replaces `DeviceHubState`'s private `ThreadLocalRandom` val. The §6.2/§10.2 scaladoc moved to that parameter.
+  - The redundant double `& 0xffffffffL` is gone, because `fromWire` masks.
+  - Production behaviour is unchanged. `Dependencies.scala` and every existing caller compile untouched because the parameter has a default.
+- `test/.../device/TestDevice.scala`: `TestRelay.start` takes `sessionIdSource` (default `DeviceHub.RandomSessionId`) and forwards it.
+- `test/.../device/DeviceLinkSuite.scala` has 2 new tests:
+  - "RLY-55: two hubs with injected session ids advertise exactly those values in WELCOME": hubs with `0x12345678L` and `0xCAFEBABEL` (above 2^31) advertise exactly those values, and the two differ.
+  - "RLY-55: an injected source is read once per hub and masked to u32": a counting source returns `0x1_0000_0001L`. Two connections both see `session_id == 1`, and the source was called exactly once.
+
+Mutation checks (source restored from a backup each time; `sha256sum -c` reported OK):
+- M1: `startingAt` ignores the source and uses `RandomSessionId()`. Both RLY-55 tests fail (DeviceLinkSuite:96 and :112), 2/41.
+  - The mutant had to reference `sessionIdSource`, because a plainly unused parameter fails `-Werror`.
+- M2: the source is read on every WELCOME, not once per hub. "an injected source is read once per hub" fails on the read count (:113). The existing "the session id is the same for every connection" test fails too, 2/41.
+
+Validation (run from twitch-screen-relay):
+- `./mill --no-daemon test.testOnly twitchscreen.relay.device.DeviceLinkSuite` → 41 tests, 0 failed. Run 3 times, stable each time.
+- `./mill --no-daemon test.testOnly` over DeviceLinkSuite, SequenceExhaustionSuite, LifecycleOrderingSuite, StartupOrderSuite and ApiSuite → 41/5/1/1/26, 0 failed.
+- `./mill --no-daemon compile` (`-Werror`) → SUCCESS.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` → SUCCESS; `git diff --check` clean.
+- `./mill --no-daemon test` → 33 suites, 371 tests (was 33/369), 0 failed.
