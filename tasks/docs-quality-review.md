@@ -6,7 +6,7 @@ Documentation only: root and component READMEs, contributor instructions, user/b
 
 Requested skills: `docs-check-compliance`, `docs-tutorial`, and `documentation-and-adrs`. The audit rule skill is **documentation-and-adrs**; the tutorial also receives the complete `docs-tutorial/CHECKLIST.md` review. The available tool interface has no `Skill` tool, so skills are read from their supplied filesystem sources. No installed Ultracode workflow was found; the work uses a documentation-only team of three research/writing agents plus the integrating agent, followed by crossed reviews.
 
-The GitHub connector verified repository identity and default branch. No remote repository changes are part of this task. Research uses current official Twitch documentation, [GitHub README guidance](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes), and [Diátaxis](https://diataxis.fr/start-here/).
+The GitHub connector verified repository identity and default branch. Repository instructions in [AGENTS.md](../AGENTS.md) require validated changes to be rebased onto `origin/main` and pushed without force; the integrating agent handles that final step. Research uses current official Twitch documentation, [GitHub README guidance](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes), and [Diátaxis](https://diataxis.fr/start-here/).
 
 ## Full rule checklist: documentation-and-adrs
 
