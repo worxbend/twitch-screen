@@ -6,8 +6,7 @@ import com.typesafe.config.{Config as HoconConfig, ConfigFactory}
 import scala.concurrent.duration.FiniteDuration
 
 /** Where the management/monitoring HTTP API listens. */
-final case class HttpConfig(host: Hostname, port: Port, auth: HttpAuthConfig):
-  auth.validate()
+final case class HttpConfig(host: Hostname, port: Port, auth: HttpAuthConfig)
 
 object HttpConfig:
   given ConfigReader[HttpConfig] = ValidatedConfigReader.derivedValidated[HttpConfig]

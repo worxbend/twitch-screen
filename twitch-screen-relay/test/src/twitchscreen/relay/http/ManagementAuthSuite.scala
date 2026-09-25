@@ -211,10 +211,10 @@ class ManagementAuthSuite extends munit.FunSuite:
       assertEquals(failure.body(), "{\"error\":\"Internal server error\"}")
       assert(failure.headers().firstValue("Content-Type").orElse("").contains("application/json"))
 
-  test("startup rejects absent or incomplete credentials and password verification rejects a wrong password"):
-    intercept[IllegalArgumentException](ManagementAuth(HttpAuthConfig())).discard
-    intercept[IllegalArgumentException](ManagementAuth(HttpAuthConfig("operator", apiToken = Sensitive(token)))).discard
-    intercept[IllegalArgumentException](ManagementAuth(HttpAuthConfig(apiToken = Sensitive("short")))).discard
+  test("absent or incomplete credentials cannot be constructed and password verification rejects a wrong password"):
+    intercept[IllegalArgumentException](HttpAuthConfig()).discard
+    intercept[IllegalArgumentException](HttpAuthConfig("operator", apiToken = Sensitive(token))).discard
+    intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Sensitive("short"))).discard
     assert(PasswordVerifier.verify(password, hash))
     assert(!PasswordVerifier.verify("wrong", hash))
 

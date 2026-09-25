@@ -18,7 +18,6 @@ private[relay] enum HttpAccess:
 
 /** Runs before body decoding or any management operation. */
 private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword: (String, String) => Boolean = PasswordVerifier.verify):
-  config.validate()
   // Excess concurrent PBKDF2 requests receive 503 so expensive logins cannot starve the API; Bearer bypasses this budget.
   private val passwordChecks = Semaphore(2)
 

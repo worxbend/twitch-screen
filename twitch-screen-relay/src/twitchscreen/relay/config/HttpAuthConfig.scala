@@ -7,15 +7,19 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 import pureconfig.ConfigReader
 import scala.util.Try
-import ox.{computeIntensive, tap}
+import ox.computeIntensive
 
-/** Empty fields disable a method; at least one complete method is required at server startup. */
+/** Empty fields disable a method. Construction rejects an invalid credential set or one without a complete method, so every instance is
+  * usable as-is: the HOCON reader reports that rejection as a `CannotConvert` at `http.auth`.
+  */
 final case class HttpAuthConfig(
     basicUsername: String = "",
     basicPasswordHash: Sensitive = Sensitive.Empty,
     apiToken: Sensitive = Sensitive.Empty
 ):
-  def validate(): Unit =
+  validate()
+
+  private def validate(): Unit =
     require(
       basicUsername.isEmpty || (!basicUsername.isBlank && basicUsername == basicUsername.trim && !basicUsername
         .exists(c => c.isControl || c == ':')),
@@ -34,7 +38,7 @@ final case class HttpAuthConfig(
     require(basicPasswordHash.isSet || apiToken.isSet, "http.auth requires Basic credentials or an API token")
 
 object HttpAuthConfig:
-  given ConfigReader[HttpAuthConfig] = ValidatedConfigReader.strict(ConfigReader.derived[HttpAuthConfig].map(_.tap(_.validate())))
+  given ConfigReader[HttpAuthConfig] = ValidatedConfigReader.derivedValidated[HttpAuthConfig]
 
 /** PBKDF2-SHA256 verifier: pbkdf2-sha256$600000$base64(salt)$base64(32-byte key). No password is retained. */
 private[relay] object PasswordVerifier:

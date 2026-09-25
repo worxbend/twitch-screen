@@ -541,3 +541,43 @@ Every hit is one of these: the constants, the guarded HOCON default and its comm
 | `./mill --no-daemon test` | SUCCESS. 44 suites, 487 tests, 0 failed, 0 ignored. |
 | `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
 | `grep -n 'import context\|pollStream(' src/twitchscreen/relay/twitch/HelixPoller.scala test/src/twitchscreen/relay/twitch/TwitchRecoverySuite.scala` | No `import context`. The only hits are the new 3-parameter definition (HelixPoller:56), the call in `poll` (HelixPoller:46) and the two 3-argument test calls (TwitchRecoverySuite:254, :285). |
+
+## K-045: Config reader boilerplate duplicated 9x
+
+- Severity: Medium-smell. Area: relay-twitch.
+- **Disposition: fixed.** It closes the `[partial]` gap. `HttpAuthConfig` now validates in its constructor, and its reader is the shared `ValidatedConfigReader.derivedValidated[HttpAuthConfig]`. No site uses the hand-built `.map(_.tap(_.validate()))` form any more.
+
+### Change
+
+- `twitch-screen-relay/src/twitchscreen/relay/config/HttpAuthConfig.scala`
+  - The case-class body now calls `validate()` first, and `validate` is `private`. This is the `DeviceLinkConfig` pattern. The default parameter values and the `http.auth...` require messages are unchanged.
+  - The reader is `given ConfigReader[HttpAuthConfig] = ValidatedConfigReader.derivedValidated[HttpAuthConfig]`. It is still strict (unknown keys are rejected and JDK system properties are tolerated), and the constructor's `IllegalArgumentException` becomes a `CannotConvert` at the cursor path.
+  - `import ox.{computeIntensive, tap}` is now `import ox.computeIntensive`.
+  - Scaladoc: construction rejects an invalid or method-less credential set, so every instance is usable, and the reader reports the rejection as a `CannotConvert` at `http.auth`. The old wording, "required at server startup", is gone.
+- `twitch-screen-relay/src/twitchscreen/relay/config/Config.scala`: `HttpConfig` no longer has the `auth.validate()` body line. It is now `final case class HttpConfig(host: Hostname, port: Port, auth: HttpAuthConfig)`.
+- `twitch-screen-relay/src/twitchscreen/relay/http/ManagementAuth.scala`: `config.validate()` is removed. The doc comment never claimed that the class validates its config, so it needed no change.
+- `twitch-screen-relay/test/src/twitchscreen/relay/config/ConfigSuite.scala`
+  - Added a shared `ValidToken` constant.
+  - "HTTP config cannot construct a readiness bypass with absent authentication" becomes "K-045: HTTP auth config cannot be constructed without a complete credential method". `HttpAuthConfig()` throws with "requires Basic credentials or an API token". `HttpAuthConfig("operator", apiToken = valid)` throws with "requires both Basic username and password hash".
+  - New positive control, "K-045: a complete credential method constructs", builds from a token only. ConfigSuite has no password hash, so the Basic triple is covered by ManagementAuthSuite's `auth` and by TraceIdMdcSuite.
+  - New "K-045: invalid http.auth in HOCON is a CannotConvert scoped to http.auth, returned rather than thrown". It loads each case over `ConfigFactory.load()` and pattern-matches `ConvertFailure(CannotConvert(_, _, msg), _, "http.auth")`. The cases are an empty api-token ("requires Basic credentials or an API token"), a 16-byte token ("at least 32 bytes"), and `basic-username = "operator"` with the token cleared ("requires both Basic username and password hash").
+  - "configured credentials reject whitespace usernames and non-header-safe bearer tokens" no longer calls `.validate()`, so the constructor now throws.
+- `twitch-screen-relay/test/src/twitchscreen/relay/http/ManagementAuthSuite.scala`: "startup rejects absent or incomplete credentials..." becomes "absent or incomplete credentials cannot be constructed and password verification rejects a wrong password". It asserts `intercept[IllegalArgumentException](HttpAuthConfig(...))` directly, without `ManagementAuth(...)`. The `PasswordVerifier` assertions are unchanged.
+
+### Red, then green
+
+- Red first: with the tests changed and production untouched, 4 tests failed. Three were in ConfigSuite: the K-045 constructor test and the whitespace/token test ("body evaluated successfully"), plus the HOCON test (no `CannotConvert` at `http.auth`). The fourth was ManagementAuthSuite's construction test.
+- The HOCON red was a real defect, not just test scaffolding. A probe of the pre-change code showed that the old reader, `ValidatedConfigReader.strict(ConfigReader.derived[HttpAuthConfig].map(_.tap(_.validate())))`, reported `ConvertFailure@http.auth:ExceptionThrown`. PureConfig's `ConfigReader.map` catches the exception itself and wraps it as `ExceptionThrown`, so `ValidatedConfigReader.apply` never saw it and it never became `CannotConvert`. `derivedValidated` fixes this because the constructor throws inside `apply`'s try.
+- Green after the production change: ConfigSuite 43 tests, ManagementAuthSuite 14 tests, 0 failed.
+- Mutation check, then reverted: I replaced the body call with `if sys.props.contains("k045.mutant.never.set") then validate()`. Deleting the call outright trips `-Werror` because the private method becomes unused. The mutant failed 5 tests. Four were in ConfigSuite: the K-045 constructor test, "missing management credentials fail configuration loading with an auth path", the K-045 HOCON test, and the whitespace/token test. The fifth was ManagementAuthSuite's construction test. I restored the file from a scratch copy, and `git diff` shows only the intended change.
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly twitchscreen.relay.config.ConfigSuite twitchscreen.relay.http.ManagementAuthSuite` | SUCCESS. ConfigSuite 43 tests (up from 41), ManagementAuthSuite 14 tests, 0 failed. |
+| `./mill --no-daemon compile` | SUCCESS, with `-Werror` |
+| `./mill --no-daemon test` | SUCCESS. 45 suites, 497 tests, 0 failed. This change adds +2. The rest of the difference from the 487 recorded under K-043 comes from other lane commits already on this branch. |
+| `./mill --no-daemon mill.scalalib.scalafmt/` then `mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
+| `grep -rn "validate()" src/.../HttpAuthConfig.scala src/.../Config.scala src/.../ManagementAuth.scala test/src` | Only the private constructor-body calls and definitions: HttpAuthConfig:20/22 and Config:27/29, 119/122 (DeviceLinkConfig and TwitchConfig). There are no hits in HttpConfig, ManagementAuth or tests. `grep -rn "tap(_.validate" src` finds nothing. |
+| K-016 tests (unknown keys under `http.auth` rejected, `http.auth.preference` system property tolerated) | Green in the ConfigSuite run above. |

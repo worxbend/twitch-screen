@@ -10,6 +10,7 @@ class ConfigSuite extends munit.FunSuite:
   private def configured =
     ConfigFactory.parseString("http.auth.api-token = \"test-configuration-token-at-least-32-bytes\"").withFallback(ConfigFactory.load())
   private def configSource = ConfigSource.fromConfig(configured)
+  private val ValidToken = "valid-test-token-with-at-least-32-bytes"
   test("the configuration shipped in resources loads"):
     val config = configSource.loadOrThrow[Config]
     assertEquals(config.deviceLink.port.value, 8099)
@@ -191,8 +192,14 @@ class ConfigSuite extends munit.FunSuite:
       () => ObservabilityConfig(Int.MaxValue)
     ).foreach(build => intercept[IllegalArgumentException](build()).discard)
 
-  test("HTTP config cannot construct a readiness bypass with absent authentication"):
-    intercept[IllegalArgumentException](HttpConfig(Hostname("localhost").toOption.get, Port(8080).toOption.get, HttpAuthConfig())).discard
+  test("K-045: HTTP auth config cannot be constructed without a complete credential method"):
+    val absent = intercept[IllegalArgumentException](HttpAuthConfig())
+    assert(absent.getMessage.contains("requires Basic credentials or an API token"), absent.getMessage)
+    val incomplete = intercept[IllegalArgumentException](HttpAuthConfig("operator", apiToken = Sensitive(ValidToken)))
+    assert(incomplete.getMessage.contains("requires both Basic username and password hash"), incomplete.getMessage)
+
+  test("K-045: a complete credential method constructs"):
+    assertEquals(HttpAuthConfig(apiToken = Sensitive(ValidToken)).apiToken.value, ValidToken)
 
   test("callback schemes and hosts are case insensitive while scopes reject malformed names"):
     val config = liveTwitchConfig("client")
@@ -253,12 +260,33 @@ class ConfigSuite extends munit.FunSuite:
     assert(result.isLeft)
     assert(result.swap.toOption.exists(_.toString.contains("http.auth")))
 
+  /** The messages of the `CannotConvert` failures reported exactly at `http.auth`, the path of the section that failed. */
+  private def authConversionFailures(overrides: String): List[String] =
+    val result = ConfigSource.fromConfig(ConfigFactory.parseString(overrides).withFallback(ConfigFactory.load())).load[Config]
+    assert(result.isLeft, s"loaded unexpectedly: $result")
+    result.swap.toOption.toList
+      .flatMap(_.toList)
+      .collect:
+        case pureconfig.error.ConvertFailure(pureconfig.error.CannotConvert(_, _, message), _, "http.auth") => message
+
+  test("K-045: invalid http.auth in HOCON is a CannotConvert scoped to http.auth, returned rather than thrown"):
+    List(
+      "http.auth.api-token = \"\"" -> "requires Basic credentials or an API token",
+      "http.auth.api-token = \"sixteen-byte-tok\"" -> "at least 32 bytes",
+      "http.auth { api-token = \"\", basic-username = \"operator\" }" -> "requires both Basic username and password hash"
+    ).foreach: (overrides, expected) =>
+      val messages = authConversionFailures(overrides)
+      assert(
+        messages.exists(_.contains(expected)),
+        s"$overrides: expected a CannotConvert at http.auth containing '$expected', got $messages"
+      )
+
   test("configured credentials reject whitespace usernames and non-header-safe bearer tokens"):
-    val token = Sensitive("valid-test-token-with-at-least-32-bytes")
+    val token = Sensitive(ValidToken)
     List(" ", "name:password").foreach: username =>
-      intercept[IllegalArgumentException](HttpAuthConfig(username, apiToken = token).validate()).discard
+      intercept[IllegalArgumentException](HttpAuthConfig(username, apiToken = token)).discard
     List("x" * 32 + "\n", "é" * 32, "x" * 32 + " space").foreach: invalid =>
-      intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Sensitive(invalid)).validate()).discard
+      intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Sensitive(invalid))).discard
 
   private def loadWith(overrides: String) =
     ConfigSource.fromConfig(ConfigFactory.parseString(overrides).withFallback(configured)).load[Config]
