@@ -1,5 +1,6 @@
 package twitchscreen.relay.device
 
+import java.util.concurrent.atomic.AtomicInteger
 import ox.{discard, forkDiscard, supervised}
 import scala.concurrent.duration.DurationInt
 import twitchscreen.relay.config.{ChatNotifications, DeviceLinkConfig}
@@ -81,6 +82,35 @@ class DeviceLinkSuite extends munit.FunSuite:
       // §10.2: it changes once per relay process start, which is what tells a device its sequence space was reset.
       assertEquals(sessionId(), sessionId())
       assertNotEquals(sessionId(), -1L)
+
+  test("RLY-55: two hubs with injected session ids advertise exactly those values in WELCOME"):
+    supervised:
+      // The second value sits above 2^31, so a signed round trip anywhere on the path would show here.
+      val (_, first) = TestRelay.start(sessionIdSource = () => 0x12345678L)
+      val (_, second) = TestRelay.start(sessionIdSource = () => 0xcafebabeL)
+      def advertised(port: Int): Option[Long] =
+        withDevice(port): device =>
+          device.hello("roundlcd-01", lastSeq = 0)
+          welcomeOf(device.receiveMany(2)).map(_.sessionId.value)
+      val (a, b) = (advertised(first), advertised(second))
+      assertEquals(a, Some(0x12345678L))
+      assertEquals(b, Some(0xcafebabeL))
+      assertNotEquals(a, b)
+
+  test("RLY-55: an injected source is read once per hub and masked to u32"):
+    supervised:
+      val reads = AtomicInteger(0)
+      def source(): Long =
+        reads.incrementAndGet().discard
+        0x1_0000_0001L // bit 32 set: only the low u32 (1) may reach the wire
+      val (_, port) = TestRelay.start(sessionIdSource = () => source())
+      def advertised(): Option[Long] =
+        withDevice(port): device =>
+          device.hello("roundlcd-01", lastSeq = 0)
+          welcomeOf(device.receiveMany(2)).map(_.sessionId.value)
+      // §6.2: opaque and drawn once per relay process, so every connection sees the same, u32-masked value.
+      assertEquals(List(advertised(), advertised()), List(Some(1L), Some(1L)))
+      assertEquals(reads.get(), 1)
 
   test("an event published while a device is attached reaches it with its structured fields intact"):
     supervised:

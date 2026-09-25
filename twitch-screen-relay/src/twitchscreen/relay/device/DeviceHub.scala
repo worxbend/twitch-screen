@@ -108,17 +108,30 @@ private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState], c
     state.tell(_.detach(connection, reason))
 
 private[relay] object DeviceHub:
-  def start(config: DeviceLinkConfig, chat: ChatNotifications, clock: Clock, bus: EventBus)(using Ox): DeviceHub =
-    startingAt(config, chat, clock, bus, SeqNo.Zero)
-
-  /** A hub whose counter already stands at `initialSequence`. Production always starts at zero; this is the seam that lets tests reach
-    * §10.1's exhaustion without publishing four billion events.
+  /** Production source of the §6.2 `session_id`: a fresh random value per hub, which is per relay process start. [[SessionId.fromWire]]
+    * masks it to `u32`.
     */
-  private[relay] def startingAt(config: DeviceLinkConfig, chat: ChatNotifications, clock: Clock, bus: EventBus, initialSequence: SeqNo)(
+  private[relay] val RandomSessionId: () => Long = () => ThreadLocalRandom.current().nextLong()
+
+  def start(config: DeviceLinkConfig, chat: ChatNotifications, clock: Clock, bus: EventBus, sessionIdSource: () => Long = RandomSessionId)(
       using Ox
   ): DeviceHub =
+    startingAt(config, chat, clock, bus, SeqNo.Zero, sessionIdSource)
+
+  /** A hub whose counter already stands at `initialSequence`. Production always starts at zero; this is the seam that lets tests reach
+    * §10.1's exhaustion without publishing four billion events. `sessionIdSource` is read exactly once, here.
+    */
+  private[relay] def startingAt(
+      config: DeviceLinkConfig,
+      chat: ChatNotifications,
+      clock: Clock,
+      bus: EventBus,
+      initialSequence: SeqNo,
+      sessionIdSource: () => Long = RandomSessionId
+  )(using Ox): DeviceHub =
     val connected = AtomicInteger(0)
-    new DeviceHub(Actor.create(new DeviceHubState(config, chat, clock, bus, connected, initialSequence)), connected)
+    val sessionId = SessionId.fromWire(sessionIdSource())
+    new DeviceHub(Actor.create(new DeviceHubState(config, chat, clock, bus, connected, initialSequence, sessionId)), connected)
 
 /** The hub's mutable state. The `var`s are safe because every method runs inside the actor that owns this instance; nothing else may hold a
   * reference to it.
@@ -129,19 +142,18 @@ private[device] final class DeviceHubState(
     clock: Clock,
     bus: EventBus,
     connected: AtomicInteger,
-    initialSequence: SeqNo
+    initialSequence: SeqNo,
+    /** §6.2. Opaque, and new on every relay process start, because the sequence counter is not persisted across restarts.
+      *
+      * §10.2 deliberately does **not** baseline on it. An earlier draft had the device re-baseline whenever it changed, but `HELLO` carries
+      * no `session_id` echo, so this relay has nothing to compare against and could not implement the matching half: the two sides then
+      * used different tests for the same condition and, after a restart, this relay pushed a replay burst that the device discarded frame
+      * by frame as duplicates. The baseline is `last_seq` against `latest_seq` on both sides. This value stays for the device's log, which
+      * is where "the relay restarted under me" belongs.
+      */
+    sessionId: SessionId
 ):
   private val logger = LoggerFactory.getLogger(classOf[DeviceHub])
-
-  /** §6.2. Opaque, and new on every relay process start, because the sequence counter is not persisted across restarts.
-    *
-    * §10.2 deliberately does **not** baseline on it. An earlier draft had the device re-baseline whenever it changed, but `HELLO` carries
-    * no `session_id` echo, so this relay has nothing to compare against and could not implement the matching half: the two sides then used
-    * different tests for the same condition and, after a restart, this relay pushed a replay burst that the device discarded frame by frame
-    * as duplicates. The baseline is `last_seq` against `latest_seq` on both sides. This value stays for the device's log, which is where
-    * "the relay restarted under me" belongs.
-    */
-  private val sessionId: SessionId = SessionId.fromWire(ThreadLocalRandom.current().nextLong() & 0xffffffffL)
 
   private var lastConnectionId: Long = 0
   private var latestSequence: SeqNo = initialSequence

@@ -87,8 +87,12 @@ private[device] object TestRelay:
   )
 
   /** Starts a hub and listener on a free port, returning both. Everything stops when the enclosing scope ends. */
-  def start(config: DeviceLinkConfig = config, chat: ChatNotifications = ChatNotifications.Show)(using Ox): (DeviceHub, Int) =
+  def start(
+      config: DeviceLinkConfig = config,
+      chat: ChatNotifications = ChatNotifications.Show,
+      sessionIdSource: () => Long = DeviceHub.RandomSessionId
+  )(using Ox): (DeviceHub, Int) =
     val clock = Clock.systemUTC()
-    val hub = DeviceHub.start(config, chat, clock, EventBus(clock, queueCapacity = 64))
+    val hub = DeviceHub.start(config, chat, clock, EventBus(clock, queueCapacity = 64), sessionIdSource)
     val listener = DeviceLinkServer.startOnPort(config, hub, clock, 0)
     (hub, listener.getLocalPort)
