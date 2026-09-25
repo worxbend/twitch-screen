@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "skills": {
+    "cpp-coding-standards": {
+      "source": "affaan-m/ecc",
+      "sourceType": "github",
+      "skillPath": "skills/cpp-coding-standards/SKILL.md",
+      "computedHash": "e8c59d13fe23b088e24dcf6b77845823c5b5636b5c52434550f9b1837bc44ac3"
+    },
+    "cpp-pro": {
+      "source": "jeffallan/claude-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cpp-pro/SKILL.md",
+      "computedHash": "a5632d28a479fe433c7fd9ab98903b9cd010926b3ddd73785ff0325d0277dbe6"
+    },
+    "cpp-testing": {
+      "source": "affaan-m/ecc",
+      "sourceType": "github",
+      "skillPath": "skills/cpp-testing/SKILL.md",
+      "computedHash": "fbe37695056aa5cf9454f8cf6d883f38c3bca0324ca7aeb288db2fe3b887e97d"
+    },
+    "embedded-systems": {
+      "source": "jeffallan/claude-skills",
+      "sourceType": "github",
+      "skillPath": "skills/embedded-systems/SKILL.md",
+      "computedHash": "1631345781a5ed3ba2a780a710b8c23cb1b0abaaf576164c40d15b20683d2f6e"
+    },
+    "esp32-firmware-engineer": {
+      "source": "adamlipecz/esp32-firmware-engineer-skill",
+      "sourceType": "github",
+      "skillPath": "esp32-firmware-engineer/SKILL.md",
+      "computedHash": "3df8fc9d1ba783e4f09c59cf728cfb73cecfca89eece4a3b5b7d7e3e62068b6e"
+    },
+    "static-analysis": {
+      "source": "mohitmishra786/low-level-dev-skills",
+      "sourceType": "github",
+      "skillPath": "skills/build-systems/static-analysis/SKILL.md",
+      "computedHash": "5e37d6ae89ce6c66b0010d14f303a88c4df2a1e1f9a603dfbf6442dbf0e100b8"
+    }
+  }
+}
