@@ -1,0 +1,11 @@
+out/
+.bsp/
+.metals/
+.bloop/
+.idea/
+test/
+llms.txt
+PLAN.md
+README.md
+Dockerfile
+.dockerignore

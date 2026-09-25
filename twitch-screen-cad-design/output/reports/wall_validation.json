@@ -1,0 +1,10 @@
+{
+  "samples": 695,
+  "minimum_sampled_separation_mm": 1.4999999999999958,
+  "minimum_location_mm": [
+    -9.166666666666668,
+    6.618681599723015,
+    73.02134497435782
+  ],
+  "scope": "Exact distance between underlying unperforated body and cavity surfaces at UV samples above Z=6; includes 1.5 mm structural bezel seat. Excludes deliberate vents, screw holes, added rim and 0.8 mm adhesive fascia. Not an exhaustive structural or print test."
+}

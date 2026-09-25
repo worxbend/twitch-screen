@@ -1,0 +1,30 @@
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <!-- %X{traceId} is filled in by SetTraceIdInMDCInterceptor while a request is being handled. -->
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %X{traceId} %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Feeds GET /api/v1/logs. See LogBuffer for why it reaches a global. -->
+    <appender name="MEMORY" class="twitchscreen.relay.observability.InMemoryLogAppender"/>
+
+    <!-- Exports log records over OTLP. A no-op until OpenTelemetryAppender.install runs with a configured SDK. -->
+    <appender name="OTEL" class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
+        <captureExperimentalAttributes>false</captureExperimentalAttributes>
+    </appender>
+
+    <logger name="twitchscreen.relay" level="DEBUG"/>
+
+    <!-- twitch4j and its transitive stack are chatty at INFO and below. -->
+    <logger name="io.netty" level="WARN"/>
+    <logger name="com.github.twitch4j" level="INFO"/>
+    <logger name="com.github.philippheuer" level="WARN"/>
+    <logger name="com.netflix" level="WARN"/>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+        <appender-ref ref="MEMORY"/>
+        <appender-ref ref="OTEL"/>
+    </root>
+</configuration>

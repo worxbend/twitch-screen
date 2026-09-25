@@ -1,0 +1,18 @@
+# A relay on the LAN the ESP32 can reach. `docker compose up` is enough to get a screen lighting up:
+# with twitch.mode = simulated it generates events itself, so no Twitch credentials are needed to test the firmware.
+services:
+  relay:
+    build: .
+    # The device connects to a fixed address, so the relay keeps the same ports on the host.
+    ports:
+      - "8080:8080"   # management API and Swagger UI
+      - "8099:8099"   # device link
+    environment:
+      RELAY_TWITCH_MODE: simulated
+      # For a real channel, set these instead and change the mode to `live`:
+      # RELAY_TWITCH_MODE: live
+      # RELAY_TWITCH_CHANNEL: yourchannel
+      # RELAY_TWITCH_CLIENT_ID: ...
+      # RELAY_TWITCH_CLIENT_SECRET: ...
+      # RELAY_TWITCH_USER_TOKEN: ...
+    restart: unless-stopped

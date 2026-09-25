@@ -1,0 +1,35 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Scala tooling (also created at the monorepo root by Metals)
+.metals/
+.bsp/
+.bloop/
+.scala-build/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local configuration and credentials; keep safe templates versioned
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime logs
+*.log

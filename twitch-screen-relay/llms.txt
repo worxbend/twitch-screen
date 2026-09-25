@@ -1,0 +1,499 @@
+# VirtusLab Scala Stack (VSS)
+
+https://vss.virtuslab.com/
+
+Direct-style Scala: type-safe code that is easy to comprehend and generate.
+
+Our open-source stack that builds on solid foundations provided by Scala 3 with its advanced type system, and Java's Virtual Threads, which bring the performance of reactive programming while retaining a familiar programming model. Use the  libraries together or each one separately, whatever is the best fit for your project.
+
+## Why VSS?
+
+Why direct-style Scala 3 is the best choice for long-term system development.
+
+### Direct style
+No more lost context, function coloring, viral datatypes
+
+Direct-style is programming as we all know it - it is immediately familiar for
+anyone looking at the code, be it a human developer or an AI coding agent.
+
+Results of functions are immediately available, there's no need to wrestle with
+`Future`s, `IO`s or `Promise`s. There's no `async`/`await` which pollutes the
+code, and no `suspend`able or "regular" function distinction.
+
+At the same time, thanks to Java's virtual threads, direct-style Scala retains
+the performance known from asynchronous, reactive programming styles.
+
+### Type safety
+Make illegal states unrepresentable, use latest Scala 3 features.
+
+The simplest features are sometimes the most powerful: algebraic data types
+with pattern matching - pioneered in mainstream languages by Scala, are
+now becoming the de facto standard in any language.
+
+Scala 3 enhances these features with lightweight enums & opaque types.
+Combined with implicits, path-dependent types, lambdas, type members and
+parameters and many more, you get unprecedented type-safety - which provides
+a fast and precise feedback loop for coding agents.
+
+### Mature platform
+Scala leverages the most mature runtime available.
+
+Scala runs on the JVM, a platform with decades of innovation, research
+and hardening. Java's Garbage Collector has been fine-tuned so to meet the
+requirements of web-scale and enterprise services.
+
+Scala seamlessly interoperates with Java, opening the door to a vast ecosystem
+of libraries, so that most problems can be solved by reusing code, instead of
+writing it anew.
+
+### Structured concurrency
+Making concurrency more comprehensible and harder to get wrong.
+
+With structured concurrency, the syntactical structure of the code defines the
+lifetime of threads. This allows for more local reasoning, ensuring proper
+resource cleanup, no "action-at-a-distance", or thread leaks.
+
+A solution that was born in Python, form the basis of safe coroutine usage in
+Kotlin, is now available for Scala & Java.
+
+### No lock-in
+Any part of our stack can be used stand-alone, replaced or combined with third-party libraries.
+
+We propose to build applications on top of a set of libraries, not a framework:
+each component can be replaced, or used in isolation.
+
+While many of our libraries support direct-style, they often don't mandate it,
+and allow working with effect systems such as cats-effect or ZIO, using the same
+APIs.
+
+You're free to choose a JSON library, a programming style, or error model that best
+suites your team and your application.
+
+## Start a project with your coding agent
+
+Set up a new Scala project using the VirtusLab Scala Stack (VSS): direct-style Scala 3 running on Java 25, with virtual threads and Ox for concurrency, no effect systems. The stack is described at https://vss.virtuslab.com/llms.txt
+
+1. Install the direct-style-scala skill from https://github.com/VirtusLab/scala-skill, following the README for the tool you run in, and load it before writing any Scala.
+
+2. Ask me for the project name and group id if I have not given them, then generate the project with Adopt Tapir:
+
+   curl -X POST https://adopt-tapir.softwaremill.com/api/v1/starter.zip \
+     -H 'Content-Type: application/json' \
+     -d '{"projectName":"PROJECT","groupId":"GROUP","stack":"OxStack","implementation":"Netty","addDocumentation":true,"addMetrics":false,"json":"Jsoniter","scalaVersion":"Scala3","builder":"ScalaCli"}' \
+     -o starter.zip && unzip starter.zip
+
+   Keep these settings: the Ox stack with the Netty sync server (direct style), Swagger UI documentation on, jsoniter-scala for JSON, Scala 3, Scala CLI as the build tool.
+
+3. Add `//> using jvm 25` to the generated .scala file, run `scala-cli compile .` to confirm it builds, then `scala-cli run .` and check that http://localhost:8080/docs serves the Swagger UI.
+
+4. Summarise the project layout and how to add an endpoint.
+
+## Templates
+
+### Bootzooka
+id: bootzooka
+Template project to quickly start developing a Scala-based microservice or web application.
+url: https://softwaremill.github.io/bootzooka/
+repo: https://github.com/softwaremill/bootzooka
+
+### Adopt Tapir
+id: adopt-tapir
+Generate a Tapir-based project, choosing the target effect system, JSON library, and Tapir features.
+url: https://adopt-tapir.softwaremill.com
+
+## Language
+
+### Scala 3
+id: scala-3
+Combines the best features of functional & object-oriented programming.
+url: https://www.scala-lang.org
+repo: https://github.com/scala/scala3
+
+### Scala Native
+id: scala-native
+Experimental compiler from Scala to native code, with no JVM at runtime.
+url: https://scala-native.org
+repo: https://github.com/scala-native/scala-native
+
+## Tooling
+
+### Scala CLI
+id: scala-cli
+Command-line tool to compile, run, test, and package Scala code.
+url: https://scala-cli.virtuslab.org
+repo: https://github.com/VirtusLab/scala-cli
+
+### Metals
+id: metals
+Scala language server providing IDE features (completions, diagnostics, navigation).
+url: https://scalameta.org/metals/
+repo: https://github.com/scalameta/metals
+
+## Backend
+
+### Tapir
+id: tapir
+Rapid development of self-documenting APIs.
+url: https://tapir.softwaremill.com
+repo: https://github.com/softwaremill/tapir
+
+### sttp
+id: sttp
+The Scala HTTP client you always wanted!
+url: https://sttp.softwaremill.com
+repo: https://github.com/softwaremill/sttp
+
+### Ox
+id: ox
+Safe direct-style streaming, concurrency and resiliency for Scala on the JVM.
+url: https://ox.softwaremill.com
+repo: https://github.com/softwaremill/ox
+
+### Parlance
+id: parlance
+High-velocity, opinionated functional ORM inspired by Active Record patterns.
+url: https://github.com/lbialy/parlance
+repo: https://github.com/lbialy/parlance
+
+### MacWire
+id: macwire
+Zero-cost, compile-time, type-safe dependency injection library.
+url: https://github.com/softwaremill/macwire
+repo: https://github.com/softwaremill/macwire
+
+### Quicklens
+id: quicklens
+Modify deeply nested case class fields.
+url: https://github.com/softwaremill/quicklens
+repo: https://github.com/softwaremill/quicklens
+
+## AI tooling
+
+### sttp-ai
+id: sttp-ai
+Scala toolkit for working with third-party LLMs. Define agents, call provider APIs, use MCPs.
+url: https://sttp-ai.softwaremill.com
+repo: https://github.com/softwaremill/sttp-ai
+
+### scala-skill
+id: scala-skill
+Claude Code & Codex Scala Skills: generate direct-style applications with use-case driven guides.
+url: https://github.com/VirtusLab/scala-skill
+repo: https://github.com/VirtusLab/scala-skill
+
+### Chimp
+id: chimp
+Build type-safe, boilerplate-less MCP servers and clients in Scala.
+url: https://chimp.softwaremill.com
+repo: https://github.com/softwaremill/chimp
+
+### Orca
+id: orca
+Deterministic, AI-driven development flows.
+url: https://github.com/VirtusLab/orca
+repo: https://github.com/VirtusLab/orca
+
+### Cellar
+id: cellar
+CLI tool for coding agents and developers to query the public API of any Maven JVM dependency.
+url: https://github.com/VirtusLab/cellar
+repo: https://github.com/VirtusLab/cellar
+
+### Sandcat
+id: sandcat
+A Docker & dev container setup for securely running AI agents in `--dangerous` mode.
+url: https://github.com/VirtusLab/sandcat
+repo: https://github.com/VirtusLab/sandcat
+
+## DevOps
+
+### Besom
+id: besom
+Pulumi SDK for Scala.
+url: https://virtuslab.github.io/besom/
+repo: https://github.com/VirtusLab/besom
+
+## Commercial
+
+### VirtusLab: the company behind Scala
+Scala Enterprise Support: https://virtuslab.com/expertise/scala-enterprise-support
+
+VirtusLab maintains the Scala 3 compiler and the Scala runner (Scala CLI). We provide enterprise support,
+consulting and development services, as well as a broad migration offer, between Scala version and to/from
+Scala.
+
+### Meet us & learn more about Scala+AI
+Scala Days 2026: https://scaladays.org
+
+Scala Days 2026 takes place in Berlin on October 12–13. After the conference we are touring
+San Francisco, Chicago and
+New York on October 19–26, bringing some of ScalaDays to the US.
+
+### Visdom
+Visdom: https://visdom.virtuslab.com
+
+AI-native SDLC platform: the missing layer between AI coding and production. Built by VirtusLab to
+bring the context, governance, CI, and traceability needed to make AI-generated code production
+ready.
+
+## Snippets
+
+### HTTP server: Tapir
+A typed endpoint with a JSON error case, served over HTTP.
+url: https://github.com/VirtusLab/vss-page/blob/main/snippets/http-server.scala
+
+//> using scala 3.3.8
+//> using jvm 21
+//> using dep com.softwaremill.sttp.tapir::tapir-netty-server-sync:1.13.31
+//> using dep com.softwaremill.sttp.tapir::tapir-jsoniter-scala:1.13.31
+//> using dep com.github.plokhotnyuk.jsoniter-scala::jsoniter-scala-macros:2.40.1
+
+import com.github.plokhotnyuk.jsoniter_scala.macros.ConfiguredJsonValueCodec
+import sttp.shared.Identity
+import sttp.tapir.*
+import sttp.tapir.json.jsoniter.jsonBody
+import sttp.tapir.server.ServerEndpoint
+import sttp.tapir.server.netty.sync.NettySyncServer
+
+case class Forecast(city: String, tempC: Int, sunny: Boolean)
+  derives ConfiguredJsonValueCodec, Schema
+case class TooFarAhead(maxDays: Int) derives ConfiguredJsonValueCodec, Schema
+val maxDays: Int = 14
+
+val forecast: ServerEndpoint[Any, Identity] = endpoint.get
+  .in("forecast" / path[String]("city")).in(query[Int]("days"))
+  .out(jsonBody[Forecast]).errorOut(jsonBody[TooFarAhead])
+  .handle: (city, days) =>
+    if days > maxDays then Left(TooFarAhead(maxDays))
+    else Right(Forecast(city, 21, sunny = true))
+
+@main def run(): Unit =
+  NettySyncServer().port(8080).addEndpoint(forecast).startAndWait()
+
+### Concurrency: Ox
+Three lookups in parallel, one retried, one with a timeout.
+url: https://github.com/VirtusLab/vss-page/blob/main/snippets/concurrency.scala
+
+//> using scala 3.3.8
+//> using jvm 21
+//> using dep com.softwaremill.ox::core:1.0.6
+
+import ox.*
+import ox.resilience.retry
+import ox.scheduling.Schedule
+import scala.concurrent.duration.*
+
+case class Quote(vendor: String, priceCents: Int)
+
+def ask(vendor: String, priceCents: Int, latency: FiniteDuration): Quote =
+  sleep(latency)
+  Quote(vendor, priceCents)
+
+def cheapest(): Quote =
+  val (cached, acme, globex) = par(
+    ask("cache", 1300, 10.millis),
+    retry(Schedule.exponentialBackoff(50.millis).maxRetries(3))(
+      ask("acme", 1250, 100.millis)
+    ),
+    timeoutOption(1.second)(ask("globex", 1100, 200.millis))
+  )
+  (List(cached, acme) ++ globex.toList).minBy(_.priceCents)
+
+@main def run(): Unit = println(cheapest())
+
+### AI agent: sttp-ai
+An LLM agent with one tool, given a question to answer.
+url: https://github.com/VirtusLab/vss-page/blob/main/snippets/agent.scala
+
+//> using scala 3.3.8
+//> using jvm 21
+//> using dep com.softwaremill.sttp.ai::openai:0.11.0
+//> using dep com.softwaremill.ox::core:1.0.6
+//> using dep io.circe::circe-core:0.14.16
+//> using dep com.softwaremill.sttp.tapir::tapir-core:1.13.31
+
+import io.circe.Codec
+import ox.{resourceScope, useCloseableInScope}
+import sttp.ai.core.agent.{AgentFailure, AgentTool}
+import sttp.ai.openai.OpenAI
+import sttp.ai.openai.agent.OpenAIAgent
+import sttp.ai.openai.requests.completions.chat.ChatRequestBody.ChatCompletionModel
+import sttp.client4.DefaultSyncBackend
+import sttp.tapir.Schema
+
+case class City(name: String) derives Codec.AsObject, Schema
+
+def ask(question: String): Either[AgentFailure, String] = resourceScope:
+  val weather = AgentTool.fromFunction("get_weather", "Current weather in a city"):
+    (city: City) => s"22°C and sunny in ${city.name}"
+
+  val agent = OpenAIAgent
+    .synchronous(OpenAI.fromEnv, ChatCompletionModel.GPT4oMini)
+    .maxIterations(5)
+    .tools(weather)
+    .build
+
+  val backend = useCloseableInScope(DefaultSyncBackend())
+  agent.run(question)(backend).finalAnswer
+
+@main def run(): Unit = println(ask("Should I take an umbrella to Krakow?"))
+
+### Infrastructure: Besom
+An S3 bucket with versioning enabled, deployed by Pulumi.
+url: https://github.com/VirtusLab/vss-page/blob/main/snippets/infra.scala
+
+//> using scala 3.3.8
+//> using jvm 21
+//> using plugin org.virtuslab::besom-compiler-plugin:0.5.1
+//> using dep org.virtuslab::besom-core:0.5.1
+//> using dep org.virtuslab::besom-aws:7.7.0-core.0.5
+
+import besom.*
+import besom.api.aws.s3
+import besom.api.aws.s3.inputs.BucketVersioningV2VersioningConfigurationArgs
+
+def storage(using Context): Stack =
+  val bucket = s3.BucketV2("reports")
+
+  val versioning = s3.BucketVersioningV2(
+    "reports-versioning",
+    s3.BucketVersioningV2Args(
+      bucket = bucket.id,
+      versioningConfiguration =
+        BucketVersioningV2VersioningConfigurationArgs(status = "Enabled")
+    )
+  )
+
+  Stack(versioning).exports(bucketName = bucket.bucket)
+
+@main def run = Pulumi.run(storage)
+
+### WebSocket client: sttp
+A few messages sent to a socket, and the replies read back.
+url: https://github.com/VirtusLab/vss-page/blob/main/snippets/websocket.scala
+
+//> using scala 3.3.8
+//> using jvm 21
+//> using dep com.softwaremill.sttp.client4::core:4.0.26
+//> using dep com.softwaremill.ox::core:1.0.6
+
+import ox.{resourceScope, useCloseableInScope}
+import sttp.client4.*
+import sttp.client4.ws.SyncWebSocket
+import sttp.client4.ws.sync.asWebSocketOrFail
+import sttp.model.Uri
+
+val echo: Uri = uri"wss://ws.postman-echo.com/raw"
+
+def greet(names: List[String])(ws: SyncWebSocket): List[String] =
+  names.foreach(name => ws.sendText(s"hello, $name"))
+  names.map(_ => ws.receiveText())
+
+@main def run(): Unit = resourceScope:
+  val backend = useCloseableInScope(DefaultSyncBackend())
+  val response = basicRequest
+    .get(echo)
+    .response(asWebSocketOrFail(greet(List("ada", "grace"))))
+    .send(backend)
+  response.body.foreach(println)
+
+### Database: Parlance
+Two rows inserted, then the warmest one found by a typed query.
+url: https://github.com/VirtusLab/vss-page/blob/main/snippets/database.scala
+
+//> using scala 3.8.2
+//> using jvm 21
+//> using dep ma.chinespirit::parlance:0.1.0
+//> using dep com.h2database:h2:2.5.250
+
+import ma.chinespirit.parlance.*
+import org.h2.jdbcx.JdbcDataSource
+import scala.language.implicitConversions
+
+@SqlName("reading")
+@Table(SqlNameMapper.CamelToSnakeCase)
+case class NewReading(city: String, tempC: Int)
+  extends CreatorOf[Reading] derives DbCodec
+
+@Table(SqlNameMapper.CamelToSnakeCase)
+case class Reading(@Id id: Long, city: String, tempC: Int) derives EntityMeta
+
+val readings: Repo[NewReading, Reading, Long] = Repo()
+
+def insertAndFindWarmest(xa: Transactor[H2.type]): Option[Reading] = xa.transact:
+  readings.create(NewReading("Krakow", 24))
+  readings.create(NewReading("Oslo", 9))
+  QueryBuilder.from[Reading].where(_.tempC > 20)
+    .orderBy(_.tempC, SortOrder.Desc).first()
+
+def inMemory(): Transactor[H2.type] =
+  val ds = JdbcDataSource()
+  ds.setURL("jdbc:h2:mem:weather;DB_CLOSE_DELAY=-1")
+  val xa = Transactor(H2, ds)
+  xa.connect:
+    sql"""create table reading(
+            id bigint auto_increment primary key,
+            city varchar(64), temp_c int)""".update.run()
+  xa
+
+@main def run(): Unit = println(insertAndFindWarmest(inMemory()))
+
+### Async streaming: Ox flows
+Two sensors merged into one pipeline, filtered down to six readings.
+url: https://github.com/VirtusLab/vss-page/blob/main/snippets/streams.scala
+
+//> using scala 3.3.8
+//> using jvm 21
+//> using dep com.softwaremill.ox::core:1.0.6
+
+import ox.flow.Flow
+import scala.concurrent.duration.*
+
+case class Reading(sensor: String, tempC: Int)
+
+val cycle: Vector[Int] = Vector(17, 19, 21, 23, 20)
+
+def sensor(name: String, every: FiniteDuration): Flow[Reading] =
+  Flow.tick(every).zipWithIndex
+    .map((_, i) => Reading(name, cycle((i % cycle.size).toInt)))
+
+def warmReadings(): List[Reading] =
+  sensor("north", 10.millis)
+    .merge(sensor("south", 25.millis))
+    .filter(_.tempC >= 20)
+    .take(6)
+    .runToList()
+
+@main def run(): Unit = warmReadings().foreach(println)
+
+### AI workflow: Orca
+A prompt planned into tasks, each implemented and reviewed.
+url: https://github.com/VirtusLab/vss-page/blob/main/snippets/dev-workflow.scala
+
+//> using scala 3.8.4
+//> using jvm 21
+//> using dep org.virtuslab::orca:0.1.6
+
+import orca.{*, given}
+
+@main def run(args: String*): Unit = flow(OrcaArgs(args.toArray)):
+  val plan = stage("Plan"):
+    Plan.autonomous.from(userPrompt, planningAgent).value
+
+  val session = codingAgent.session("implementer", seed = plan.brief)
+
+  for task <- plan.tasks do
+    stage(s"Task: ${task.title}"):
+      session.run(task.description)
+      reviewThenFix(
+        coderSession = session,
+        reviewers = allReviewers(reviewAgent),
+        task = task
+      )
+
+## Follow
+Scala Space: where Scala meets the industry. Follow for latest news & releases.
+x: https://x.com/ScalaSpace
+mastodon: https://softwaremill.social/@scala_space
+bluesky: https://bsky.app/profile/scalaspace.bsky.social
+linkedin: https://www.linkedin.com/showcase/scala-space

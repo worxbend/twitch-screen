@@ -1,0 +1,10 @@
+# Keep source files portable across development machines.
+* text=auto eol=lf
+
+# CAD binaries
+*.FCStd binary
+*.stl binary
+*.step binary
+*.stp binary
+*.3mf binary
+*.blend binary

@@ -1,0 +1,24 @@
+"""Open the editable project with its parametric geometry module available."""
+from pathlib import Path
+import sys
+import FreeCAD as App
+
+root = Path(__file__).resolve().parent
+sys.path.insert(0,str(root/'scripts'))
+import pod_document
+
+path = root/'output/freecad/TwitchScreen.FCStd'
+doc = App.openDocument(str(path)) if path.exists() else pod_document.create_document()
+doc.recompute()
+if App.GuiUp:
+    import FreeCADGui as Gui
+    for obj in doc.Objects:
+        if not hasattr(obj,'Shape') or obj.Shape.isNull():
+            continue
+        obj.ViewObject.ShapeColor = ((0.80,0.78,0.72) if obj.Name=='shell' else
+            (0.04,0.05,0.07) if obj.Name in ('base','lcd_glass','face_bezel') else
+            (0.04,0.22,0.22) if 'pcb' in obj.Name else (0.45,0.48,0.5))
+        obj.ViewObject.LineColor = (0.15,0.16,0.17)
+        obj.ViewObject.DisplayMode = 'Flat Lines'
+    Gui.activeDocument().activeView().viewAxonometric()
+    Gui.activeDocument().activeView().fitAll()

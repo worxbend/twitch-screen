@@ -1,0 +1,62 @@
+{
+  "shell": {
+    "file": "render_meshes/shell.stl",
+    "hardware": false
+  },
+  "base": {
+    "file": "render_meshes/base.stl",
+    "hardware": false
+  },
+  "lcd_retainer": {
+    "file": "render_meshes/lcd_retainer.stl",
+    "hardware": false
+  },
+  "face_bezel": {
+    "file": "render_meshes/face_bezel.stl",
+    "hardware": false
+  },
+  "esp32_pcb": {
+    "file": "render_meshes/esp32_pcb.stl",
+    "hardware": true
+  },
+  "esp32_shield": {
+    "file": "render_meshes/esp32_shield.stl",
+    "hardware": true
+  },
+  "esp32_headers": {
+    "file": "render_meshes/esp32_headers.stl",
+    "hardware": true
+  },
+  "usb_socket": {
+    "file": "render_meshes/usb_socket.stl",
+    "hardware": true
+  },
+  "buttons": {
+    "file": "render_meshes/buttons.stl",
+    "hardware": true
+  },
+  "lcd_pcb": {
+    "file": "render_meshes/lcd_pcb.stl",
+    "hardware": true
+  },
+  "lcd_glass": {
+    "file": "render_meshes/lcd_glass.stl",
+    "hardware": true
+  },
+  "lcd_connector": {
+    "file": "render_meshes/lcd_connector.stl",
+    "hardware": true
+  },
+  "lcd_brass_mounts": {
+    "file": "render_meshes/lcd_brass_mounts.stl",
+    "hardware": true
+  },
+  "cable_route": {
+    "file": "render_meshes/cable_route.stl",
+    "hardware": true
+  },
+  "rubber_feet": {
+    "file": "render_meshes/rubber_feet.stl",
+    "hardware": true
+  }
+}
