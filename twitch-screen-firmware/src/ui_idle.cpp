@@ -86,8 +86,8 @@ lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font, lv_color_t color,
 void clearDecor(lv_obj_t *o) {
   lv_obj_set_style_border_width(o, 0, 0);
   lv_obj_remove_style(o, nullptr, LV_PART_SCROLLBAR);
-  lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_scrollable(o, false);
+  lv_obj_set_clickable(o, false);
 }
 
 void pulseAnim(void *var, int32_t v) {
@@ -186,7 +186,7 @@ void buildLive(lv_obj_t *scr) {
   lv_obj_set_style_arc_color(edgeArc, COL_PURPLE, LV_PART_INDICATOR);
   lv_obj_set_style_arc_rounded(edgeArc, true, LV_PART_INDICATOR);
   lv_obj_remove_style(edgeArc, nullptr, LV_PART_KNOB);
-  lv_obj_clear_flag(edgeArc, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_clickable(edgeArc, false);
 
   // LIVE pill.
   lv_obj_t *pill = lv_obj_create(liveGroup);
@@ -264,7 +264,7 @@ void buildOffline(lv_obj_t *scr) {
   offChipChat = makeChip(offlineGroup, 0, "MSG");
   offChipSubs = makeChip(offlineGroup, 50, "SUB");
 
-  lv_obj_add_flag(offlineGroup, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(offlineGroup, true);
 }
 
 lv_obj_t *makeGroup(lv_obj_t *scr) {
@@ -304,7 +304,7 @@ void buildConnect(lv_obj_t *scr) {
   lv_obj_set_style_arc_color(spinner, COL_PURPLE, LV_PART_INDICATOR);
   lv_obj_set_style_arc_rounded(spinner, true, LV_PART_INDICATOR);
   lv_obj_remove_style(spinner, nullptr, LV_PART_KNOB);
-  lv_obj_clear_flag(spinner, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_clickable(spinner, false);
 
   lv_anim_t a;
   lv_anim_init(&a);
@@ -328,18 +328,18 @@ void buildConnect(lv_obj_t *scr) {
 
 void applyVisibility() {
   if (!linkUp) {
-    lv_obj_remove_flag(connectGroup, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(liveGroup, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(offlineGroup, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(connectGroup, false);
+    lv_obj_set_hidden(liveGroup, true);
+    lv_obj_set_hidden(offlineGroup, true);
     return;
   }
-  lv_obj_add_flag(connectGroup, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(connectGroup, true);
   if (curLive) {
-    lv_obj_remove_flag(liveGroup, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(offlineGroup, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(liveGroup, false);
+    lv_obj_set_hidden(offlineGroup, true);
   } else {
-    lv_obj_add_flag(liveGroup, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(offlineGroup, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(liveGroup, true);
+    lv_obj_set_hidden(offlineGroup, false);
   }
 }
 

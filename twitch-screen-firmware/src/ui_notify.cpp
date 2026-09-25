@@ -60,7 +60,7 @@ void animate(lv_obj_t *obj, lv_anim_exec_xcb_t cb, int32_t from, int32_t to,
 }
 
 void hideReady(lv_anim_t *) {
-  lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(overlay, true);
   busy = false;
 }
 
@@ -82,7 +82,7 @@ void showReady(lv_anim_t *) { lv_timer_create(holdTimerCb, holdMs, nullptr); }
 // Slide the card in and keep the accent ring breathing while it is up. Reached
 // either straight away (a replayed card, §6.4) or after the alert blink.
 void slideIn() {
-  lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(overlay, false);
   animate(overlay, animY, 240, 0, SLIDE_IN_MS, lv_anim_path_ease_out, showReady);
   animate(overlay, animOpa, LV_OPA_TRANSP, LV_OPA_COVER, SLIDE_IN_MS,
           lv_anim_path_ease_out, nullptr);
@@ -100,7 +100,7 @@ void slideIn() {
 }
 
 void flashDone(lv_anim_t *) {
-  lv_obj_add_flag(flash, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(flash, true);
   slideIn();
 }
 
@@ -219,8 +219,8 @@ void composeBody(char *buf, size_t cap, const Notification &n) {
 void clearDecor(lv_obj_t *o) {
   lv_obj_set_style_border_width(o, 0, 0);
   lv_obj_remove_style(o, nullptr, LV_PART_SCROLLBAR);
-  lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_scrollable(o, false);
+  lv_obj_set_clickable(o, false);
 }
 
 // The widgets are shared by every kind, so each show re-applies a full layout.
@@ -311,7 +311,7 @@ void uiNotifyInit() {
   lv_obj_set_style_text_color(seqLabel, lv_color_hex(0x616161), 0);
   lv_obj_align(seqLabel, LV_ALIGN_BOTTOM_MID, 0, -18);
 
-  lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(overlay, true);
 
   // Full-screen alert flash (above the overlay): blinks in the event's
   // accent color before the card slides in, to catch peripheral vision.
@@ -322,7 +322,7 @@ void uiNotifyInit() {
   lv_obj_set_style_opa(flash, LV_OPA_TRANSP, 0);
   lv_obj_set_style_radius(flash, LV_RADIUS_CIRCLE, 0);
   clearDecor(flash);
-  lv_obj_add_flag(flash, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(flash, true);
 }
 
 bool uiNotifyBusy() { return busy; }
@@ -371,7 +371,7 @@ void uiNotifyShow(const Notification &n) {
   // Attention grab: blink the whole panel in the accent color (3 pulses,
   // ~840 ms total), then flashDone slides the card in.
   lv_obj_set_style_bg_color(flash, accent, 0);
-  lv_obj_remove_flag(flash, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(flash, false);
   lv_anim_t a;
   lv_anim_init(&a);
   lv_anim_set_var(&a, flash);

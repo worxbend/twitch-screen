@@ -2,7 +2,7 @@
 #define LV_CONF_H
 
 /* Color */
-#define LV_COLOR_DEPTH 16
+#define LV_COLOR_FORMAT_DEFAULT LV_COLOR_FORMAT_RGB565
 
 /* Memory: heap-backed (64 KB static pool would overflow DRAM on WROOM-32) */
 #define LV_USE_STDLIB_MALLOC    LV_STDLIB_CLIB
@@ -25,7 +25,6 @@
 /* Widgets used */
 #define LV_USE_ARC              1
 #define LV_USE_LABEL            1
-#define LV_USE_ANIM             1
 
 #define LV_USE_FLOAT            1
 
