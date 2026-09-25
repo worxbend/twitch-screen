@@ -3,13 +3,14 @@ package twitchscreen.relay.device
 import java.io.{BufferedInputStream, IOException, OutputStream}
 import java.net.Socket
 import java.time.Clock
+import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicReference
 import org.slf4j.LoggerFactory
 import ox.*
 import ox.channels.{Channel, ChannelClosed, Source}
 import ox.either.catching
 import scala.annotation.tailrec
-import scala.concurrent.duration.{DurationInt, FiniteDuration}
+import scala.concurrent.duration.{DurationInt, DurationLong, FiniteDuration}
 import twitchscreen.relay.config.DeviceLinkConfig
 import twitchscreen.relay.protocol.*
 
@@ -47,11 +48,8 @@ private[device] object DeviceSession:
         val counters = LinkCounters(clock)
         val sink = FrameSink(socket.getOutputStream, counters)
         val writeBudget = AtomicReference(config.handshakeTimeout)
-        forkDiscard:
-          forever:
-            val limit = writeBudget.get()
-            sleep((limit / 4).min(1.second).max(10.millis))
-            if sink.writeOverdue(limit) then closeQuietly(socket)
+        // Armed by each write and blocked otherwise; the budget is read as the watcher picks a write up (§11.1 rule 2).
+        forkDiscard(sink.watchDeadline(() => writeBudget.get())(closeQuietly(socket)))
         // Buffered so that a 176-byte EVENT does not cost one syscall per field; the reader still accumulates,
         // because a buffered stream short-counts exactly as an unbuffered one does (§2).
         val source = BufferedInputStream(socket.getInputStream, Tsb3.MaxFrame)
@@ -349,18 +347,17 @@ private enum Inbound:
   * Two threads legitimately write to a device: the writer fork draining the outbound queue, and the reader thread answering a `PING` the
   * moment it arrives (§6.3). Without this monitor those two could interleave halfway through a frame, which on a binary wire is
   * indistinguishable from corruption and would cost the device its resync budget. The monitor protects frame ordering and the final-BYE
-  * guard; deadline observation stays outside it.
+  * guard. The write deadline is armed per write through a [[WriteDeadline]] that lives outside the monitor, so a writer blocked inside
+  * `write` cannot hold its own deadline hostage.
   */
-private[device] final class FrameSink(target: OutputStream, counters: LinkCounters):
+private[device] final class FrameSink(target: OutputStream, counters: LinkCounters, deadline: WriteDeadline = WriteDeadline()):
   private val logger = LoggerFactory.getLogger(classOf[FrameSink])
 
   /** Set once a `BYE` has been written; guarded by this object's monitor like every write. */
   private var closed = false
-  private val writeStarted = AtomicReference(Option.empty[Long])
 
-  /** Read without the sink monitor so a blocked writer cannot hold its own deadline hostage. */
-  def writeOverdue(limit: FiniteDuration): Boolean =
-    writeStarted.get().exists(started => System.nanoTime() - started >= limit.toNanos)
+  /** Runs `onOverdue` whenever one write stays in flight past `limit`; see [[WriteDeadline.watch]]. Never returns. */
+  def watchDeadline(limit: () => FiniteDuration)(onOverdue: => Unit): Nothing = deadline.watch(limit)(onOverdue)
 
   /** Returns Failed once the socket is gone, or once a `BYE` has gone out, which is the writer fork's signal to stop. §14: the byte count
     * is the true one, `8 + length`.
@@ -369,7 +366,7 @@ private[device] final class FrameSink(target: OutputStream, counters: LinkCounte
     if closed then WriteResult.Failed
     else
       try
-        writeStarted.set(Some(System.nanoTime()))
+        deadline.begin()
         frame.writeTo(target)
         target.flush()
         counters.recordSent(frame.length)
@@ -379,7 +376,7 @@ private[device] final class FrameSink(target: OutputStream, counters: LinkCounte
           logger.debug("Write to a device failed", error)
           closed = true
           WriteResult.Failed
-      finally writeStarted.set(None)
+      finally deadline.end()
 
   /** §6.7: `BYE` is always the last frame on the connection. Every write after this one is refused, so an `EVENT`, `STATS` or `PING` still
     * queued for the writer fork can never follow it onto the wire; the writer then closes the socket, as a refused write always does.
@@ -388,6 +385,45 @@ private[device] final class FrameSink(target: OutputStream, counters: LinkCounte
     val written = write(frame)
     closed = true
     written
+
+/** K-140: the deadline for the one socket write in flight, armed when the write starts and cleared when it ends.
+  *
+  * The watcher blocks on a signal that only [[begin]] raises, so an idle session costs no wakeups at all. Once signalled it sleeps until
+  * exactly `start + limit` of the write it saw, then runs `onOverdue` only if that same write is still in flight — each write is a distinct
+  * token, so a later write never inherits an earlier one's deadline, and there is no poll lag past the budget. A write that begins while
+  * the watcher waits on an earlier one leaves a permit behind, so the watcher re-arms from that write's own start.
+  *
+  * `begin` and `end` touch only an atomic and a semaphore, never the [[FrameSink]] monitor, so the watcher can close the socket while a
+  * writer is blocked inside it.
+  */
+private[device] final class WriteDeadline(
+    sleeper: FiniteDuration => Unit = duration => sleep(duration),
+    nanoTime: () => Long = () => System.nanoTime()
+):
+  /** One write; compared by reference, so two writes that start in the same nanosecond are still distinct. */
+  private final class Armed(val startedNanos: Long)
+
+  private val inFlight = AtomicReference(Option.empty[Armed])
+  private val signal = Semaphore(0)
+
+  def begin(): Unit =
+    inFlight.set(Some(Armed(nanoTime())))
+    signal.release()
+
+  def end(): Unit = inFlight.set(None)
+
+  /** Blocks (interruptibly, so scope cancellation ends it) until a write is armed; never returns. */
+  @tailrec
+  def watch(limit: () => FiniteDuration)(onOverdue: => Unit): Nothing =
+    signal.acquire()
+    signal.drainPermits().discard
+    inFlight
+      .get()
+      .foreach: write =>
+        val remaining = write.startedNanos + limit().toNanos - nanoTime()
+        if remaining > 0 then sleeper(remaining.nanos)
+        if inFlight.get().exists(_ eq write) then onOverdue
+    watch(limit)(onOverdue)
 
 /** The outcome of writing one frame. `Failed` means only a write or encoding failure (or an EVENT that could not be sent), never queue
   * completion.

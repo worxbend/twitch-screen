@@ -47,7 +47,7 @@ quoted findings for commit traceability.
 | KIMI-D16 | Session test timing magic numbers | Named quiescence, PONG, trickle and scheduling budgets replace the timing literals in the socket suite. |
 | KIMI-D17 | Per-skipped-frame debug formatting | `error.describe` is only constructed when DEBUG is enabled. |
 | KIMI-D18 | Identical broadcasts encoded per session | A broadcast shares one Outbound value, with lazy immutable encodings for each of the two text policies. Encoding still runs in session writers, never in the hub actor. |
-| KIMI-D19 | Per-session 50 ms watcher; handshake uses idle budget | Watcher polls at one quarter of its active budget, bounded 10 ms–1 s; handshake refusal writes use the handshake budget. Blocking-write socket tests cover both handshake and established sessions. |
+| KIMI-D19 | Per-session 50 ms watcher; handshake uses idle budget | Polling watcher replaced (K-140): FrameSink arms a per-write deadline (WriteDeadline) signalled on write start and cleared in finally; the watcher fork blocks while idle and sleeps exactly until start+budget. Handshake/idle budgets retained. Regressions: WriteDeadlineSuite, DeviceBackpressureSuite idle-session test, existing stalled-write tests. |
 | KIMI-D20 | Refused attach logged as attached | Attached log is emitted only if the assigned connection exists in the hub. |
 | KIMI-D21 | Heartbeat queue drops uncounted | Failed PING queue offers increase dropped-frame count. |
 | KIMI-D22 | Actor mailbox capacity undocumented | Hub documents the Ox default 16 pending-operation mailbox and its failure contract. |

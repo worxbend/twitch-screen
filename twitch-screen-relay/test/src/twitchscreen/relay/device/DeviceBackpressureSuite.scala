@@ -211,3 +211,17 @@ class DeviceBackpressureSuite extends munit.FunSuite:
       assert(timeoutOption(5.seconds)(server.join()).isDefined)
       // A snapshot ask is ordered after the session's detach tell.
       assertEquals(hub.snapshot.connectedDevices, 0)
+
+  test("K-140: an idle established session with no writes is not closed by the write deadline"):
+    supervised:
+      // A write budget far shorter than the idle wait below: a deadline left armed with no write in flight would close the socket.
+      val config = TestRelay.config.copy(handshakeTimeout = 100.millis, idleTimeout = 5.seconds, pingInterval = 4.seconds)
+      val (hub, port) = TestRelay.start(config)
+      val device = useCloseableInScope(TestDevice(port))
+      device.hello("idle", 0L)
+      assertEquals(device.receiveMessage().map(_.messageType), Some(MessageType.Welcome))
+      assertEquals(device.receiveMessage().map(_.messageType), Some(MessageType.Stats))
+      Thread.sleep(500)
+      device.send(DeviceMessage.Ping(Token.fromWire(11)))
+      assertEquals(device.receiveMessage(), Some(RelayMessage.Pong(Token.fromWire(11))))
+      assertEquals(hub.snapshot.connectedDevices, 1)

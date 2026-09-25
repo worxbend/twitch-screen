@@ -316,3 +316,45 @@ NEW test in `test/src/twitchscreen/relay/device/HubResilienceSuite.scala`: "K-08
 - `./mill --no-daemon test`: PASS (SUCCESS), 45 suites / 491 tests, 0 failed, with no `[warn]` or `[error]` lines under `-Werror`. The baseline on this lane branch is 45 / 490, which includes the relay-twitch commits `234eb5e` and `2bcca20` merged since the K-081 record, so this is +1 test.
 - `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS. The reformat was a no-op; `cmp` against the pre-format copies matched.
 - `git diff --check`: PASS. `git status` lists only `DeviceSession.scala`, `HubResilienceSuite.scala` and this record.
+
+## refactor(relay): replace polling write-deadline watcher with a per-write armed deadline
+
+Findings: **K-140** (Low) 50 ms deadline watcher per session (`DeviceSession.scala:49-52` in the review; fix: "Replace polling watcher"). KIMI-D19 had only retuned the poll to `(limit / 4).min(1.second).max(10.millis)`. Every session still ran a `forkDiscard { forever { sleep(...); if sink.writeOverdue(limit) then closeQuietly(socket) } }` loop. It woke even with no write in flight, and detection could lag up to one poll period past the budget.
+
+### Change (`src/twitchscreen/relay/device/DeviceSession.scala`)
+
+- New `private[device] final class WriteDeadline(sleeper, nanoTime)`, next to `FrameSink`. `begin()` stores a fresh `Armed(startedNanos)` token in an `AtomicReference` and releases a `Semaphore(0)`. `end()` clears the token. `watch(limit)(onOverdue): Nothing` is a `@tailrec` loop: it calls `signal.acquire()`, which blocks with no wakeups while idle and is interruptible, so Ox scope cancellation still ends it. It then calls `drainPermits()`. If a write is armed, it sleeps exactly `started + limit() - now` and runs `onOverdue` only if that same token (compared by reference) is still in flight. A write that begins during the wait leaves a permit, so the watcher re-arms from that write's own start. There is no poll lag.
+- `FrameSink(target, counters, deadline: WriteDeadline = WriteDeadline())`. `write` calls `deadline.begin()` where it used to set `writeStarted`, and `deadline.end()` in `finally`. `writeStarted` and `writeOverdue` are removed. `watchDeadline(limit)(onOverdue)` delegates to `WriteDeadline.watch`. The deadline stays outside the sink monitor, so a writer blocked in `write` cannot hold its own deadline hostage; both scaladocs say so. `HubResilienceSuite`'s `FrameSink(target, counters)` compiles unchanged through the default argument.
+- `DeviceSession.run`: the `forever` poller is replaced by `forkDiscard(sink.watchDeadline(() => writeBudget.get())(closeQuietly(socket)))`. `writeBudget` is kept: `handshakeTimeout` until accept, then `idleTimeout`. The budget is read when the watcher picks a write up.
+- `grep -n "writeOverdue\|writeStarted" src/`: 0 hits. The one remaining `forever:` in DeviceSession.scala (`:209`) is the heartbeat's `sleep(pingInterval)` loop, which is unrelated to the write deadline. No config, protocol, API or doc changes.
+- `tasks/review-kimi-device.md`: the KIMI-D19 row is reworded to "Polling watcher replaced (K-140) ...".
+
+### Tests (test first)
+
+NEW `test/src/twitchscreen/relay/device/WriteDeadlineSuite.scala`, 6 tests. The injected fake clock and sleeper record every requested wait. A sleeper that never blocks checks `Thread.interrupted()`, and assertions compare only the first 4 waits, so a regressed poller fails instead of spinning or stalling munit's diff.
+1. "an idle sink arms no deadline and the watcher never wakes": a counting sleeper (count, then a real interruptible `sleep`) and 300 ms of real time give 0 sleeps and 0 overdue.
+2. "a write that completes before its budget never trips": the waits are `List(100.millis)` and overdue is 0.
+3. "a stalled write trips exactly at start + budget": the waits are `List(100.millis)` and the latch trips.
+4. "a write started during the previous write's wait is armed from its own start": the waits are `List(100.millis, 60.millis)`, and the trip belongs to the second write only.
+5. "a completed FrameSink write leaves no armed deadline": after one real `FrameSink.write`, there is at most 1 sleep and 0 overdue.
+6. "the watcher reads the budget current when a write is armed": the waits are `List(250.millis)` after the budget changes from 100 to 250 ms.
+
+NEW test in `DeviceBackpressureSuite`, "K-140: an idle established session with no writes is not closed by the write deadline". It sets `handshakeTimeout = 100.millis`, `idleTimeout = 5.seconds` and `pingInterval = 4.seconds`. It uses a real `TestRelay.start` and `TestDevice` and checks WELCOME and STATS. After 500 ms idle, a PING gets its PONG and `connectedDevices == 1`. The first draft used `pingInterval = 60.seconds`, which the config validation rejects (`ping-interval must be shorter than idle-timeout`), so the test uses the default 4 s.
+
+- Red: before the production change, `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.WriteDeadlineSuite'` failed to compile with 6 errors: `WriteDeadline` was not found, and `FrameSink` had no third parameter and no `watchDeadline`.
+- Green: the same command passed, 6 / 6.
+- Existing tests are unmodified and green: `DeviceBackpressureSuite` "a stalled socket write cannot prevent the independent deadline closing the session" and `HubResilienceSuite` "a blocked handshake refusal uses the handshake write budget".
+
+### Revert checks (the production file was restored from a copy after each check; `cmp` confirmed it matched)
+
+1. `watch`'s `acquire` and `drainPermits` were replaced with a periodic `sleeper(limit() / 4)` poll. `test.testOnly WriteDeadlineSuite` gave FAIL, 6 failed / 6. The idle test saw nonzero sleeps, and the fake-clock tests saw extra waits. (A first attempt hung, because the fake sleeper never blocked and munit diffed an unbounded wait list. That is why the suite has the interruption check and the `take(4)` bound.)
+2. The `onOverdue` call was dropped (`then ()`). `test.testOnly DeviceBackpressureSuite HubResilienceSuite` gave FAIL, 2 failed: the stalled-write test at `DeviceBackpressureSuite.scala` (server join timed out after 5 s) and `HubResilienceSuite.scala:104` (the handshake-budget refusal was not closed within 2 s).
+3. `deadline.end()` was removed from `write`'s `finally`. `test.testOnly WriteDeadlineSuite DeviceBackpressureSuite` gave FAIL, 1 failed: `WriteDeadlineSuite.scala:103`, "a completed FrameSink write leaves no armed deadline". To be precise about coverage, the new idle-session test still PASSED under this revert. WELCOME is armed after the budget switches to the 5 s `idleTimeout`, so the stale deadline would fire only after the 500 ms idle wait. The unit test (5) pins this path.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.WriteDeadlineSuite'`: PASS, 6 / 6.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.*'`: run 3 times, PASS every time with 12 suites / 105 tests and 0 failed. The previous record was 11 / 98, so this is +1 suite and +7 tests. DeviceBackpressureSuite is now 8 / 8 and HubResilienceSuite 7 / 7.
+- `./mill --no-daemon test`: PASS (SUCCESS), 46 suites / 503 tests, 0 failed, with no `[warn]` or `[error]` lines under `-Werror`.
+- `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS. The reformat only rewrapped lines in `DeviceSession.scala` (`inFlight.get().foreach` chain) and `WriteDeadlineSuite.scala` (blank line); `DeviceBackpressureSuite.scala` was unchanged.
+- `git diff --check`: PASS. `git status` lists only `DeviceSession.scala`, `DeviceBackpressureSuite.scala`, the new `WriteDeadlineSuite.scala`, `tasks/review-kimi-device.md` and this record.
