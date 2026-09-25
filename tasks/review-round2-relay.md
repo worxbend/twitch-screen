@@ -182,3 +182,42 @@ Validation (run from twitch-screen-relay):
 Residual:
 - STATS is still lossy by design. A dropped snapshot is only replaced by the next STATS broadcast.
 - RLY-16 (greeting capacity) is separate and unchanged here.
+
+## PROTO-14 / PROTO-16 — no BYE 4/6; REPLAY ignored on device frames
+
+Changes (PROTO-14):
+- `protocol/ProtocolError.scala`:
+  - The unused `InvalidSequence` variant is removed, along with its `describe` and `byeAdvice` cases. A repo-wide grep found no other user.
+  - `byeAdvice` is now an exhaustive match with no wildcard. The seven non-fatal and closed-stream variants each have an explicit `None` arm, so under `-Werror` a new variant will not compile until someone chooses its BYE.
+  - The Scaladoc says codes 4 and 6 are reserved in §6.7 and no variant maps to them.
+- `protocol/Tsb3Message.scala`: `ByeCode.InvalidSequence` (4) and `ByeCode.FrameTooLarge` (6) are kept, with their `value`, `defined` and `fromWire` entries, for decoding and logging. The Scaladoc now marks them "MUST NOT be sent (§6.7); decoded for logging only".
+- `device/DeviceSession.scala` `reasonFor`: the two outbound reason strings are gone. One non-sending arm, `case ByeCode.InvalidSequence | ByeCode.FrameTooLarge => s"reserved code ${code.value}"`, keeps the match exhaustive, still with no wildcard.
+
+Tests:
+- `ProtocolBoundarySuite`, "§6.7: no ProtocolError variant advises BYE 4 (INVALID_SEQUENCE) or 6 (FRAME_TOO_LARGE)":
+  - Builds one sample for each of the 14 remaining variants.
+  - Completeness guard: a `Mirror.SumOf` + `constValue[Tuple.Size[...]]` case count is checked against the samples' ordinals. It compiled, so no fallback match was needed.
+  - Asserts that no `byeAdvice` gives code 4 or 6.
+  - Asserts that `ByeCode.fromWire(4|6)` still decodes to the named codes and `.value` gives 4 and 6.
+- `DeviceLinkSuite`, "§3.2: REPLAY on a device PING or ACK is ignored — answered, recorded, no BYE, nothing skipped":
+  - After the handshake and seq 1, it sends a PING and an ACK(1) with flags=0x01 via `sendBytes` + `WireBytes.withHeader` (hchk recomputed).
+  - Asserts: PONG(77) is returned, and a plain PING gets PONG(78), which orders the checks and shows the link is up. One link remains, `ackedSeq == 1` and `framesReceived == 4`.
+  - Asserts that all skip counters (skipped, unknown type, wrong direction, short payload, invalid field, oversize) and `resyncEvents` are 0.
+  - No production change for PROTO-16: neither `DeviceSession.handle` nor `Tsb3Decoder.fromDevice` reads the flags. This is a conformance/characterisation test.
+
+Red/green and mutation checks (sources restored from a backup after each; `git diff --stat` shows only the intended changes):
+- Red: the new boundary test with an `InvalidSequence("x")` sample, run before the deletion, failed with "invalid sequence number: x advises reserved BYE Some(4)". Green after the deletion (5/5).
+- `byeAdvice` changed so `FrameTimeout(_)` returns `Some((ByeCode.FrameTooLarge, ByeDetail.Zero))` → the boundary test fails with "no complete frame within 1 second advises reserved BYE Some(6)".
+- `DeviceSession.handle` given `else if frame.header.flags.isReplay then duplicateHello(sink, frame)` → the REPLAY test fails at DeviceLinkSuite.scala:264 (no PONG; the other 37 still pass).
+
+Validation (run from twitch-screen-relay):
+- `grep -rn "InvalidSequence" src/twitchscreen/relay/protocol/ProtocolError.scala` → no match.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.protocol.ProtocolBoundarySuite twitchscreen.relay.protocol.FrameReaderSuite twitchscreen.relay.protocol.Tsb3DecoderSuite twitchscreen.relay.protocol.Tsb3GoldenVectorSuite twitchscreen.relay.device.DeviceLinkSuite` → 5 + 27 + 30 + 23 + 38, 0 failed.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.device.DeviceLinkSuite` ×3 → 38/38, 0 failed each time.
+- `./mill --no-daemon compile` (`-Werror`) → SUCCESS.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` → SUCCESS; `git diff --check` clean.
+- `./mill --no-daemon test` → 29 suites, 341 tests (was 339), 0 failed on the first run, with no flake.
+
+Residual:
+- Firmware `proto_codec.h` still names codes 4 and 6. That file only receives and logs them, and it is outside the relay unit.
+- The relay has no separate protocol-violation counter. For PROTO-16, the proof of "no violation" is the link staying up with no BYE and zero skip/resync counters.

@@ -251,6 +251,33 @@ class DeviceLinkSuite extends munit.FunSuite:
         assertEquals(device.receiveMessage(), Some(RelayMessage.Pong(Token.fromWire(1L))))
         assertEquals(hub.links.headOption.map(_.traffic.ackedSeq), Some(1L))
 
+  test("§3.2: REPLAY on a device PING or ACK is ignored — answered, recorded, no BYE, nothing skipped"):
+    supervised:
+      val (hub, port) = TestRelay.start()
+      withDevice(port): device =>
+        device.hello("roundlcd-01", lastSeq = 0)
+        device.receiveMany(2).discard
+        hub.publish(follow("newfriend")).discard
+        device.receiveMany(1).discard
+        // §3.2: REPLAY (0x01) is meaningful only relay→device; a receiver ignores it on device frames. `withHeader` restores `hchk`.
+        device.sendBytes(WireBytes.withHeader(Tsb3Encoder.toRelay(DeviceMessage.Ping(Token.fromWire(77L))), flags = 0x01))
+        assertEquals(device.receiveMessage(), Some(RelayMessage.Pong(Token.fromWire(77L))))
+        device.sendBytes(WireBytes.withHeader(Tsb3Encoder.toRelay(DeviceMessage.Ack(SeqNo.fromWire(1L))), flags = 0x01))
+        // A plain PING orders the checks below after the ACK was handled, and its PONG shows the link is still up.
+        device.send(DeviceMessage.Ping(Token.fromWire(78L)))
+        assertEquals(device.receiveMessage(), Some(RelayMessage.Pong(Token.fromWire(78L))))
+        val traffic = hub.links.headOption.map(_.traffic)
+        assertEquals(hub.links.size, 1)
+        assertEquals(traffic.map(_.ackedSeq), Some(1L))
+        assertEquals(traffic.map(_.framesReceived), Some(4L), "HELLO plus the three frames above")
+        assertEquals(traffic.map(_.framesSkipped), Some(0L))
+        assertEquals(traffic.map(_.framesUnknownType), Some(0L))
+        assertEquals(traffic.map(_.framesWrongDirection), Some(0L))
+        assertEquals(traffic.map(_.framesShortPayload), Some(0L))
+        assertEquals(traffic.map(_.framesInvalidField), Some(0L))
+        assertEquals(traffic.map(_.framesOversizeSkipped), Some(0L))
+        assertEquals(traffic.map(_.resyncEvents), Some(0L))
+
   test("a device speaking another protocol version is told so, with the 30 s floor a reflash needs"):
     supervised:
       val (_, port) = TestRelay.start()

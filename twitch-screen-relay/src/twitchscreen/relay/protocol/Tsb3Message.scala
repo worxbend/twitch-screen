@@ -55,6 +55,8 @@ private[relay] object RelayMessage:
 /** Why the relay is closing the connection (§6.7). The payload's shape and the type code `0x25` are frozen across every future version of
   * this protocol: that, plus the version byte at a fixed header offset, is what lets a peer read a refusal from a peer whose version it
   * does not speak.
+  *
+  * `InvalidSequence` (4) and `FrameTooLarge` (6) are reserved in TSB/3: they MUST NOT be sent (§6.7) and are decoded for logging only.
   */
 private[relay] enum ByeCode:
   case UnsupportedVersion, BadHandshake, InvalidDeviceId, InvalidSequence, FramingViolation, FrameTooLarge, DuplicateHello, ServerShutdown,

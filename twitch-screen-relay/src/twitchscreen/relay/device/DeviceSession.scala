@@ -307,16 +307,16 @@ private[device] object DeviceSession:
     case ByeCode.UnsupportedVersion => "relay speaks v3 only"
     case ByeCode.BadHandshake       => "expected HELLO first"
     case ByeCode.InvalidDeviceId    => "device id not usable"
-    case ByeCode.InvalidSequence    => "sequence not usable"
     case ByeCode.FramingViolation   => "stream out of frame"
-    case ByeCode.FrameTooLarge      => "frame past rx buffer"
     case ByeCode.DuplicateHello     => "second HELLO"
     case ByeCode.ServerShutdown     => "relay shutting down"
     case ByeCode.Replaced           => "device id reclaimed"
     case ByeCode.RateLimit          => "too many frames"
     case ByeCode.InvalidParameter   => "HELLO field rejected"
     case ByeCode.HandshakeTimeout   => "no HELLO in time"
-    case ByeCode.Unknown(raw)       => s"refused, code $raw"
+    // §6.7 forbids sending 4 and 6 and no refusal carries them; this arm only keeps the match exhaustive.
+    case ByeCode.InvalidSequence | ByeCode.FrameTooLarge => s"reserved code ${code.value}"
+    case ByeCode.Unknown(raw)                            => s"refused, code $raw"
 
   private def framingRefusal(error: ProtocolError, version: ProtocolVersion): Refusal =
     Refusal(DisconnectReason.FramingViolation(error.describe), error.byeAdvice, version)

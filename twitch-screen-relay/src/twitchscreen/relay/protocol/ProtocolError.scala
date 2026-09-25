@@ -33,7 +33,6 @@ private[relay] enum ProtocolError:
   // Session-level refusals (§7, §6.1, §11.2): fatal to the session even though the frame itself was well formed.
   case UnsupportedVersion(received: Int, expected: Int)
   case InvalidDeviceId(detail: String)
-  case InvalidSequence(detail: String)
 
 /** What a receiver does about a [[ProtocolError]] (§4.3 versus §4.4/§4.5). */
 private[relay] enum ErrorDisposition:
@@ -63,7 +62,6 @@ private[relay] object ProtocolError:
       case InvalidField(field, offset)     => s"invalid field '$field' at payload offset $offset"
       case UnsupportedVersion(got, exp)    => s"unsupported protocol version $got, this relay speaks $exp"
       case InvalidDeviceId(detail)         => s"invalid device id: $detail"
-      case InvalidSequence(detail)         => s"invalid sequence number: $detail"
 
     def disposition: ErrorDisposition = error match
       case _: (BadMagic | HeaderCheckFailed | LengthOutOfRange) | IllegalTypeCode => ErrorDisposition.Resynchronize
@@ -72,14 +70,22 @@ private[relay] object ProtocolError:
 
     /** The `BYE` the relay owes the device when this error ends the session (§6.7). Errors that are skipped rather than fatal have none,
       * and neither does a stream that has already closed under the relay's feet.
+      *
+      * Codes 4 (`INVALID_SEQUENCE`) and 6 (`FRAME_TOO_LARGE`) are reserved in TSB/3 and must not be sent (§6.7), so no variant maps to
+      * them. The match is exhaustive on purpose: a new variant does not compile until someone decides which `BYE`, if any, it owes.
       */
     def byeAdvice: Option[(ByeCode, ByeDetail)] = error match
       case UnsupportedVersion(_, expected) => Some((ByeCode.UnsupportedVersion, ByeDetail.of(expected)))
       case InvalidDeviceId(_)              => Some((ByeCode.InvalidDeviceId, ByeDetail.Zero))
-      case InvalidSequence(_)              => Some((ByeCode.InvalidSequence, ByeDetail.Zero))
       case FramingViolation(_, _)          => Some((ByeCode.FramingViolation, ByeDetail.Zero))
       case BadMagic(_, _)                  => Some((ByeCode.FramingViolation, ByeDetail.Zero))
       case HeaderCheckFailed(_, _)         => Some((ByeCode.FramingViolation, ByeDetail.Zero))
       case IllegalTypeCode                 => Some((ByeCode.FramingViolation, ByeDetail.Zero))
       case InvalidField(_, offset)         => Some((ByeCode.InvalidParameter, ByeDetail.of(offset)))
-      case _                               => None
+      case EndOfStream                     => None
+      case TruncatedFrame(_, _)            => None
+      case FrameTimeout(_)                 => None
+      case UnknownType(_)                  => None
+      case WrongDirection(_)               => None
+      case ShortPayload(_, _, _)           => None
+      case LengthOutOfRange(_, _)          => None
