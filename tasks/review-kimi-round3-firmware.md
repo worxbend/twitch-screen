@@ -268,3 +268,79 @@ literals that were still bare.
 - `grep -n "10000" src/ui_idle.cpp` returns only line 23, the
   `VIEWER_ANIM_MAX` definition. `grep -n "< 31" src/link_client.cpp` returns
   nothing.
+
+## K-128: magic timing literals in link session tests
+
+Finding K-128 (Low, firmware), "Magic timing literals in session tests". Status:
+fixed. An earlier change named the handshake, ping, silence, stable and pause
+timings (`SECOND_MS` through `DEFAULT_PAUSE_LIMIT_MS`). This change names the
+retry and BYE timings that were still bare. The change is test-only, and every
+value stays numerically identical.
+
+### Change
+
+- `test/test_link_session/test_link_session.cpp`: added three constants after
+  `DEFAULT_PAUSE_LIMIT_MS`, under a comment saying they mirror
+  `src/link_client.cpp` and must change with it:
+  `RETRY_BASE_MS = 1 * SECOND_MS` (`BACKOFF_BASE_MS`),
+  `RETRY_CAP_MS = 30 * SECOND_MS` (`BACKOFF_MAX_MS`), and
+  `BYE_FLOOR_MS = 60 * SECOND_MS` (the `retry_after_s` carried by the
+  unknown-code BYE frame). Two `static_assert`s check that the BYE floor is
+  above the ramp cap and fits the `retry_after_s` low byte.
+- The literals were rewritten as follows:
+  - Connect-deadline retry `+= 1000` becomes `RETRY_BASE_MS`.
+  - Backoff ramp `998`/`1001` become `RETRY_BASE_MS - 2` and `RETRY_BASE_MS + 1`.
+    The `+= 2` stays, because it is the step that crosses the deadline.
+  - The outage loop's 1 s wall-clock step becomes `SECOND_MS`.
+  - The busy-worker retry becomes `RETRY_BASE_MS`.
+  - `goodbye[12] = 60` becomes `(uint8_t)(BYE_FLOOR_MS / SECOND_MS)`, and
+    `59990` becomes `BYE_FLOOR_MS - 10`. The `+= 20` stays, because it is the
+    step that crosses the floor.
+  - REPLACED/UNSUPPORTED_VERSION `t0 + 1000/2000/29999/30000` become
+    `RETRY_BASE_MS`, `2 * RETRY_BASE_MS`, `RETRY_CAP_MS - 1` and `RETRY_CAP_MS`.
+  - The stable split `30000`/`30001` becomes `STABLE_INTERVAL_MS / 2` and
+    `STABLE_INTERVAL_MS / 2 + 1`. The two `+= 1000` retries become
+    `RETRY_BASE_MS`.
+  - Wrap `999` becomes `RETRY_BASE_MS - 1`, with a comment that the pump ticks
+    supply the last millisecond.
+- Byte, sequence, address and loop-count literals are unchanged (`0xfffffff0u`,
+  `0x12345678`, `256`, `120`, `100`, and the `999` BYE code comment), and so is
+  `ACK_COALESCE_MS = 200`. `src/` is unchanged.
+
+### Evidence (in `twitch-screen-firmware/`)
+
+`pio` is the same scratchpad wrapper as for K-107 (PlatformIO Core 6.2.0).
+
+- Renaming is not testable at runtime, so no runtime test was added. The
+  existing assertions prove the rename preserves behaviour.
+- An accidental red during editing: a first draft put the wrap comment before
+  `pump(wrap);`, which commented the pump out. `pio test -e native -f
+  test_link_session` then failed "retry deadline is wrap-safe" (104 checks,
+  1 failure). This shows the wrap check depends on that pump. The comment was
+  moved after the call.
+- Green: `pio test -e native -f test_link_session` and `pio test -e
+  native-sanitized -f test_link_session`: 104 checks, 0 failures, 1/1 succeeded
+  in each.
+- Mutation A: setting `RETRY_BASE_MS = 2 * SECOND_MS` failed 2 checks out of 104
+  ("backoff waits for deadline", "short streaming session preserves exponential
+  ramp"). It was reverted.
+- Mutation B: setting `RETRY_CAP_MS = 31 * SECOND_MS` failed 2 checks out of 104
+  ("REPLACED waits for 30 s cap, not the 1 s ramp", "UNSUPPORTED_VERSION with
+  retry_after 0 still jumps to 30 s cap"). It was reverted.
+- Mutation C: setting `BYE_FLOOR_MS = 61 * SECOND_MS` passed (0 failures). This
+  is expected, because the frame's `retry_after_s` and the wait are now both
+  derived from the one constant. The test pins the relationship "the device
+  honours the relay-supplied floor", not the value 60 s. It was reverted.
+- After reverting, the suite was green again: 104 checks, 0 failures.
+- `pio test -e native -e native-sanitized`: 10 test cases, 10 succeeded
+  (5 suites x 2 environments).
+- `pio run -e esp32dev`: SUCCESS, RAM 67,276 B (+0), Flash 1,154,981 B (+0)
+  (test-only change).
+- `git -C .. diff --check`: clean.
+- `grep -nE '(time|t0)[^;]*[0-9]{3,}' test/test_link_session/test_link_session.cpp`:
+  no matches.
+- `grep -nE '[+ ]=?[ ]*[0-9]{3,}' test/test_link_session/test_link_session.cpp`:
+  11 lines. They are the `SECOND_MS`, `ACK_COALESCE_MS` and
+  `DEFAULT_PAUSE_LIMIT_MS` definitions, `writeChunk = 256`, the `& 255` byte
+  masks (2 lines), the loop counts `120` (comment and loop) and `100` (2 lines),
+  and the `unknown code 999` comment. None is a protocol timing.

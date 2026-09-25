@@ -17,6 +17,12 @@ constexpr uint32_t PING_INTERVAL_MS = 15 * SECOND_MS;
 constexpr uint32_t SILENCE_DEADLINE_MS = 45 * SECOND_MS;
 constexpr uint32_t STABLE_INTERVAL_MS = 60 * SECOND_MS;
 constexpr uint32_t DEFAULT_PAUSE_LIMIT_MS = 180 * SECOND_MS;
+// Retry timings mirror src/link_client.cpp; change them together.
+constexpr uint32_t RETRY_BASE_MS = 1 * SECOND_MS;   // BACKOFF_BASE_MS: first ramp step
+constexpr uint32_t RETRY_CAP_MS = 30 * SECOND_MS;   // BACKOFF_MAX_MS: ramp cap and REPLACED/version floor
+constexpr uint32_t BYE_FLOOR_MS = 60 * SECOND_MS;   // retry_after_s carried by the unknown-code BYE frame
+static_assert(BYE_FLOOR_MS > RETRY_CAP_MS, "BYE floor must exceed the ordinary ramp cap");
+static_assert(BYE_FLOOR_MS / SECOND_MS <= 0xff, "BYE floor must fit retry_after_s low byte");
 int checks = 0, failures = 0;
 void check(bool pass, const char *what) {
   ++checks;
@@ -111,7 +117,7 @@ void testHandshakeAndTimeouts() {
   check(!linkIsUp() && t.outbound.empty(), "pending connect emits no HELLO");
   t.time = CONNECT_DEADLINE_MS + 1; pump(t);
   check(t.closed, "connect deadline closes pending transport");
-  t.time += 1000; t.connecting = LinkTransport::Connect::Ready; pump(t);
+  t.time += RETRY_BASE_MS; t.connecting = LinkTransport::Connect::Ready; pump(t);
   check(!t.outbound.empty() && t.outbound[3] == tsb::T_HELLO, "HELLO follows completed connect");
   t.time += WELCOME_DEADLINE_MS + 1; pump(t); check(t.closed, "missing WELCOME times out");
 }
@@ -120,9 +126,9 @@ void testWifiEdgeAndBackoff() {
   t.edge = true; pump(t, 1);
   check(!linkIsUp() && t.closed, "brief WiFi disconnect tears down even after reassociation");
   unsigned attempts = t.attempts;
-  t.time += 998; pump(t, 1); check(t.attempts == (int)attempts, "backoff waits for deadline");
+  t.time += RETRY_BASE_MS - 2; pump(t, 1); check(t.attempts == (int)attempts, "backoff waits for deadline");
   t.time += 2; greet(t); t.edge = true; pump(t, 1);
-  attempts = t.attempts; t.time += 1001; pump(t, 1);
+  attempts = t.attempts; t.time += RETRY_BASE_MS + 1; pump(t, 1);
   check(t.attempts == (int)attempts, "short streaming session preserves exponential ramp");
 }
 void testProlongedOutage() {
@@ -133,7 +139,7 @@ void testProlongedOutage() {
   bool stayedDown = true, noAttempts = true;
   // 120 s outage in 1 s steps; pump() returning at all proves linkLoop keeps returning.
   for (int s = 0; s < 120; ++s) {
-    t.time += 1000; pump(t, 3);
+    t.time += SECOND_MS; pump(t, 3);
     if (linkIsUp()) stayedDown = false;
     if (t.attempts != attempts) noAttempts = false;
   }
@@ -227,7 +233,7 @@ void testSessionBoundaries() {
   busy.time = STABLE_INTERVAL_MS; pump(busy, 100);
   check(busy.attempts == 0, "busy close worker defers without burning retry attempts");
   busy.available = true; greet(busy); busy.edge = true; pump(busy, 1);
-  busy.time += 1000; pump(busy, 1);
+  busy.time += RETRY_BASE_MS; pump(busy, 1);
   check(busy.attempts == 2, "first real failure still retries at initial backoff");
 }
 
@@ -257,11 +263,11 @@ void testHeartbeatCapsAndBye() {
   std::vector<uint8_t> goodbye(gv::BYE_VERSION_MISMATCH,
       gv::BYE_VERSION_MISMATCH + sizeof(gv::BYE_VERSION_MISMATCH));
   goodbye[8] = 0xe7; goodbye[9] = 0x03; // unknown code 999
-  goodbye[12] = 60; goodbye[13] = 0; // fixed minimum 60 seconds
+  goodbye[12] = (uint8_t)(BYE_FLOOR_MS / SECOND_MS); goodbye[13] = 0; // retry_after_s floor
   goodbye[2] = 99; goodbye[7] = tsb::headerCheck(goodbye.data());
   bye.add(goodbye.data(), goodbye.size()); pump(bye);
   check(bye.closed && !linkIsUp(), "unknown cross-version BYE always tears down");
-  int attempts = bye.attempts; bye.time += 59990; pump(bye);
+  int attempts = bye.attempts; bye.time += BYE_FLOOR_MS - 10; pump(bye);
   check(bye.attempts == attempts, "BYE retry floor may exceed ordinary ramp cap");
   bye.time += 20; pump(bye); check(bye.attempts == attempts + 1, "BYE floor eventually retries");
 }
@@ -281,11 +287,11 @@ void byeJumpsToCap(uint8_t code, const char *tears, const char *waits,
   byeCode(r, code); const uint32_t t0 = r.time; pump(r, 1);
   check(r.closed && !linkIsUp(), tears);
   const int a = r.attempts;
-  r.time = t0 + 1000;  pump(r, 1);
-  r.time = t0 + 2000;  pump(r, 1);
-  r.time = t0 + 29999; pump(r, 1);
+  r.time = t0 + RETRY_BASE_MS; pump(r, 1);
+  r.time = t0 + 2 * RETRY_BASE_MS; pump(r, 1);
+  r.time = t0 + RETRY_CAP_MS - 1; pump(r, 1);
   check(r.attempts == a, waits);
-  r.time = t0 + 30000; pump(r, 1);
+  r.time = t0 + RETRY_CAP_MS; pump(r, 1);
   check(r.attempts == a + 1, once);
   pump(r, 5);
   check(r.attempts == a + 1, noDup);
@@ -302,19 +308,19 @@ void testReplacedAndVersionByeJumpToCap() {
 }
 void testStableRecoveryAndWrap() {
   FakeTransport t; reset(t); greet(t);
-  t.edge = true; pump(t); t.time += 1000; greet(t);
+  t.edge = true; pump(t); t.time += RETRY_BASE_MS; greet(t);
   // Keep transport active with complete frames for a full stable interval.
-  t.time += 30000; t.add(gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); pump(t);
-  t.time += 30001; t.add(gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); pump(t);
+  t.time += STABLE_INTERVAL_MS / 2; t.add(gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); pump(t);
+  t.time += STABLE_INTERVAL_MS / 2 + 1; t.add(gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); pump(t);
   t.edge = true; pump(t);
-  int attempts = t.attempts; t.time += 1000; pump(t);
+  int attempts = t.attempts; t.time += RETRY_BASE_MS; pump(t);
   check(t.attempts == attempts + 1, "stable streaming interval resets retry ramp");
   FakeTransport wrap; reset(wrap); greet(wrap);
   wrap.time = 0xfffffff0u;
   // Supplying a frame refreshes silence immediately before millis rollover.
   wrap.add(gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); pump(wrap);
   wrap.edge = true; pump(wrap); attempts = wrap.attempts;
-  wrap.time += 999; pump(wrap);
+  wrap.time += RETRY_BASE_MS - 1; pump(wrap); // pump ticks supply the last millisecond
   check(wrap.attempts == attempts + 1, "retry deadline is wrap-safe");
 }
 void testRefusalAndInvalidHandshake() {
