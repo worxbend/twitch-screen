@@ -212,7 +212,10 @@ final case class Config(
 object Config:
   private val logger = LoggerFactory.getLogger(getClass)
 
-  val Sections: List[String] = List("http", "device-link", "twitch", "notifications", "bus", "stats", "activity", "alerts", "observability")
+  /** The top-level HOCON sections, derived from the fields of [[Config]] in declaration order and spelled the way pureconfig reads them. A
+    * field added to [[Config]] therefore appears in `GET /config` and in the startup log with no other edit.
+    */
+  val Sections: List[String] = ConfigKeys.of[Config]
 
   /** Every leaf path the typed configuration reads. `/config` masks anything else, so a key the relay never reads cannot leak its value. */
   val SchemaPaths: Set[String] =
@@ -233,20 +236,16 @@ object Config:
     val source = ConfigFactory.load()
     (ConfigSource.fromConfig(source).loadOrThrow[Config], source)
 
-  /** `Sensitive` masks itself in `toString`, so the whole tree is safe to log. */
-  def log(config: Config): Unit =
-    logger.info(
-      s"""Relay configuration:
-         |  HTTP:          ${config.http}
-         |  Device link:   ${config.deviceLink}
-         |  Twitch:        ${config.twitch}
-         |  Notifications: ${config.notifications}
-         |  Bus:           ${config.bus}
-         |  Stats:         ${config.stats}
-         |  Activity:      ${config.activity}
-         |  Alerts:        ${config.alerts}
-         |  Observability: ${config.observability}""".stripMargin
-    )
+  /** One line per section, labelled with its HOCON name. `Sensitive` masks itself in `toString`, so the whole tree is safe to log. */
+  private[config] def render(config: Config): String =
+    require(Sections.sizeIs == config.productArity, s"Config.Sections $Sections does not match Config's ${config.productArity} fields")
+    val width = Sections.map(_.length).max + 2
+    Sections
+      .zip(config.productIterator)
+      .map((section, value) => s"  ${s"$section:".padTo(width, ' ')}$value")
+      .mkString("Relay configuration:\n", "\n", "")
+
+  def log(config: Config): Unit = logger.info(render(config))
 
 object DeviceLinkConfig:
   /** §5, §10.3: chat is replayed out of a ring of its own, so that a busy chat cannot evict a follow, a raid or a sub from the durable one.

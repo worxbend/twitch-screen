@@ -1,7 +1,7 @@
 package twitchscreen.relay.config
 
 import com.typesafe.config.{ConfigFactory, ConfigValueFactory}
-import pureconfig.ConfigSource
+import pureconfig.{CamelCase, ConfigFieldMapping, ConfigSource, KebabCase}
 import ox.discard
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
 import twitchscreen.relay.twitch.TwitchScopes
@@ -221,10 +221,39 @@ class ConfigSuite extends munit.FunSuite:
 
   test("the rendered configuration is limited to the relay's own sections, so system properties cannot leak"):
     val sections = ConfigApi.flatten(ConfigFactory.load()).keys.map(_.takeWhile(_ != '.')).toSet
-    assertEquals(
-      sections,
-      Set("http", "device-link", "twitch", "notifications", "bus", "stats", "activity", "alerts", "observability")
-    )
+    assertEquals(sections, Config.Sections.toSet)
+    assert(Set("java", "user", "os", "file", "line").intersect(sections).isEmpty, sections)
+
+  test("K-101: Config.Sections is exactly Config's fields, kebab-cased the way pureconfig reads them"):
+    val loaded = configSource.loadOrThrow[Config]
+    assertEquals(Config.Sections, loaded.productElementNames.map(ConfigFieldMapping(CamelCase, KebabCase)).toList)
+    assertEquals(Config.Sections.distinct, Config.Sections)
+
+  test("K-101: every Config section appears in GET /config"):
+    val rendered = ConfigApi.flatten(ConfigFactory.load())
+    val missing = Config.Sections.filterNot(section => rendered.keys.exists(_.startsWith(s"$section.")))
+    assertEquals(missing, Nil)
+
+  test("K-101: the startup log renders every section, in declaration order, with secrets masked"):
+    val clientSecret = "raw-client-secret-that-must-not-be-logged"
+    val eventSubSecret = "raw-eventsub-secret-that-must-not-be-logged"
+    val source = ConfigFactory
+      .parseString(s"""twitch { client-secret = "$clientSecret", event-sub.secret = "$eventSubSecret" }""")
+      .withFallback(configured)
+    val config = ConfigSource.fromConfig(source).loadOrThrow[Config]
+    val lines = Config.render(config).linesIterator.toList
+    assertEquals(lines.head, "Relay configuration:")
+    assertEquals(lines.tail.size, Config.Sections.size)
+    lines.tail
+      .zip(Config.Sections.zip(config.productIterator))
+      .foreach:
+        case (line, (section, value)) =>
+          assert(line.startsWith(s"  $section:"), line)
+          assert(line.endsWith(value.toString), line)
+    val rendered = lines.mkString("\n")
+    List(clientSecret, eventSubSecret, "test-configuration-token-at-least-32-bytes").foreach: secret =>
+      assert(!rendered.contains(secret), rendered)
+    assert(rendered.contains("***"), rendered)
 
   private def liveTwitchConfig(clientId: String): TwitchConfig =
     TwitchConfig(

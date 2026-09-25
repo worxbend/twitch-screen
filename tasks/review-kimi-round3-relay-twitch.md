@@ -621,3 +621,47 @@ Retention in `tasks/review-kimi-root.md:44` ("would change HOCON default semanti
 | `grep -rn 'Sensitive.Empty' src test` | no output |
 | `grep -rn 'basicPasswordHash.isSet\|apiToken.isSet\|apiToken.value.isEmpty\|basicPasswordHash.value.isEmpty' src` | no output |
 | `git status --short` | 7 Scala files; `application.conf` unchanged |
+
+## K-101 (Low, relay-twitch): Config section registries restated 4x (ConfigApi Shotgun Surgery)
+
+- **Disposition: fixed.** This closes both `[partial]` gaps. `Config.Sections` is now derived from the `Config` case class, and the startup log is built from `Sections.zip(config.productIterator)`. No hand-written list of section names is left in `Config.scala` or `ConfigSuite.scala`.
+
+### Change
+
+- `twitch-screen-relay/src/twitchscreen/relay/config/Config.scala` (`object Config`)
+  - `val Sections: List[String] = ConfigKeys.of[Config]`. This is compile-time (inline `Mirror.ProductOf` with `constValueTuple` of `MirroredElemLabels`), not reflection. It goes through the same `ConfigFieldMapping(CamelCase, KebabCase)` that pureconfig uses to read the keys. Declaration order is unchanged: http, device-link, twitch, notifications, bus, stats, activity, alerts, observability. The new scaladoc says that adding a field adds a section to `/config` and to the startup log.
+  - New pure `private[config] def render(config: Config): String`. It checks `require(Sections.sizeIs == config.productArity, ...)`, then writes the header `Relay configuration:` and one line per section: two spaces, then `<section>:` padded to a common width (the longest name plus 2, which is column 15, the same value column as before), then `value.toString`. `def log(config: Config): Unit = logger.info(render(config))`, and its signature is unchanged for `Main` and `ManagementRoutesSuite`.
+  - **Log text change (intentional):** labels are now the kebab-case HOCON section names (`http:`, `device-link:`, ...) instead of the prose labels (`HTTP:`, `Device link:`, ...). This is the only way to derive them without a second registry, and it matches both `/config` and `application.conf`. The rendered values (each section's `toString`, with `Sensitive` masked) and the order are byte-for-byte unchanged. `grep -rn "Device link:"` found only the old `Config.scala`, so nothing depends on the old labels.
+- `ConfigApi.scala` is unchanged. `flatten` already consumes `Config.Sections`, so `GET /config` output is identical.
+- `SchemaPaths` (from K-016) is left as is. It lists leaf keys per nested section, not a section registry, and the existing K-016 test "the schema lists every shipped key" already guards it (see the proof experiment below).
+
+### Tests (`ConfigSuite.scala`, 3 new, 1 rewritten)
+
+- Rewritten: "the rendered configuration is limited to the relay's own sections, so system properties cannot leak". The literal `Set(...)` is replaced with `assertEquals(sections, Config.Sections.toSet)`, plus an assertion that no JDK property root (`java`, `user`, `os`, `file`, `line`) appears.
+- "K-101: Config.Sections is exactly Config's fields, kebab-cased the way pureconfig reads them". This is an independent oracle: runtime `productElementNames` on a loaded instance, mapped through `ConfigFieldMapping(CamelCase, KebabCase)`, compared with the compile-time Mirror list. It also checks that there are no duplicates.
+- "K-101: every Config section appears in GET /config". Every entry of `Config.Sections` has at least one `section.` leaf in `ConfigApi.flatten(ConfigFactory.load())`. All nine sections have leaves in the shipped `application.conf`.
+- "K-101: the startup log renders every section, in declaration order, with secrets masked". This loads the config with `twitch.client-secret`, `twitch.event-sub.secret` and the api-token set. It asserts the header, one line per section in order, that each line starts with `  <section>:` and ends with that section's `toString`, that no raw secret appears, and that `***` does.
+
+### Red, then green
+
+- Red: with the tests written and production untouched, `./mill --no-daemon test.compile` FAILED with `ConfigSuite.scala:244:24 value render is not a member of object twitchscreen.relay.config.Config`. T1 and T2 pass against the old literal because it happened to agree with the fields today. The red proof for those is the dummy-field experiment below.
+- Green after the production change: `test.testOnly 'twitchscreen.relay.config.*'` passes ConfigSuite 49 tests, 0 failed (46 before, plus 3).
+
+### Proof experiment (not committed; `Config.scala` and `application.conf` restored from scratch copies, and afterwards `grep -c extra` gives 0 in both and `git status --short` shows only `Config.scala` and `ConfigSuite.scala`)
+
+1. I added a dummy field `extra: ObservabilityConfig` to `Config` and `extra { log-buffer-size = 500 }` to `application.conf`, with derived `Sections`.
+   - With `SchemaPaths` also extended by `leaves("extra", ...)`, ConfigSuite passed 49/49. `Sections`, `/config` (the "every section appears" test) and the startup log (the render test: one line per section, ending in its `toString`) all picked up `extra` with no other edit, and T1 still held.
+   - With `SchemaPaths` not extended, the only failure was the existing K-016 test "the schema lists every shipped key, and only the known secrets are masked". So the leaf schema cannot drift silently either. `extra.*` still appears in `/config`, masked as an unknown path.
+2. With the same dummy field, I reverted `Sections` to the old hand-written literal. ConfigSuite FAILED with 2 of 49: "K-101: Config.Sections is exactly Config's fields..." (ComparisonFailException at ConfigSuite.scala:229) and "K-101: the startup log renders every section..." (`requirement failed: Config.Sections List(http, ..., observability) does not match Config's 10 fields`). Before this change, a tenth section would have compiled, loaded, passed every test, and been missing from `GET /config`.
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.config.*'` | SUCCESS. ConfigSuite 49 tests, 0 failed |
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.http.*'` | SUCCESS. ApiSuite 28, TraceIdMdcSuite 2, ManagementRoutesSuite 5 (it calls `Config.log`), ManagementAuthSuite 15, 0 failed |
+| `./mill --no-daemon compile` | SUCCESS, with `-Werror` and no warnings |
+| `./mill --no-daemon test` | SUCCESS. 45 suites, 505 tests, 0 failed (502 before, plus 3) |
+| `./mill --no-daemon mill.scalalib.scalafmt/` then `mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
+| `grep -rn '"device-link"' twitch-screen-relay/src twitch-screen-relay/test` (from the worktree root) | One hit, `Config.scala:226 leaves("device-link", ConfigKeys.of[DeviceLinkConfig])`. This is the K-016 `SchemaPaths` leaf prefix, not a section registry. |
+| K-016 masking tests and "the rendered configuration masks every secret" | Unmodified and green in the ConfigSuite run above |
