@@ -12,7 +12,10 @@ SPEC = sys.argv[1]
 OUT  = sys.argv[2]
 
 src = open(SPEC, encoding='utf-8').read()
-sec18 = src.split('## 18. Golden test vectors', 1)[1].split('## 19.', 1)[0]
+start, end = '<!-- tsb3-golden-vectors:start -->', '<!-- tsb3-golden-vectors:end -->'
+if src.count(start) != 1 or src.count(end) != 1 or src.index(start) >= src.index(end):
+    sys.exit('PROTOCOL.md must contain one ordered pair of tsb3-golden-vectors anchors')
+sec18 = src.split(start, 1)[1].split(end, 1)[0]
 
 HEAD = re.compile(r'^### V(\d+)\. `([a-z0-9_]+)` — (\d+) bytes\s*$', re.M)
 
@@ -141,6 +144,8 @@ for i, m in enumerate(heads):
         cmp(k, v)
     if 'reserved1' in prose and prose['reserved1'] != '00 00 00 00':
         sys.exit('%s: reserved1 prose is %r' % (name, prose['reserved1']))
+    if checked == 0:
+        sys.exit('%s: no prose expectations checked; golden vector bullet format has drifted' % name)
 
     vectors.append(dict(idx=idx, name=name, size=size, frame=frame, type=mtype,
                         length=length, flags=frame[6], fields=f, checked=checked))

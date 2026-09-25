@@ -74,6 +74,20 @@ One long-lived TCP connection per device, always initiated by the device, to the
 a second net; the application heartbeat (§12) is authoritative. No TLS, no authentication
 beyond the device id.
 
+**Threat model: trusted home LAN only.** The device id is a self-declared name,
+not proof of identity. Every host that can reach port 8099 can impersonate a device,
+replace its connection with `BYE_REPLACED`, and keep it reconnecting at maximum
+backoff. A rogue relay can send arbitrary display text, false statistics, or a
+`retry_after_s` of up to 65535 seconds (about 18 hours). Keep this listener off the
+public internet and untrusted/guest networks. Deployments that cannot trust all
+hosts on the segment need an authenticated, encrypted transport; TSB/3 itself
+does not provide one. Management HTTP authentication does not protect this link.
+
+Wi-Fi credentials compiled into firmware are also readable from unencrypted flash
+by someone with physical access. This build assumes trusted physical access; it
+does not provision flash encryption, secure boot, or OTA updates. Recovery and
+firmware updates use the local USB flashing workflow.
+
 Frames are written back to back on the byte stream with no separator, no padding and no
 alignment requirement between frames.
 
@@ -862,6 +876,9 @@ A device SHOULD stop consuming EVENT frames while its display queue is full,
 retaining the next complete frame and applying TCP backpressure. It MUST continue
 rendering queued cards and servicing bounded output so capacity returns. A local
 pause may delay reading heartbeats; it is not evidence of remote silence. If an
+EVENT remains paused for twice the negotiated idle timeout, the device MUST close
+and reconnect, retaining accepted cards and the replay high-water mark. This bounds
+the time a dead relay can remain apparently online behind local backpressure. If an
 EVENT is actually refused, close and reconnect for replay before admitting any
 higher EVENT sequence. Keep the previously accepted display queue and high-water
 mark across that reconnect. This prevents in-session gaps while preserving the
@@ -890,6 +907,8 @@ device                                    relay
    of accept or send `BYE(12 HANDSHAKE_TIMEOUT)` and close. Any other first frame is
    `BYE(2 BAD_HANDSHAKE, detail = the type received)` and close.
 3. A second `HELLO` on an established session is `BYE(7 DUPLICATE_HELLO)` and close.
+   A second `WELCOME` received by a streaming device is also a protocol error:
+   close without rewinding its accepted sequence or replay state.
 4. The device MUST NOT act on any `EVENT` or `STATS` received before `WELCOME`.
 5. The greeting burst order is fixed: `WELCOME` → replayed `EVENT`s in ascending `seq` →
    exactly one `STATS`.
@@ -1180,6 +1199,8 @@ Additional v3 cases that MUST be covered:
 ---
 
 ## 18. Golden test vectors
+
+<!-- tsb3-golden-vectors:start -->
 
 **This is the most important section of the document.** It is the mechanism by which two
 independently written implementations stay aligned: both MUST assert these exact bytes, and
@@ -1692,6 +1713,8 @@ a7 53 03 25 20 00 00 75 01 00 03 00 1e 00 00 00
 - `reason` = "relay speaks v3 only" — ASCII, NUL-padded to 24, for logs only
 
 ---
+
+<!-- tsb3-golden-vectors:end -->
 
 ## 19. Migration from v2 (completed, non-normative)
 

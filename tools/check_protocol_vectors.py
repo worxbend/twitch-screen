@@ -12,6 +12,19 @@ FIRMWARE = ROOT / "twitch-screen-firmware"
 SPEC = FIRMWARE / "docs/PROTOCOL.md"
 
 
+def spec_vectors(spec=SPEC):
+    source = spec.read_text(encoding="utf-8")
+    start, end = "<!-- tsb3-golden-vectors:start -->", "<!-- tsb3-golden-vectors:end -->"
+    if source.count(start) != 1 or source.count(end) != 1 or source.index(start) >= source.index(end):
+        raise ValueError("PROTOCOL.md must contain one ordered pair of tsb3-golden-vectors anchors")
+    section = source.split(start, 1)[1].split(end, 1)[0]
+    blocks = re.findall(r"^### V(\d+)\..*?\n```\n(.*?)```", section, re.M | re.S)
+    vectors = {int(number): bytes.fromhex(block) for number, block in blocks}
+    if len(blocks) != 20 or set(vectors) != set(range(1, 21)):
+        raise ValueError("Expected exactly V1–V20 in the specification")
+    return vectors
+
+
 def main():
     with tempfile.TemporaryDirectory() as directory:
         generated = Path(directory) / "vectors.h"
@@ -22,13 +35,7 @@ def main():
         if generated.read_bytes() != (FIRMWARE / "test/test_proto_codec/vectors.h").read_bytes():
             raise SystemExit("Firmware vectors.h has drifted from PROTOCOL.md; regenerate it.")
 
-    section = SPEC.read_text().split("## 18. Golden test vectors", 1)[1].split("## 19.", 1)[0]
-    expected = {
-        int(number): bytes.fromhex(block)
-        for number, block in re.findall(
-            r"^### V(\d+)\..*?\n```\n(.*?)```", section, re.M | re.S
-        )
-    }
+    expected = spec_vectors()
     source = (ROOT / "twitch-screen-relay/test/src/twitchscreen/relay/protocol/Tsb3Vectors.scala").read_text()
     actual = {
         int(number): bytes.fromhex(multiline or single_line)
@@ -45,4 +52,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(f"Protocol vector check failed: {error}") from None
