@@ -30,7 +30,7 @@ private[twitch] object LiveTwitchSource:
     val health = TwitchRuntimeHealth(config, bus)
     val auth = TwitchAuth.start(config, TwitchOAuthClient.live(config, clock), bus, clock)
     val authApi = TwitchAuthApi(auth)
-    val tracker = ChannelStateTracker(config.channel, clock)
+    val tracker = ChannelStateTracker(config.channel, clock, pollInterval = config.pollInterval)
     val webhook =
       EventSubWebhookApi.create(config, bus, tracker, filter, clock, (kind, failure) => health.observe(s"eventsub-$kind", failure))
 

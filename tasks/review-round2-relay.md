@@ -87,3 +87,37 @@ Residual:
 - The asynchronous `EventSocketSubscriptionFailureEvent` handling (`subscriptionFailed`) is covered separately in TwitchRecoverySuite and is unchanged.
 - User-request note: the "always commit and push to main" agent instruction already exists in AGENTS.md (lines 3-13, commit 0e69b89). It was not duplicated here.
 - Not committed in this step, per the step instruction. Commit/rebase/push is left to integration.
+
+## RLY-08 — push grace hysteresis and pushed-end started_at guard
+
+Change (`twitch/ChannelStateTracker.scala`, `twitch/LiveTwitchSource.scala`; no protocol, config-schema or event-shape change):
+- The grace is now `max(pushGrace (60 s), 3 × pollInterval)`. `LiveTwitchSource` passes `config.pollInterval`, so the default 30 s poll gives a 90 s grace. The factory default `pollInterval = Duration.Zero` keeps a 60 s grace for existing call sites.
+- `observedOffline` while Live and inside the grace resets `absentPolls` to 0 and returns None. A poll-driven END needs 2 consecutive absences, both after the grace.
+- `wentOffline` (EventSub push) records `pushedEndStartedAt` = the ended stream's start. After that, a poll-live (`observedLive`) whose `started_at` is the same or earlier is ignored, even after the grace. A strictly newer `started_at` announces START. A push (`wentLive`) is never filtered.
+- The Scaladoc on `ChannelTrackerState` records the contract. Publication ordering is still owned by the actor and is unchanged.
+
+Tests (`ChannelStateTrackerSuite`, 11 → 16; `Movable` clock hoisted to suite level; existing assertions unchanged):
+- T1: poll 30 s → absences at +5/+35/+65 are None, +95 is None, +125 → `StreamEnded(125 s)`, then None (brief sequence a).
+- T1b: poll 5 s → the grace stays 60 s: +30 None, +61 None, +66 → `StreamEnded(66 s)`.
+- T2: `wentLive(S)`, `wentOffline`, then at +120 `observedLive(S)` → None and `observedLive(S − 10 s)` → None (brief sequence b).
+- T3: same setup, `observedLive(t0 + 100)` at +120 → `StreamStarted(..., Some(t0 + 100))`.
+- T4: an absence inside the grace (+80) and a poll-live (+85) do not count; END comes at +125 after absences at +95 and +125.
+- Red → green: the suite first failed to compile (no `pollInterval` parameter), then passed 16/16.
+
+Mutation check (source restored and verified byte-identical with `cmp` after each):
+- Reverting (c) to the old accumulate-inside-grace `observedOffline`: T1 and T1b fail.
+- Neutralising the started_at guard (`endedByPush` always false): T2 fails.
+
+Validation (run from twitch-screen-relay):
+- `./mill --no-daemon test.testOnly twitchscreen.relay.twitch.ChannelStateTrackerSuite` → 16/16.
+- `./mill --no-daemon test.testOnly ...ChannelStateTrackerSuite ...EventSubWebhookSuite ...TwitchRecoverySuite ...WebSocketRegistrationSuite ...WebhookDeduplicationSuite` → 16 + 13 + 14 + 8 + 2 = 53, 0 failed.
+- `./mill --no-daemon compile` (`-Werror`) → SUCCESS.
+- `./mill --no-daemon test` → 28 suites, 337 tests (was 332), 0 failed on two consecutive runs.
+  - Two earlier runs hit the known load-sensitive `device.LifecycleOrderingSuite` flake. It passed alone (1/1).
+  - The flake also reproduced on the unmodified baseline (1 of 2 full runs). That suite does not use the tracker.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` → SUCCESS; `git diff --check` clean.
+
+Residual:
+- A poll-live with no `started_at` is not filtered by the pushed-end guard. It is still suppressed only inside the grace.
+- The optional 2-consecutive-live-polls rule after a pushed offline was not implemented.
+- There is no live-Twitch acceptance: the behavior is proven with a movable clock only.

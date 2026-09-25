@@ -1,7 +1,7 @@
 package twitchscreen.relay.twitch
 
 import java.time.{Clock, Duration as JDuration, Instant}
-import scala.concurrent.duration.{FiniteDuration, SECONDS}
+import scala.concurrent.duration.{Duration, FiniteDuration, SECONDS}
 import twitchscreen.relay.bus.RelayEvent
 import ox.{Ox, tap}
 import ox.channels.{Actor, ActorRef}
@@ -16,14 +16,22 @@ private final case class ChannelObservation(
     title: String = "",
     game: String = "",
     lastPush: Option[Instant] = None,
-    absentPolls: Int = 0
+    absentPolls: Int = 0,
+    pushedEndStartedAt: Option[Instant] = None
 )
 
 /** Push transitions take precedence for a grace period; a later offline poll requires two consecutive absences. Initial live observations
   * intentionally initialize statistics and announce the stream, preserving the established startup behavior.
+  *
+  * RLY-08: Helix lags EventSub, so the grace is `max(pushGrace, 3 × pollInterval)` (60 s by default). Absent polls inside the grace are not
+  * counted, so a poll-driven END needs two consecutive absences after it. A pushed offline remembers the ended stream's start, and a later
+  * poll reporting live with that same or an earlier `started_at` is ignored even after the grace; a strictly newer start is a new stream.
   */
-private final class ChannelTrackerState(channel: String, clock: Clock, pushGrace: JDuration):
+private final class ChannelTrackerState(channel: String, clock: Clock, pushGrace: JDuration, pollInterval: JDuration):
   private var state = ChannelObservation()
+  private val effectiveGrace =
+    val polls = pollInterval.multipliedBy(3)
+    if polls.compareTo(pushGrace) > 0 then polls else pushGrace
 
   def channelInfo(title: String, game: String): Unit =
     state = state.copy(title = Option(title).getOrElse(""), game = Option(game).getOrElse(""))
@@ -35,16 +43,22 @@ private final class ChannelTrackerState(channel: String, clock: Clock, pushGrace
     observeLive(title, game, startedAt, push = false)
 
   def wentOffline(): Option[RelayEvent] = change: before =>
-    offline(before.copy(lastPush = Some(clock.instant()), absentPolls = 0))
+    val ended = before.liveness match
+      case ChannelLiveness.Live(since) => Some(since)
+      case _                           => before.pushedEndStartedAt
+    offline(before.copy(lastPush = Some(clock.instant()), absentPolls = 0, pushedEndStartedAt = ended))
 
   def observedOffline(): Option[RelayEvent] = change: before =>
-    val absent = before.copy(absentPolls = math.min(2, before.absentPolls + 1))
     before.liveness match
-      case ChannelLiveness.Live(_) if recentPush(before) || absent.absentPolls < 2 => absent -> None
-      case _                                                                       => offline(absent)
+      case ChannelLiveness.Live(_) if recentPush(before) => before.copy(absentPolls = 0) -> None
+      case liveness =>
+        val absent = before.copy(absentPolls = math.min(2, before.absentPolls + 1))
+        liveness match
+          case ChannelLiveness.Live(_) if absent.absentPolls < 2 => absent -> None
+          case _                                                 => offline(absent)
 
   private def observeLive(title: String, game: String, startedAt: Option[Instant], push: Boolean): Option[RelayEvent] = change: before =>
-    if !push && before.liveness == ChannelLiveness.Offline && recentPush(before) then before -> None
+    if !push && before.liveness == ChannelLiveness.Offline && (recentPush(before) || endedByPush(before, startedAt)) then before -> None
     else
       val since = startedAt.getOrElse(before.liveness match
         case ChannelLiveness.Live(existing) => existing
@@ -68,7 +82,11 @@ private final class ChannelTrackerState(channel: String, clock: Clock, pushGrace
       next -> event
 
   private def recentPush(observation: ChannelObservation): Boolean =
-    observation.lastPush.exists(sent => clock.instant().isBefore(sent.plus(pushGrace)))
+    observation.lastPush.exists(sent => clock.instant().isBefore(sent.plus(effectiveGrace)))
+
+  /** A poll carrying the start of a stream EventSub already ended (or an earlier one) is stale Helix data, not a new stream. */
+  private def endedByPush(observation: ChannelObservation, startedAt: Option[Instant]): Boolean =
+    startedAt.zip(observation.pushedEndStartedAt).exists((started, ended) => !started.isAfter(ended))
 
   private def offline(before: ChannelObservation): (ChannelObservation, Option[RelayEvent]) =
     val event = before.liveness match
@@ -95,5 +113,7 @@ private[twitch] final class ChannelStateTracker private (state: ActorRef[Channel
     state.ask(_.observedOffline().tap(_.foreach(publish)))
 
 private[twitch] object ChannelStateTracker:
-  def apply(channel: String, clock: Clock, pushGrace: JDuration = JDuration.ofSeconds(60))(using Ox): ChannelStateTracker =
-    new ChannelStateTracker(Actor.create(ChannelTrackerState(channel, clock, pushGrace)))
+  def apply(channel: String, clock: Clock, pushGrace: JDuration = JDuration.ofSeconds(60), pollInterval: FiniteDuration = Duration.Zero)(
+      using Ox
+  ): ChannelStateTracker =
+    new ChannelStateTracker(Actor.create(ChannelTrackerState(channel, clock, pushGrace, JDuration.ofNanos(pollInterval.toNanos))))

@@ -16,6 +16,13 @@ class ChannelStateTrackerSuite extends munit.FunSuite:
 
   private def tracker()(using Ox): ChannelStateTracker = ChannelStateTracker("somechannel", clock)
 
+  private class Movable extends Clock:
+    var current = now
+    def at(seconds: Long): Unit = current = now.plusSeconds(seconds)
+    override def instant(): Instant = current
+    override def getZone = ZoneOffset.UTC
+    override def withZone(zone: java.time.ZoneId): Clock = this
+
   test("the first sighting of a live channel is announced, anchored on the relay's clock when nothing better is known"):
     supervised:
       assertEquals(
@@ -74,11 +81,6 @@ class ChannelStateTrackerSuite extends munit.FunSuite:
 
   test("two absent polls after the push grace period announce one ending"):
     supervised:
-      class Movable extends Clock:
-        var current = now
-        override def instant(): Instant = current
-        override def getZone = ZoneOffset.UTC
-        override def withZone(zone: java.time.ZoneId): Clock = this
       val movable = Movable()
       val subject = ChannelStateTracker("somechannel", movable)
       subject.wentLive("title", "game").discard
@@ -93,6 +95,70 @@ class ChannelStateTrackerSuite extends munit.FunSuite:
       subject.wentLive("title", "game").discard
       subject.wentOffline().discard
       assertEquals(subject.observedLive("title", "game", Some(now)), None)
+
+  test("RLY-08: absent polls inside the push grace are not counted; END needs two absences after it"):
+    supervised:
+      val movable = Movable()
+      val subject = ChannelStateTracker("somechannel", movable, pollInterval = 30.seconds)
+      subject.wentLive("title", "game").discard
+      for offset <- List(5L, 35L, 65L) do
+        movable.at(offset)
+        assertEquals(subject.observedOffline(), None, s"absence at +$offset s is inside the 90 s grace")
+      movable.at(95)
+      assertEquals(subject.observedOffline(), None)
+      movable.at(125)
+      assertEquals(subject.observedOffline(), Some(RelayEvent.StreamEnded("somechannel", 125.seconds)))
+      assertEquals(subject.observedOffline(), None)
+
+  test("RLY-08: the grace is at least 60 s for a short poll interval"):
+    supervised:
+      val movable = Movable()
+      val subject = ChannelStateTracker("somechannel", movable, pollInterval = 5.seconds)
+      subject.wentLive("title", "game").discard
+      movable.at(30)
+      assertEquals(subject.observedOffline(), None)
+      movable.at(61)
+      assertEquals(subject.observedOffline(), None)
+      movable.at(66)
+      assertEquals(subject.observedOffline(), Some(RelayEvent.StreamEnded("somechannel", 66.seconds)))
+
+  test("RLY-08: a stale live poll after the grace cannot undo a pushed ending"):
+    supervised:
+      val movable = Movable()
+      val subject = ChannelStateTracker("somechannel", movable)
+      val startedAt = now.minusSeconds(3600)
+      subject.wentLive("title", "game", Some(startedAt)).discard
+      subject.wentOffline().discard
+      movable.at(120)
+      assertEquals(subject.observedLive("title", "game", Some(startedAt)), None)
+      assertEquals(subject.observedLive("title", "game", Some(startedAt.minusSeconds(10))), None)
+
+  test("RLY-08: a newer started_at after a pushed ending announces a new stream"):
+    supervised:
+      val movable = Movable()
+      val subject = ChannelStateTracker("somechannel", movable)
+      subject.wentLive("title", "game", Some(now.minusSeconds(3600))).discard
+      subject.wentOffline().discard
+      movable.at(120)
+      val restarted = now.plusSeconds(100)
+      assertEquals(
+        subject.observedLive("title", "game", Some(restarted)),
+        Some(RelayEvent.StreamStarted("somechannel", "title", "game", Some(restarted)))
+      )
+
+  test("RLY-08: a poll during the grace after a push resets the absence count"):
+    supervised:
+      val movable = Movable()
+      val subject = ChannelStateTracker("somechannel", movable, pollInterval = 30.seconds)
+      subject.wentLive("title", "game").discard
+      movable.at(80)
+      assertEquals(subject.observedOffline(), None)
+      movable.at(85)
+      assertEquals(subject.observedLive("title", "game", Some(now)), None)
+      movable.at(95)
+      assertEquals(subject.observedOffline(), None)
+      movable.at(125)
+      assertEquals(subject.observedOffline(), Some(RelayEvent.StreamEnded("somechannel", 125.seconds)))
 
   test("concurrent transitions publish in the same order as their state changes"):
     supervised:
