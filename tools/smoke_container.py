@@ -88,7 +88,18 @@ def main():
             connection.sendall(hello)
             kind, payload = read_frame(connection)
             assert kind == 0x20 and len(payload) == 24, "Expected TSB/3 WELCOME"
-        print("Container smoke passed: public HTTP, protected HTTP, secret redaction and TSB/3 WELCOME (512 MiB limit).")
+            docker("kill", "--signal=TERM", container)
+            deadline = time.monotonic() + 10
+            while kind != 0x25 and time.monotonic() < deadline:
+                kind, payload = read_frame(connection)
+            assert kind == 0x25 and struct.unpack_from("<H", payload)[0] == 8, "Expected SERVER_SHUTDOWN BYE"
+            assert connection.recv(1) == b"", "BYE must be the final frame"
+        subprocess.run(["docker", "wait", container], check=True, timeout=15, stdout=subprocess.DEVNULL)
+        print("Container smoke passed: public/protected HTTP, secret redaction, TSB/3 WELCOME and shutdown BYE (512 MiB limit).")
+    except Exception:
+        # The only credential this isolated simulated container knows is generated above.
+        print(docker("logs", container, stderr=subprocess.STDOUT).replace(token, "[test-token]"), file=sys.stderr)
+        raise
     finally:
         docker("rm", "-fv", container)
 

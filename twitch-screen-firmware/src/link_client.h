@@ -47,4 +47,3 @@ void linkInit(const LinkHooks *hooks, LinkTransport &transport);
 void linkLoop();
 // True once WELCOME has been received, i.e. the session is in STREAMING.
 bool linkIsUp();
-

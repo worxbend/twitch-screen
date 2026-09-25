@@ -121,8 +121,10 @@ Other owners' rows refer to their separate execution reports.
 - `make_glitch.py` executed from `/tmp`; generated tracked header/PNG assets had
   no diff. Script launch directory no longer chooses output location.
 - The broken global PlatformIO venv was not repaired or reused. PlatformIO 6.1.18
-  works from a newly created isolated venv; root will verify the documented setup
-  in the integration worktree. Firmware pins are build-verified installed
+  works from a newly created isolated venv; root independently recreated the documented setup
+  in the integration worktree and passed all ten host-suite runs and the ESP32 build.
+  Integration static RAM is 67,248 bytes and flash is 1,151,877 bytes with the local
+  configuration; the workstream measurements above used its example configuration. Firmware pins are build-verified installed
   versions, not a claim of new hardware qualification.
 - Deferred policy/design items: FW-10 (frozen retry floor cap), FW-18 (OTA),
   PROTO-02 (restart sequence ownership), PROTO-10 (unknown initial stats),

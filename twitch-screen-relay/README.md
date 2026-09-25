@@ -301,5 +301,13 @@ Verified here: the protocol bytes against the firmware's specification, the devi
 management API end to end, the aggregation and alert folds, the EventSub webhook's signature check, and the whole
 relay running in simulated mode with a real TCP client attached and notifications arriving over both paths.
 
-Not verified here: the `live` Twitch path, which needs real credentials, and the Docker image, which needs a Docker
-daemon. Both are written against the documented APIs but have not been run.
+The image also builds and passes an isolated smoke under a 512 MiB limit: public and protected HTTP,
+credential redaction, TSB/3 handshake, and a shutdown BYE followed by EOF on SIGTERM. Run it from the repository root:
+
+```sh
+docker build -t twitch-screen-relay:review twitch-screen-relay
+python3 tools/smoke_container.py
+```
+
+The `live` Twitch path still needs validation with real account credentials. Scripted adapter tests cannot establish
+provider acceptance or long-running recovery against the real service.
