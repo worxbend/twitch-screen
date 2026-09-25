@@ -1,7 +1,9 @@
 package twitchscreen.relay.http
 
+import com.typesafe.config.ConfigFactory
 import java.time.{Clock, Instant, ZoneOffset}
 import ox.supervised
+import pureconfig.ConfigSource
 import scala.concurrent.duration.DurationInt
 import sttp.client4.*
 import sttp.model.StatusCode
@@ -10,11 +12,12 @@ import sttp.tapir.server.stub4.TapirSyncStubInterpreter
 import twitchscreen.relay.activity.{ActivityApi, ActivityLog}
 import twitchscreen.relay.alerts.{AlertRule, AlertStore, AlertsApi}
 import twitchscreen.relay.bus.EventBus
-import twitchscreen.relay.config.{ChatNotifications, DeviceLinkConfig, Hostname, NotificationsConfig, Port}
+import twitchscreen.relay.config.{ActivityConfig, ChatNotifications, Config, DeviceLinkConfig, Hostname, NotificationsConfig, Port}
 import twitchscreen.relay.device.{DeviceApi, DeviceHub, Notification_IN, NotificationApi}
-import twitchscreen.relay.health.{HealthApi, Health_OUT, HealthStatus}
-import twitchscreen.relay.protocol.NotificationKind
+import twitchscreen.relay.health.{HealthApi, Health_OUT, HealthStatus, StatusApi}
+import twitchscreen.relay.protocol.{NotificationKind, SeqNo}
 import twitchscreen.relay.observability.LogsApi
+import twitchscreen.relay.twitch.{BotFilter, TwitchSource}
 
 /** The management API, exercised in process through Tapir's stub interpreter — no sockets, no ports. */
 class ApiSuite extends munit.FunSuite:
@@ -62,6 +65,32 @@ class ApiSuite extends munit.FunSuite:
     errorRateThreshold = 10,
     errorRateWindow = 5.minutes
   )
+
+  /** `deviceLink.sequenceExhausted` from the status endpoint, over a hub whose counter starts at `initial`. */
+  private def statusSequenceExhausted(initial: SeqNo): Either[Unit, Boolean] =
+    supervised:
+      val config = ConfigSource
+        .fromConfig(
+          ConfigFactory.parseString("http.auth.api-token = \"status-test-token-at-least-32-bytes-long\"").withFallback(ConfigFactory.load())
+        )
+        .loadOrThrow[Config]
+      val bus = EventBus(clock, queueCapacity = 32)
+      val hub = DeviceHub.startingAt(deviceLinkConfig, ChatNotifications.Hide, clock, bus, initial)
+      val twitch = TwitchSource.start(config.twitch, bus, BotFilter.from(config.notifications), clock)
+      val status = StatusApi(twitch, hub, bus, ActivityLog.start(ActivityConfig(50), bus), AlertStore(10), clock, clock.instant())
+      val backend = TapirSyncStubInterpreter().whenServerEndpointsRunLogic(status.endpoints).backend()
+      SttpClientInterpreter()
+        .toRequestThrowDecodeFailures(StatusApi.getEndpoint, basePath)
+        .apply(())
+        .send(backend)
+        .body
+        .map(_.deviceLink.sequenceExhausted)
+        .left
+        .map(_ => ())
+
+  test("the status endpoint reports whether the device link's sequence space is exhausted"):
+    assertEquals(statusSequenceExhausted(SeqNo.Zero), Right(false))
+    assertEquals(statusSequenceExhausted(SeqNo.Max), Right(true))
 
   test("the liveness endpoint reports up"):
     withApi: (backend, _, _) =>

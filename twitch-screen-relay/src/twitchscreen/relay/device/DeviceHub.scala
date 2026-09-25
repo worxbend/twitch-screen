@@ -21,6 +21,11 @@ import twitchscreen.relay.protocol.*
   */
 private[device] final case class Outbound(message: RelayMessage, flags: FrameFlags = FrameFlags.Empty)
 
+/** §10.1: the `u32` sequence space is spent. The relay never wraps; a restart begins a new sequence space, which is what devices
+  * re-baseline on. `latest` is the last seq that was assigned, and remains the high-water mark every `WELCOME` reports.
+  */
+private[relay] final case class SequenceExhausted(latest: SeqNo)
+
 /** Everything a session hands to the hub when its handshake has succeeded. */
 private[device] final case class AttachRequest(
     device: DeviceId,
@@ -48,13 +53,22 @@ private[device] final case class AttachRequest(
   * dropped.
   */
 private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState], connected: AtomicInteger):
-  /** Sequences an event and pushes it to every attached device whose capabilities allow it. Returns it with its assigned seq and id. */
-  def publish(request: EventRequest): Notification = state.ask(_.publish(request))
+  /** Sequences an event and pushes it to every attached device whose capabilities allow it. Returns it with its assigned seq and id.
+    *
+    * Once the `u32` sequence space is spent (§10.1) every publication is refused with [[SequenceExhausted]]. A refusal leaves the actor,
+    * the replay rings, `latestSeq`, the observed stats and the attached devices unchanged, and sends no frame; the hub reports the
+    * exhaustion to the operator once, itself, so callers may discard the refusal.
+    */
+  def publish(request: EventRequest): Either[SequenceExhausted, Notification] = state.ask(_.publish(request))
 
-  def publishTransition(request: EventRequest, stats: StreamStats): Notification = state.ask(_.publish(request, Some(stats)))
+  /** A stream lifecycle card together with the stats the transition produced (§6.5). On a refusal the stats are not recorded either; the
+    * caller still owes the devices that `STATS`, via [[broadcastStats]].
+    */
+  def publishTransition(request: EventRequest, stats: StreamStats): Either[SequenceExhausted, Notification] =
+    state.ask(_.publish(request, Some(stats)))
 
   /** §6.4.3: a posted card keeps its title and body and leaves every numeric field 0, whatever kind it names. */
-  def publish(request: NotificationRequest): Notification = publish(EventRequest.card(request))
+  def publish(request: NotificationRequest): Either[SequenceExhausted, Notification] = publish(EventRequest.card(request))
 
   def broadcastStats(stats: StreamStats): Unit = state.tell(_.updateStats(stats))
 
@@ -95,8 +109,16 @@ private[relay] final class DeviceHub private (state: ActorRef[DeviceHubState], c
 
 private[relay] object DeviceHub:
   def start(config: DeviceLinkConfig, chat: ChatNotifications, clock: Clock, bus: EventBus)(using Ox): DeviceHub =
+    startingAt(config, chat, clock, bus, SeqNo.Zero)
+
+  /** A hub whose counter already stands at `initialSequence`. Production always starts at zero; this is the seam that lets tests reach
+    * §10.1's exhaustion without publishing four billion events.
+    */
+  private[relay] def startingAt(config: DeviceLinkConfig, chat: ChatNotifications, clock: Clock, bus: EventBus, initialSequence: SeqNo)(
+      using Ox
+  ): DeviceHub =
     val connected = AtomicInteger(0)
-    new DeviceHub(Actor.create(new DeviceHubState(config, chat, clock, bus, connected)), connected)
+    new DeviceHub(Actor.create(new DeviceHubState(config, chat, clock, bus, connected, initialSequence)), connected)
 
 /** The hub's mutable state. The `var`s are safe because every method runs inside the actor that owns this instance; nothing else may hold a
   * reference to it.
@@ -106,7 +128,8 @@ private[device] final class DeviceHubState(
     chat: ChatNotifications,
     clock: Clock,
     bus: EventBus,
-    connected: AtomicInteger
+    connected: AtomicInteger,
+    initialSequence: SeqNo
 ):
   private val logger = LoggerFactory.getLogger(classOf[DeviceHub])
 
@@ -121,7 +144,12 @@ private[device] final class DeviceHubState(
   private val sessionId: SessionId = SessionId.fromWire(ThreadLocalRandom.current().nextLong() & 0xffffffffL)
 
   private var lastConnectionId: Long = 0
-  private var latestSequence: SeqNo = SeqNo.Zero
+  private var latestSequence: SeqNo = initialSequence
+
+  /** Exhaustion is reported once. The report is a `RelayFailure`, which the router turns into an `Alert` card that this hub then refuses;
+    * without the latch that refusal would report again, and so on for ever.
+    */
+  private var exhaustionReported: Boolean = false
 
   /** §10.3's two rings. The split exists so that a busy chat cannot evict follows, raids and subs from the buffer; it does not create an
     * unsequenced or unreplayable kind, because a kind skipped by replay lets a later event hold the high-water mark past a lost durable
@@ -195,10 +223,25 @@ private[device] final class DeviceHubState(
         logger.info(s"Device ${device.device.value} (#${connection.value}) detached: ${reason.describe}")
         bus.publish(RelayEvent.DeviceDisconnected(device.device, connection, reason.describe))
 
-  def publish(request: EventRequest, transition: Option[StreamStats] = None): Notification =
-    latestSequence = latestSequence.next.getOrElse:
-      logger.error(s"Sequence space exhausted at ${latestSequence.value}; refusing to publish until the relay is restarted")
-      throw IllegalStateException("TSB/3 sequence counter exhausted at 0xffffffff (§10.1); restart the relay")
+  def publish(request: EventRequest, transition: Option[StreamStats] = None): Either[SequenceExhausted, Notification] =
+    latestSequence.next match
+      case None => Left(refuse())
+      case Some(seq) =>
+        latestSequence = seq
+        Right(sequenced(request, transition))
+
+  /** §10.1: never wrap, and never assign past `0xffffffff`. Nothing is mutated and nothing is sent. */
+  private def refuse(): SequenceExhausted =
+    if !exhaustionReported then
+      exhaustionReported = true
+      logger.error(
+        s"Sequence space exhausted at ${latestSequence.value}; refusing EVENT publication until the relay is restarted (§10.1)"
+      )
+      bus.publish(RelayEvent.RelayFailure("device-hub", s"sequence space exhausted at ${latestSequence.value}; restart the relay"))
+    else logger.debug(s"EVENT refused: sequence space exhausted at ${latestSequence.value}")
+    SequenceExhausted(latestSequence)
+
+  private def sequenced(request: EventRequest, transition: Option[StreamStats]): Notification =
     val record = request.record(latestSequence, clock.instant())
     remember(record)
     notificationsPublished += 1
@@ -233,7 +276,8 @@ private[device] final class DeviceHubState(
       notificationsPublished = notificationsPublished,
       latestSeq = latestSequence,
       replayBuffered = durableReplay.size + chatReplay.size,
-      latestStats = latestObservedStats
+      latestStats = latestObservedStats,
+      sequenceExhausted = latestSequence.next.isEmpty
     )
 
   def disconnect(connection: ConnectionId): Option[DeviceLink] =

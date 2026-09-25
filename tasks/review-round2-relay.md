@@ -221,3 +221,71 @@ Validation (run from twitch-screen-relay):
 Residual:
 - Firmware `proto_codec.h` still names codes 4 and 6. That file only receives and logs them, and it is outside the relay unit.
 - The relay has no separate protocol-violation counter. For PROTO-16, the proof of "no violation" is the link staying up with no BYE and zero skip/resync counters.
+
+## PROTO-18 — contain sequence exhaustion
+
+Changes (all under `twitch-screen-relay/src/twitchscreen/relay/`; no wire change and no PROTOCOL.md change, since §10.1 already specifies the behaviour):
+- `device/DeviceHub.scala`:
+  - New typed refusal `private[relay] final case class SequenceExhausted(latest: SeqNo)`.
+  - `publish(EventRequest)`, `publishTransition` and `publish(NotificationRequest)` now return `Either[SequenceExhausted, Notification]`.
+  - `DeviceHubState.publish` no longer throws inside the actor. When `latestSequence.next` is `None`, it returns `Left` and mutates nothing: no seq, no replay-ring entry, no `notificationsPublished` increment, no `latestObservedStats` change, no frame.
+  - The first refusal logs one error line and publishes `RelayFailure("device-hub", "sequence space exhausted at 4294967295; restart the relay")`. A `private var exhaustionReported` latches that report, and later refusals log at debug level only. The latch also stops a loop: the router turns the RelayFailure into an Alert card, which the hub refuses without reporting again.
+  - Test seam: `private[relay] def startingAt(..., initialSequence: SeqNo)`. `start` delegates to it with `SeqNo.Zero`. It is `private[relay]` because `DeviceHub` is already `private[relay]` and `ApiSuite`, in the http package, uses it.
+- `device/HubSnapshot.scala`: new field `sequenceExhausted: Boolean`, derived as `latestSequence.next.isEmpty`.
+- `stats/StatsAggregator.scala`: `publishTransition(...) match { case Right(_) => (); case Left(_) => hub.broadcastStats(stats) }`. §6.5's STATS still lands and the supervised fork keeps running. There is no try/catch.
+- `device/NotificationApi.scala`: a refusal maps to `Fail.Unavailable("TSB/3 sequence space exhausted (§10.1); restart the relay to begin a new sequence space")`, which is HTTP 503 with a `{"error": …}` body. The endpoint description documents the 503.
+- `device/NotificationRouter.scala`: a comment only (the Either is discarded; the hub reports refusals itself).
+- `health/StatusApi.scala`: `DeviceLink_OUT.sequenceExhausted` is a new, additive JSON field.
+- `docs/reference/http-api.md`: POST /notifications documents the 503. The `deviceLink` row lists `sequenceExhausted`, and the 503 row in the status table mentions exhaustion.
+- `test/.../DeviceBackpressureSuite.scala`: adapted to the Either (`.fold(refused => fail(...), identity)`).
+
+Tests:
+- New `device/SequenceExhaustionSuite` (5 tests; the hub is seeded through `DeviceHub.startingAt`):
+  1. "the last u32 sequence is assigned and delivered, the next publish is refused without an EVENT or a wrap" (AC1, AC2). Seeded at 0xfffffffe:
+     - The next publish returns `Right` with seq `Max`, and a TestDevice receives EVENT seq 4294967295.
+     - The following publish returns `Left(SequenceExhausted(Max))`.
+     - After `broadcastStats`, the next frame is STATS.
+     - `latestSeq == Max`, `notificationsPublished` is unchanged, `sequenceExhausted` is true, and the newest recent notification is seq `Max`.
+  2. "an exhausted hub keeps serving attach, replay, snapshot and STATS" (AC3):
+     - A new device gets a WELCOME with `latestSeq == Max`, then STATS.
+     - A device reconnecting with `last_seq = Max-1` gets WELCOME, then exactly the seq-Max EVENT, then STATS.
+     - `links`, `snapshot` and `broadcastStats` still serve both devices.
+  3. "exhaustion is reported to the operator exactly once" (AC4):
+     - Setup: NotificationRouter is running, and a bus subscription is taken before the refusals.
+     - Three refusals (EventRequest, NotificationRequest, publishTransition), plus one routed follow.
+     - Asserts exactly one `RelayFailure("device-hub", _)` in a bounded drain, and `notificationsPublished == 1`.
+  4. "a stream lifecycle transition on an exhausted hub still delivers STATS and does not end the relay scope" (AC5). Seeded at Max, with NotificationRouter and StatsAggregator running:
+     - StreamStarted, then StreamEnded, produce only STATS frames: Live, then Offline. No EVENT is sent.
+     - `latestStats` is Offline, and the test body completes, so the scope is intact.
+  5. "POST /notifications on an exhausted hub is a documented 503" (AC6):
+     - Uses TapirSyncStubInterpreter.
+     - Asserts 503, a body containing `"error"` and `exhausted`, and nothing published.
+- `http/ApiSuite`, "the status endpoint reports whether the device link's sequence space is exhausted" (AC7): through the real StatusApi, the flag is `false` for `SeqNo.Zero` and `true` for `SeqNo.Max`.
+- `ProtocolBoundarySuite` (`SeqNo.Max.next == None`) is kept unchanged.
+
+Red to green:
+- Before the seam and the Either existed, the new suite did not compile (7 errors).
+- A red build was then made with the new signatures but with the exhaustion arm still throwing. All 5 tests failed:
+  - Test 4 ended the supervised scope with `IllegalStateException` out of the StatsAggregator fork. This is the crash the brief describes.
+  - Test 5 got 500 instead of 503.
+- With the fix, all 5 pass.
+- Observation while making test 4 deterministic: the StatsAggregator's first `Flow.tick` `Publish` can be processed just after start-up. With a 1 h interval, that tick emitted an extra STATS Live right after the StreamStarted input. Test 4 therefore reads frames until the expected STATS state (bounded to 8 frames) and asserts that every frame read is STATS.
+  - This is probably the source of the known `LifecycleOrderingSuite` flake. There, an extra STATS between the lifecycle EVENT/STATS pairs breaks the strict next-frame asserts.
+  - That suite is not changed here; this is a note for the integration step.
+
+Mutation checks (each applied with sed, run, then restored from a backup; `git diff --stat` confirmed the source was back each time):
+- (a) `StatsAggregator` `case Left(_) => ()` (fallback removed): test 4 fails, because no STATS Offline arrives (ComparisonFail after about 5 s).
+- (b) `if !exhaustionReported || true then` (latch defeated): test 3 fails because the failure count is greater than 1. The router's Alert card is refused and reported again.
+- (c) The exhaustion arm wraps: `latestSequence = SeqNo.Zero; Right(sequenced(...))`. All 5 tests fail, including 1 and 2.
+
+Validation (run from twitch-screen-relay):
+- `./mill --no-daemon test.testOnly twitchscreen.relay.device.SequenceExhaustionSuite` ×3 → 5/5, 0 failed, each time.
+- `./mill --no-daemon test.testOnly` over SequenceExhaustion, LifecycleOrdering, DeviceLink, DeviceBackpressure, NotificationRouter, ApiSuite, ManagementRoutes and ProtocolBoundary → 5 + 1 + 38 + 6 + 16 + 20 + 4 + 5, 0 failed.
+- `./mill --no-daemon compile` (`-Werror`) → SUCCESS.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` → SUCCESS; `git diff --check` clean.
+- `./mill --no-daemon test` → 30 suites, 347 tests (was 29/341), 0 failed on two consecutive runs.
+  - One earlier run hit the known `LifecycleOrderingSuite` flake. It passed alone (1/1).
+
+Residual:
+- Live exhaustion needs about 4.29e9 EVENTs, so it is proven only through the `startingAt` seam, not on a live relay.
+- Recovery is by restart only, as §10.1 specifies. No persisted counter exists or was added.

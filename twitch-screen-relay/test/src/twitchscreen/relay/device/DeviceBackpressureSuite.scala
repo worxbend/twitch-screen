@@ -117,7 +117,9 @@ class DeviceBackpressureSuite extends munit.FunSuite:
       assertEquals(hub.connectedCount, 1)
       assertEquals(counters.traffic.framesDropped, 1L)
       assertEquals(queue.receive().message.messageType, MessageType.Welcome)
-      val next = hub.publish(EventRequest.of(NotificationKind.Follow, "after-stats", ""))
+      val next = hub
+        .publish(EventRequest.of(NotificationKind.Follow, "after-stats", ""))
+        .fold(refused => fail(s"unexpected refusal $refused"), identity)
       assertEquals(next.seq, SeqNo(1L).toOption.get)
       assertEquals(queue.receive().message.messageType, MessageType.Stats)
       queue.receive().message match

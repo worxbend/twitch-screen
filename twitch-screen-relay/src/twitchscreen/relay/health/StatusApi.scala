@@ -22,7 +22,9 @@ final case class DeviceLink_OUT(
     connectionsAccepted: Long,
     notificationsPublished: Long,
     latestSeq: SeqNo,
-    replayBuffered: Int
+    replayBuffered: Int,
+    /** §10.1: the last `u32` seq has been assigned and every further notification is refused until the relay restarts. */
+    sequenceExhausted: Boolean
 ) derives Schema
 
 /** Readiness, as opposed to [[HealthApi]]'s liveness: everything an operator needs to decide whether the relay is doing its job, in one
@@ -67,7 +69,8 @@ final class StatusApi(
         connectionsAccepted = snapshot.connectionsAccepted,
         notificationsPublished = snapshot.notificationsPublished,
         latestSeq = snapshot.latestSeq,
-        replayBuffered = snapshot.replayBuffered
+        replayBuffered = snapshot.replayBuffered,
+        sequenceExhausted = snapshot.sequenceExhausted
       ),
       subscribers = bus.subscriberStats,
       activityEntries = activity.size,

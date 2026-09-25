@@ -39,8 +39,13 @@ private[relay] object StatsAggregator:
           (next, stats.map(figures => (figures, card)))
         .collect { case Some(output) => output }
         .runForeach:
-          case (stats, Some(card)) => hub.publishTransition(card, stats).discard
-          case (stats, None)       => hub.broadcastStats(stats)
+          case (stats, Some(card)) =>
+            hub.publishTransition(card, stats) match
+              case Right(_) => ()
+              // §10.1 exhaustion: the card is refused (and reported once, by the hub), but §6.5's STATS must still land and this
+              // fork must keep running, or one spent sequence space would end the relay's supervised scope.
+              case Left(_) => hub.broadcastStats(stats)
+          case (stats, None) => hub.broadcastStats(stats)
 
   /** Folding an event produces no output; a tick produces the frame every device then receives.
     *

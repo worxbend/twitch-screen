@@ -95,6 +95,8 @@ Useful kinds are `info`, `message`, `warning`, `alert`, `follow`, `sub`, `gift`,
 
 Every accepted POST creates a **new** notification. Retrying after an interrupted response can create a duplicate; there is no idempotency key. The response confirms publication and retention in the current process, including when no device is attached. It does not confirm rendering on a screen.
 
+HTTP `503` with `{"error": "TSB/3 sequence space exhausted (§10.1); …"}` means the relay has assigned the last `u32` sequence number, 4294967295. The relay never wraps the sequence, so it publishes nothing more until it is restarted. A restart begins a new sequence space, and devices re-baseline on it. The relay reports this once: an error log line and one `device-hub failed` relay failure, which appears in the activity log and the failure metrics. `GET /status` then reports `deviceLink.sequenceExhausted: true`. Retrying the POST does not help.
+
 Read recent cards:
 
 ```sh
@@ -123,7 +125,7 @@ It only establishes that the HTTP server can respond. Docker's health check uses
 |---|---|
 | `version`, `startedAt`, `uptimeSeconds` | Running version and process lifetime |
 | `twitch` | `mode`, `health`, `channel`, `detail` |
-| `deviceLink` | Connected devices, accepted connections, published notifications, latest sequence, replay count |
+| `deviceLink` | Connected devices, accepted connections, published notifications, latest sequence, replay count, and `sequenceExhausted` (true once the `u32` sequence space is spent; restart the relay) |
 | `subscribers` | Internal event-bus subscriber statistics, including losses |
 | `activityEntries`, `activeAlerts`, `bufferedLogRecords` | Current in-memory diagnostic counts |
 
@@ -222,7 +224,7 @@ Typical error shape:
 | `404` | Route/resource absent, stale connection/alert ID, or Twitch route not mounted |
 | `409` | Alert acknowledgement conflicts with current state |
 | `413` | Request body exceeds 65536 bytes |
-| `503` | Basic password verification is busy; retry with a modest delay |
+| `503` | Basic password verification is busy; retry with a modest delay. On `POST /notifications` it can instead mean the sequence space is exhausted; the `error` text says so, and only a relay restart clears it |
 | `500` | Internal server error; inspect redacted logs |
 
 Basic password verification permits two concurrent derivations; additional checks receive `503`. Prefer Bearer authentication for frequent automated polling. Retry GET requests as appropriate; notification POST retries can publish another card.

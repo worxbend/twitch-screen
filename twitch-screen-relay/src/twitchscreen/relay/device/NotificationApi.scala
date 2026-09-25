@@ -71,7 +71,11 @@ final class NotificationApi(hub: DeviceHub, config: NotificationsConfig) extends
       title <- required("title", request.title)
       body <- bounded("body", request.body)
       ttl <- ttlOf(request.ttlMs)
-    yield Notification_OUT.from(hub.publish(NotificationRequest(request.kind, title, body, ttl)))
+      published <- hub
+        .publish(NotificationRequest(request.kind, title, body, ttl))
+        .left
+        .map(_ => Fail.Unavailable(SequenceExhaustedMessage))
+    yield Notification_OUT.from(published)
 
   private def required(field: String, value: String): Either[Fail, String] =
     bounded(field, value).flatMap(text => Option(text.trim).filter(_.nonEmpty).toRight(Fail.IncorrectInput(s"$field must not be blank")))
@@ -88,6 +92,8 @@ object NotificationApi:
   private val DefaultPageSize = 20
   private val MaxTextLength = 4096
   private val MaxTtlMillis = 6553500L // u16 deciseconds, validated before FiniteDuration's nanosecond bound
+  private[device] val SequenceExhaustedMessage =
+    "TSB/3 sequence space exhausted (§10.1); restart the relay to begin a new sequence space"
 
   val listEndpoint: PublicEndpoint[Int, Fail, Notifications_OUT, Any] =
     Http.baseEndpoint.get
@@ -104,6 +110,6 @@ object NotificationApi:
       .out(jsonBody[Notification_OUT])
       .summary("Publish a notification to every attached device")
       .description(
-        "Returns 200 with the assigned sequence and replay record. Every accepted request creates a new notification; retries are not deduplicated. Text is limited to 4096 characters per field and ttlMs to 1–6553500; wire text may be truncated to fit the display."
+        "Returns 200 with the assigned sequence and replay record. Every accepted request creates a new notification; retries are not deduplicated. Text is limited to 4096 characters per field and ttlMs to 1–6553500; wire text may be truncated to fit the display. Returns 503 with a JSON error when the relay's u32 sequence space is exhausted; publication resumes only after a relay restart."
       )
       .tag("notifications")

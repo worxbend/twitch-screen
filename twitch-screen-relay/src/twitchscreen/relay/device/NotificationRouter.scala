@@ -31,7 +31,8 @@ private[relay] object NotificationRouter:
       message.event match
         // The statistics fold owns these cards so EVENT and its resulting STATS share one actor operation.
         case _: (RelayEvent.StreamStarted | RelayEvent.StreamEnded) => ()
-        case event                                                  => toRequest(event).foreach(hub.publish(_).discard)
+        // A refusal (§10.1 exhaustion) is reported by the hub itself, once; there is nothing more to do with it here.
+        case event => toRequest(event).foreach(hub.publish(_).discard)
 
   /** Chat is mapped unconditionally, `notifications.chat` notwithstanding. §10.3 requires every `EVENT` to be sequenced and replayable,
     * including chat: a kind skipped by the sequence space lets a later event hold the high-water mark past a lost durable one, which
