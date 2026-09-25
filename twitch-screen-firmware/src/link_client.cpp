@@ -106,7 +106,8 @@ bool writeFrame(const uint8_t *buf, size_t n) {
 // `floorMs` raises the floor (BYE.retry_after_s); `forceMax` jumps straight to
 // the cap, which is what §7 requires of BYE(1 UNSUPPORTED_VERSION): a version
 // mismatch needs a reflash, not a retry, and hammering the relay buries the one
-// log line that explains it.
+// log line that explains it. BYE(9 REPLACED) takes the cap too, so two devices
+// sharing an id do not evict each other at 1 s.
 void scheduleRetry(uint32_t floorMs, bool forceMax) {
   if (failures < 31) ++failures;
   uint32_t backoff = forceMax

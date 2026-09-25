@@ -907,7 +907,8 @@ device's first inbound frame MUST be `WELCOME` or `BYE`; anything else is a tear
 ## 12. Heartbeat, timers, reconnect
 
 Every value is unchanged from v2, which the firmware already implements correctly. Only the
-encoding changes.
+encoding changes. The backoff reset condition and the `REPLACED` cap in §12.1 are device-local
+refinements; nothing on the wire changes.
 
 | Timer | Owner | Value |
 |---|---|---|
@@ -919,7 +920,7 @@ encoding changes.
 | relay ping interval | relay | 20 s |
 | relay idle timeout | relay | 90 s with no inbound frame of any type |
 | stats broadcast | relay | every 5 s, plus one on greet, plus one after a stream transition |
-| reconnect backoff | device | 1 s doubling to a 30 s cap, +0…25 % jitter, forever; reset on `WELCOME` |
+| reconnect backoff | device | 1 s doubling to a 30 s cap, +0…25 % jitter, forever; reset after 60 s of stable streaming (device-local); `BYE(1)`/`BYE(9)` jump to the cap |
 
 The relay is deliberately more patient than the device so that the **device**, not the relay,
 decides when to reconnect. `ping_interval < idle_timeout` MUST hold on each side and the
@@ -939,10 +940,13 @@ as soon as the reader returns.
 ### 12.1 Backoff
 
 On any teardown the device closes the socket and retries with 1 s, 2 s, 4 s, 8 s, 16 s,
-capped at 30 s, plus up to 25 % jitter, forever. The backoff resets after a successful
-`WELCOME`. `BYE.retry_after_s`, when non-zero, raises the floor for the next attempt, and
-`BYE(1 UNSUPPORTED_VERSION)` goes straight to the 30 s cap (§7). WiFi loss tears the socket
-down immediately; reconnection follows WiFi.
+capped at 30 s, plus up to 25 % jitter, forever. The ramp resets only after the session has
+streamed continuously for 60 s after `WELCOME` (device-local `STABLE_STREAM_MS`). A session
+torn down sooner keeps climbing the ramp, so a flapping or duplicate-id device cannot
+reconnect at 1 s forever. `BYE.retry_after_s`, when non-zero, raises the floor for the next
+attempt. `BYE(1 UNSUPPORTED_VERSION)` (§7) and `BYE(9 REPLACED)` (§6.7) both go straight to
+the 30 s cap, plus jitter; a non-zero `retry_after_s` is still a minimum, never capped. WiFi
+loss tears the socket down immediately; reconnection follows WiFi.
 
 ---
 

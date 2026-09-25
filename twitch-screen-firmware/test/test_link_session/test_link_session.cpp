@@ -204,6 +204,41 @@ void testHeartbeatCapsAndBye() {
   check(bye.attempts == attempts, "BYE retry floor may exceed ordinary ramp cap");
   bye.time += 20; pump(bye); check(bye.attempts == attempts + 1, "BYE floor eventually retries");
 }
+void byeCode(FakeTransport &t, uint8_t code) {
+  std::vector<uint8_t> f(gv::BYE_VERSION_MISMATCH,
+      gv::BYE_VERSION_MISMATCH + sizeof(gv::BYE_VERSION_MISMATCH));
+  f[8] = code; f[9] = 0;     // BYE code
+  f[12] = 0; f[13] = 0;      // retry_after_s = 0: no relay-supplied floor
+  f[7] = tsb::headerCheck(f.data());
+  t.add(f.data(), f.size());
+}
+// §12.1 — BYE(9 REPLACED) and BYE(1 UNSUPPORTED_VERSION) skip the 1 s ramp and
+// wait the full 30 s cap even when retry_after_s is 0 (jitter is 0 here).
+void byeJumpsToCap(uint8_t code, const char *tears, const char *waits,
+                   const char *once, const char *noDup) {
+  FakeTransport r; reset(r); greet(r);
+  byeCode(r, code); const uint32_t t0 = r.time; pump(r, 1);
+  check(r.closed && !linkIsUp(), tears);
+  const int a = r.attempts;
+  r.time = t0 + 1000;  pump(r, 1);
+  r.time = t0 + 2000;  pump(r, 1);
+  r.time = t0 + 29999; pump(r, 1);
+  check(r.attempts == a, waits);
+  r.time = t0 + 30000; pump(r, 1);
+  check(r.attempts == a + 1, once);
+  pump(r, 5);
+  check(r.attempts == a + 1, noDup);
+}
+void testReplacedAndVersionByeJumpToCap() {
+  byeJumpsToCap(tsb::BYE_REPLACED, "REPLACED BYE tears down",
+                "REPLACED waits for 30 s cap, not the 1 s ramp",
+                "REPLACED: exactly one attempt at 30 s cap",
+                "REPLACED: no duplicate attempt after cap");
+  byeJumpsToCap(tsb::BYE_UNSUPPORTED_VERSION, "UNSUPPORTED_VERSION BYE tears down",
+                "UNSUPPORTED_VERSION with retry_after 0 still jumps to 30 s cap",
+                "UNSUPPORTED_VERSION: exactly one attempt at 30 s cap",
+                "UNSUPPORTED_VERSION: no duplicate attempt after cap");
+}
 void testStableRecoveryAndWrap() {
   FakeTransport t; reset(t); greet(t);
   t.edge = true; pump(t); t.time += 1000; greet(t);
@@ -232,7 +267,7 @@ void testRefusalAndInvalidHandshake() {
 int main() {
   testHandshakeAndTimeouts(); testWifiEdgeAndBackoff(); testProlongedOutage(); testWritesAndAck();
   testBurst(); testRefusalAndInvalidHandshake();
-  testHeartbeatCapsAndBye(); testStableRecoveryAndWrap();
+  testHeartbeatCapsAndBye(); testReplacedAndVersionByeJumpToCap(); testStableRecoveryAndWrap();
   testPausedQueueTimersAndWrongVersion();
   printf("%d checks, %d failures\n", checks, failures);
   return failures != 0;
