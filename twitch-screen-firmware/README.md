@@ -45,6 +45,8 @@ fi
 
 Edit `src/credentials.h`: enter your Wi-Fi credentials, the relay computer's **LAN address**, TCP port `8099`, and optionally a unique device name. Leave `DEVICE_ID` empty for an automatic chip-derived identity. Do not commit this header or share a firmware binary containing your private settings.
 
+The Wi-Fi password is recoverable from the firmware image/flash: this build does not enable flash encryption or secure boot. Use a trusted home network and physical device access; changing provisioning/security requires a separate migration with device recovery planning. HELLO identity/version control and non-ASCII bytes are replaced with `_` before transmission. The device TCP link is plaintext and unauthenticated; see the [protocol threat model](docs/PROTOCOL.md#2-transport-and-endianness).
+
 Run these commands sequentially from `twitch-screen-firmware/`:
 
 ```sh
@@ -111,9 +113,14 @@ From the repository root:
 
 ```sh
 python3 tools/check_protocol_vectors.py
+.venv-pio/bin/python twitch-screen-firmware/tools/test_runner_contract.py
 ```
 
 This checks the shared normative protocol vectors. Native tests and an ESP32 compile establish software results; they do not establish physical LCD rendering, Wi-Fi outage recovery or watchdog behavior on hardware. Record those observations separately after any upload.
+
+Boot logs report watchdog initialization/subscription status and the configured 10-second timeout. Every minute the loop reports its minimum free stack in bytes. Exercise live cards, long text, replay bursts and reconnects before recording hardware headroom; no measured minimum is asserted by host tests. LVGL allocation/assertion failures halt rendering with a repeated serial diagnostic while keeping the idle task/watchdog fed, avoiding an allocation-triggered reboot loop. UART diagnostics are dropped when the output buffer is full so replay cannot block the display loop.
+
+Replay cards appear immediately without entrance effects. Routine live cards slide once; WARNING/ALERT retain the attention flash. Hidden dashboard timers and animations pause until visible again. Full-queue input pauses end after twice the relay's advertised idle timeout (180 seconds for the default 90-second idle), then reconnect for replay without advancing the queue sequence.
 
 PlatformIO commands share a package store: do not run installs/builds concurrently. If an old global virtual environment stops importing PlatformIO after a Python update, use the isolated setup above.
 
