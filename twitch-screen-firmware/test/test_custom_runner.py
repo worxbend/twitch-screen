@@ -1,4 +1,4 @@
-"""PlatformIO test runner for the two host suites.
+"""PlatformIO test runner for the host suites.
 
 Why a custom runner rather than Unity: both suites assert the SPEC's bytes — the
 golden vectors of docs/PROTOCOL.md §18 — and they do it by comparing a frame the

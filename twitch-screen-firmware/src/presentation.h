@@ -15,8 +15,8 @@ inline void formatCount(char *out, size_t size, uint32_t value) {
                         value >= 1000000u ? 1000000u : 1000u;
   const char suffix = unit == 1000000000u ? 'B' : unit == 1000000u ? 'M' : 'K';
   if (value / unit < 10)
-    snprintf(out, size, "%lu.%lu%c", (unsigned long)(value / unit),
-             (unsigned long)((value % unit) / (unit / 10)), suffix);
+    snprintf(out, size, "%c.%c%c", (int)('0' + value / unit),
+             (int)('0' + (value % unit) / (unit / 10)), suffix);
   else snprintf(out, size, "%lu%c", (unsigned long)(value / unit), suffix);
 }
 
