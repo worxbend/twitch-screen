@@ -43,68 +43,47 @@ private[twitch] object HelixPoller:
         sleep(context.config.pollInterval)
 
   private[twitch] def poll(helix: TwitchHelix, context: PollingContext, tokens: TokenProvider, appTokenRejected: () => Unit): Unit =
-    import context.*
-    pollStream(helix, config, tracker, bus, clock, health, appTokenRejected)
+    pollStream(helix, context, appTokenRejected)
     tokens
       .tokenFor(TwitchScopes.Followers)
-      .foreach(token => pollFollowers(helix, token, broadcasterId, bus, health, () => tokens.reject(token)))
+      .foreach(token => pollFollowers(helix, context, token, () => tokens.reject(token)))
     tokens
       .tokenFor(TwitchScopes.Subscriptions)
-      .foreach(token => pollSubscribers(helix, token, broadcasterId, bus, health, () => tokens.reject(token)))
-    health.observe(HealthComponent.Poll, None)
+      .foreach(token => pollSubscribers(helix, context, token, () => tokens.reject(token)))
+    context.health.observe(HealthComponent.Poll, None)
 
   /** Streams are read with the application token (`null` credential), so a 401 here means that token is no longer valid. */
-  private[twitch] def pollStream(
-      helix: TwitchHelix,
-      config: TwitchConfig,
-      tracker: ChannelStateTracker,
-      bus: EventBus,
-      clock: Clock,
-      health: TwitchRuntimeHealth,
-      appTokenRejected: () => Unit
-  ): Unit =
-    attempt(HealthComponent.Streams, health, appTokenRejected):
-      helix.getStreams(null, null, null, 1, null, null, null, List(config.channel).asJava).execute()
+  private[twitch] def pollStream(helix: TwitchHelix, context: PollingContext, appTokenRejected: () => Unit): Unit =
+    attempt(HealthComponent.Streams, context.health, appTokenRejected):
+      helix.getStreams(null, null, null, 1, null, null, null, List(context.config.channel).asJava).execute()
     .foreach: streams =>
       streams.getStreams.asScala.headOption match
         case Some(stream) =>
           // Helix's own `started_at` is what §6.4.1 puts in `STREAM_START.value`; the moment this poll happened to
           // run is not it, and would move the stream's start time on every relay restart.
-          tracker.channelInfo(stream.getTitle, stream.getGameName)
-          tracker
+          context.tracker.channelInfo(stream.getTitle, stream.getGameName)
+          context.tracker
             .observedLive(
               Option(stream.getTitle).getOrElse(""),
               Option(stream.getGameName).getOrElse(""),
               Option(stream.getStartedAtInstant),
-              publish = bus.publish
+              publish = context.bus.publish
             )
             .discard
-          bus.publish(RelayEvent.ViewersObserved(Count.clamp(intOr(stream.getViewerCount)), uptimeOf(stream.getStartedAtInstant, clock)))
-        case None => tracker.observedOffline(bus.publish).discard
+          context.bus.publish(
+            RelayEvent.ViewersObserved(Count.clamp(intOr(stream.getViewerCount)), uptimeOf(stream.getStartedAtInstant, context.clock))
+          )
+        case None => context.tracker.observedOffline(context.bus.publish).discard
 
-  private def pollFollowers(
-      helix: TwitchHelix,
-      userToken: String,
-      broadcasterId: String,
-      bus: EventBus,
-      health: TwitchRuntimeHealth,
-      unauthorized: () => Unit
-  ): Unit =
-    attempt(HealthComponent.Followers, health, unauthorized):
-      helix.getChannelFollowers(userToken, broadcasterId, null, 1, null).execute()
-    .foreach(followers => bus.publish(RelayEvent.FollowersObserved(Count.clamp(intOr(followers.getTotal)))))
+  private def pollFollowers(helix: TwitchHelix, context: PollingContext, userToken: String, reject: () => Unit): Unit =
+    attempt(HealthComponent.Followers, context.health, reject):
+      helix.getChannelFollowers(userToken, context.broadcasterId, null, 1, null).execute()
+    .foreach(followers => context.bus.publish(RelayEvent.FollowersObserved(Count.clamp(intOr(followers.getTotal)))))
 
-  private def pollSubscribers(
-      helix: TwitchHelix,
-      userToken: String,
-      broadcasterId: String,
-      bus: EventBus,
-      health: TwitchRuntimeHealth,
-      unauthorized: () => Unit
-  ): Unit =
-    attempt(HealthComponent.Subscribers, health, unauthorized):
-      helix.getSubscriptions(userToken, broadcasterId, null, null, 1).execute()
-    .foreach(subscriptions => bus.publish(RelayEvent.SubscribersObserved(Count.clamp(intOr(subscriptions.getTotal)))))
+  private def pollSubscribers(helix: TwitchHelix, context: PollingContext, userToken: String, reject: () => Unit): Unit =
+    attempt(HealthComponent.Subscribers, context.health, reject):
+      helix.getSubscriptions(userToken, context.broadcasterId, null, null, 1).execute()
+    .foreach(subscriptions => context.bus.publish(RelayEvent.SubscribersObserved(Count.clamp(intOr(subscriptions.getTotal)))))
 
   /** One Helix endpoint failing must not cost the others their poll — a missing `moderator:read:followers` scope should not hide the viewer
     * count. This is the boundary where twitch4j's exceptions become values.

@@ -344,3 +344,62 @@ class TwitchAuthSuite extends munit.FunSuite:
       auth.maintain()
       assertEquals(snapshot.getAccessToken, "access-1")
       assertEquals(usableAccess(auth), Some("access-2"))
+
+  private val bothScopes = List(TwitchScopes.Followers, TwitchScopes.Subscriptions)
+
+  tempDir.test("the broadcaster token provider supplies a scoped token only for the configured channel's own grant"): dir =>
+    supervised:
+      val clock = MovableClock(start)
+      val auth = newAuth(dir, clock, ScriptedTwitch(clock))
+      auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
+      val own = TokenProvider.broadcaster(auth, "somechannel")
+      assertEquals(bothScopes.map(own.tokenFor), List(Some("access-1"), Some("access-1")))
+      assertEquals(TokenProvider.broadcaster(auth, "SomeChannel").tokenFor(TwitchScopes.Followers), Some("access-1"))
+      val other = TokenProvider.broadcaster(auth, "otherchannel")
+      assertEquals(bothScopes.map(other.tokenFor), List(None, None), "a grant owned by another login must not be used")
+
+  tempDir.test("the broadcaster token provider withholds a scope the grant lacks"): dir =>
+    supervised:
+      val clock = MovableClock(start)
+      val auth = newAuth(dir, clock, ScriptedTwitch(clock))
+      auth.completeAuthorization("partial", stateOf(auth.beginAuthorization())).discard
+      val provider = TokenProvider.broadcaster(auth, "somechannel")
+      assertEquals(provider.tokenFor(TwitchScopes.Followers), None)
+      assertEquals(provider.tokenFor(TwitchScopes.Subscriptions), Some("access-1"))
+
+  tempDir.test("the broadcaster token provider withholds an expired grant"): dir =>
+    supervised:
+      val clock = MovableClock(start)
+      val auth = newAuth(dir, clock, ScriptedTwitch(clock))
+      auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
+      clock.now = start.plusSeconds(4 * 3600)
+      val provider = TokenProvider.broadcaster(auth, "somechannel")
+      assertEquals(bothScopes.map(provider.tokenFor), List(None, None))
+      assert(auth.view.held.isDefined, "the grant is retained for refresh, just not supplied")
+
+  tempDir.test("rejecting a token through the broadcaster provider withholds only that grant"): dir =>
+    supervised:
+      val clock = MovableClock(start)
+      val auth = newAuth(dir, clock, ScriptedTwitch(clock))
+      auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
+      val provider = TokenProvider.broadcaster(auth, "somechannel")
+      provider.reject("access-unrelated")
+      assertEquals(provider.tokenFor(TwitchScopes.Followers), Some("access-1"), "rejecting a token nobody holds changes nothing")
+      provider.reject("access-1")
+      assertEquals(bothScopes.map(provider.tokenFor), List(None, None))
+      auth.maintain()
+      assertEquals(provider.tokenFor(TwitchScopes.Followers), Some("access-2"))
+
+  tempDir.test("a stale token's rejection leaves a newer grant usable"): dir =>
+    supervised:
+      val clock = MovableClock(start)
+      val auth = newAuth(dir, clock, ScriptedTwitch(clock))
+      auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
+      val provider = TokenProvider.broadcaster(auth, "somechannel")
+      clock.now = start.plusSeconds(4 * 3600 - 10 * 60)
+      auth.maintain()
+      assertEquals(provider.tokenFor(TwitchScopes.Followers), Some("access-2"))
+      // A late 401 from a poll that still used the refreshed-away token.
+      provider.reject("access-1")
+      assertEquals(provider.tokenFor(TwitchScopes.Followers), Some("access-2"))
+      assert(auth.view.usable.isDefined)

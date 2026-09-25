@@ -197,6 +197,9 @@ class TwitchRecoverySuite extends munit.FunSuite:
         command(mapper.readValue("""{"data":[],"total":3}""", classOf[com.github.twitch4j.helix.domain.SubscriptionList]))
       case other => fail(s"unexpected method $other")
 
+  private def contextOf(bus: EventBus, health: TwitchRuntimeHealth)(using ox.Ox): PollingContext =
+    PollingContext(config, "123", ChannelStateTracker(config.channel, Clock.systemUTC()), bus, Clock.systemUTC(), health)
+
   test("a streams poll with a rejected application token requests a rebuild without rejecting the user grant"):
     supervised:
       val bus = EventBus(Clock.systemUTC(), 64)
@@ -205,7 +208,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
       val userRejected = AtomicBoolean(false)
       HelixPoller.poll(
         streamsFailing(unauthorizedCause("streams")),
-        PollingContext(config, "123", ChannelStateTracker(config.channel, Clock.systemUTC()), bus, Clock.systemUTC(), health),
+        contextOf(bus, health),
         new TokenProvider:
           override def tokenFor(scope: String): Option[String] = Some("user-token")
           override def reject(token: String): Unit = userRejected.set(true)
@@ -232,7 +235,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
           case other                 => fail(s"unexpected method $other")
       HelixPoller.poll(
         client,
-        PollingContext(config, "123", ChannelStateTracker(config.channel, Clock.systemUTC()), bus, Clock.systemUTC(), health),
+        contextOf(bus, health),
         new TokenProvider:
           override def tokenFor(scope: String): Option[String] = Some("user-token")
           override def reject(token: String): Unit = userRejected.set(true)
@@ -248,15 +251,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
       val bus = EventBus(Clock.systemUTC(), 64)
       val health = TwitchRuntimeHealth(config, bus)
       val appRejected = AtomicBoolean(false)
-      HelixPoller.pollStream(
-        streamsFailing(IllegalStateException("network timeout")),
-        config,
-        ChannelStateTracker(config.channel, Clock.systemUTC()),
-        bus,
-        Clock.systemUTC(),
-        health,
-        () => appRejected.set(true)
-      )
+      HelixPoller.pollStream(streamsFailing(IllegalStateException("network timeout")), contextOf(bus, health), () => appRejected.set(true))
       assert(!appRejected.get())
       assert(health.failure(HealthComponent.Streams).isDefined)
 
@@ -289,11 +284,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
             val restart = AtomicBoolean(false)
             HelixPoller.pollStream(
               streamsFailing(unauthorizedCause("streams")),
-              config,
-              ChannelStateTracker(config.channel, Clock.systemUTC()),
-              EventBus(Clock.systemUTC(), 64),
-              Clock.systemUTC(),
-              health,
+              contextOf(EventBus(Clock.systemUTC(), 64), health),
               LiveTwitchSource.appTokenRejected(health, restart)
             )
             // What maintainSubscriptions does with the flag: the session returns so its scope closes the client.

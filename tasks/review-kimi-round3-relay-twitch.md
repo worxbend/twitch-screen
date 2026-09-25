@@ -500,3 +500,44 @@ resources/application.conf:80:    scopes = ["moderator:read:followers", "channel
 ```
 
 Every hit is one of these: the constants, the guarded HOCON default and its comment, the one wire-format assertion kept on purpose, or doc comments.
+
+## K-043: HelixPoller 9-param signature + closures into TwitchAuth
+
+- Severity: Medium-smell. Area: relay-twitch.
+- **Disposition: fixed.** It closes the `[partial]` gap. The per-endpoint helpers no longer take the destructured context as a parameter list, and `TokenProvider.broadcaster` now has direct tests.
+
+### Change
+
+- `twitch-screen-relay/src/twitchscreen/relay/twitch/HelixPoller.scala`
+  - `private[twitch] def pollStream(helix: TwitchHelix, context: PollingContext, appTokenRejected: () => Unit)` takes 3 parameters, down from 7. It reads `context.config.channel`, `context.tracker`, `context.bus.publish`, `context.clock` and `context.health`. The body is otherwise unchanged, including the `STREAM_START` comment. Scalafmt wrapped the `ViewersObserved` publish across lines because it gained the `context.` prefix.
+  - `pollFollowers` and `pollSubscribers` are now `(helix, context: PollingContext, userToken, reject: () => Unit)`, with 4 parameters, down from 6. They read `context.broadcasterId`, `context.bus` and `context.health`.
+  - `poll` no longer has `import context.*`. It calls `pollStream(helix, context, appTokenRejected)`, then the followers poll, then the subscribers poll, then `context.health.observe(Poll, None)`. The order is unchanged. Each user-token callback is still `() => tokens.reject(token)`.
+  - `start`, `attempt`, `uptimeOf`, `intOr` and `isUnauthorized` are unchanged. The scaladoc on the two rejection callbacks still holds, and no parameter it names was renamed.
+- `twitch-screen-relay/test/src/twitchscreen/relay/twitch/TwitchRecoverySuite.scala`
+  - Added the private helper `contextOf(bus, health)(using Ox): PollingContext`. It needs `using Ox` because `ChannelStateTracker` forks.
+  - All four `PollingContext` sites use the helper: the two `poll` tests and the two `pollStream` tests.
+  - The two `pollStream` callers use the 3-argument form. Each test keeps its own bus and health, and the rebuild test still passes a fresh `EventBus`. Assertions are unchanged.
+- `twitch-screen-relay/test/src/twitchscreen/relay/twitch/TwitchAuthSuite.scala`: five new tests go through the production adapter `TokenProvider.broadcaster(auth, channel)`.
+  - "the broadcaster token provider supplies a scoped token only for the configured channel's own grant" returns `access-1` for both scopes on `somechannel`, and also for `SomeChannel` because the owner match ignores case. It returns `None` for both scopes on `otherchannel`, a grant owned by another login.
+  - "the broadcaster token provider withholds a scope the grant lacks" uses the `partial` grant: followers gives `None` and subscriptions gives `access-1`.
+  - "the broadcaster token provider withholds an expired grant" advances the clock to expiry without `maintain`. Both scopes give `None` and `view.held` is still defined.
+  - "rejecting a token through the broadcaster provider withholds only that grant": `reject("access-unrelated")` leaves `access-1` usable. `reject("access-1")` withholds both scopes. After `maintain()`, the token is `access-2`.
+  - "a stale token's rejection leaves a newer grant usable": after a refresh to `access-2`, a late `reject("access-1")` still leaves `access-2`, and `view.usable` is still defined.
+
+### Red, then green
+
+- The refactor keeps behaviour unchanged, so it has no production red. The existing `TwitchRecoverySuite` poll and `pollStream` tests pass with the same assertions through the new signatures.
+- The new `TokenProvider.broadcaster` tests pin behaviour that already exists, so they passed against the current code: `TwitchAuthSuite` has 23 tests, up from 18. To check that they detect regressions, I made two temporary mutations to `TokenProvider.scala` and reverted each one afterwards (`git diff` shows no change to that file):
+  1. Dropping the owner/channel filter (`auth.view.usable.filter(_.scopes.contains(scope))`) failed "the broadcaster token provider supplies a scoped token only for the configured channel's own grant".
+  2. Making `reject` ignore which token it got (`auth.rejectAccessToken()`) failed "rejecting a token through the broadcaster provider withholds only that grant" and "a stale token's rejection leaves a newer grant usable".
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.twitch.TwitchAuthSuite'` | SUCCESS. 23 tests, 0 failed, up from 18. |
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.twitch.*'` | SUCCESS. 12 suites, 132 tests, 0 failed. `TwitchRecoverySuite` has 30 tests. |
+| `./mill --no-daemon compile` | SUCCESS, with `-Werror` |
+| `./mill --no-daemon test` | SUCCESS. 44 suites, 487 tests, 0 failed, 0 ignored. |
+| `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
+| `grep -n 'import context\|pollStream(' src/twitchscreen/relay/twitch/HelixPoller.scala test/src/twitchscreen/relay/twitch/TwitchRecoverySuite.scala` | No `import context`. The only hits are the new 3-parameter definition (HelixPoller:56), the call in `poll` (HelixPoller:46) and the two 3-argument test calls (TwitchRecoverySuite:254, :285). |
