@@ -14,7 +14,7 @@ Authorization: Bearer <your-relay-management-token>
 
 or HTTP Basic credentials. `curl --user admin` prompts for the plaintext management password. The relay stores a PBKDF2 verifier for Basic login. Twitch's Client Secret and broadcaster access token are separate credentials and cannot authenticate management requests.
 
-Health, aggregate stats, Swagger documentation, and the exact OAuth/EventSub callbacks are public. Callbacks validate their own protocol credentials. Every other route below requires management authentication. Cross-site browser requests using Basic credentials can receive `403`; use the relay directly in the address bar and preserve the public Host header through an HTTPS proxy.
+Health, aggregate stats, Swagger documentation, and the exact OAuth/EventSub callbacks are public. Callbacks validate their own protocol credentials. Every other route below requires management authentication. Basic password verification permits two concurrent checks; excess checks receive `503` and can retry. Bearer authentication does not use that budget. Only `401` includes `WWW-Authenticate`. Cross-site browser requests using Basic credentials can receive `403`; use the relay directly in the address bar and preserve the public Host header through an HTTPS proxy.
 
 | Contract | Behavior |
 |---|---|
@@ -105,6 +105,8 @@ curl --fail --silent --show-error \
   'http://localhost:8080/api/v1/notifications?pageSize=20'
 ```
 
+Notifications with no known source timestamp omit `at`; they no longer claim the Unix epoch. Locally published cards have a timestamp.
+
 The default `pageSize` is 20. The response combines the two replay rings: up to 64 non-chat notifications by default and a separate fixed 16 chat notifications. Requesting 500 does not create a longer history.
 
 ## Health, readiness, and stats 🩺
@@ -129,7 +131,7 @@ It only establishes that the HTTP server can respond. Docker's health check uses
 | `subscribers` | Internal event-bus subscriber statistics, including losses |
 | `activityEntries`, `activeAlerts`, `bufferedLogRecords` | Current in-memory diagnostic counts |
 
-Twitch health may be `Disabled`, `Connecting`, `Connected`, `Degraded`, or `Disconnected`. Read the detail with it; HTTP can be healthy while the broadcaster grant is missing. The status route returns a snapshot rather than converting every degraded condition into a failing HTTP status.
+Twitch health may be `Disabled`, `Connecting`, `Connected`, `Degraded`, or `Disconnected`. Read the detail with it; HTTP can be healthy while the broadcaster grant is missing. The status route reads a nonblocking hub snapshot and does not convert every degraded condition into a failing HTTP status. Subscriber `delivered` counts events accepted into its queue, not completed handler calls. Repeated failures update an open alert’s message without reopening or unacknowledging it.
 
 ## Inspect and reconnect a device 📡
 
@@ -139,7 +141,7 @@ curl --fail --silent --show-error \
   http://localhost:8080/api/v1/devices
 ```
 
-The `devices` array includes numeric `connection`, firmware `device` identity, remote address, protocol version, connection/last-seen timestamps, baseline and acknowledged sequence, byte/frame counts, dropped/skipped frame counts, invalid-field counters, and resynchronization counts. The listener permits at most 64 sessions, including pending handshakes.
+The `devices` array includes numeric `connection`, firmware `device` identity, `remoteAddress`, `protocolVersion`, `connectedAt`, `baselineSeq`, and a nested `traffic` object. `traffic` contains last-seen timestamps, acknowledged sequence, byte/frame counts, dropped/skipped frame counts, invalid-field counters, and resynchronization counts. Clients using formerly top-level traffic fields must now read them under `traffic`. The listener permits at most 64 sessions, including pending handshakes.
 
 Use the current **connection number**, not the device name, in per-connection URLs. For example, when the list reports connection 7:
 
@@ -153,7 +155,7 @@ curl --fail --silent --show-error --request POST \
   http://localhost:8080/api/v1/devices/7:disconnect
 ```
 
-Disconnect closes the socket and returns its snapshot. It does not permanently block a device; firmware reconnects on its backoff schedule. A stale connection number returns `404`. This is useful for checking reconnect behavior while retained replay remains available.
+Disconnect drains accepted frames, sends a final operator-disconnect BYE, closes the socket, and returns its snapshot. It does not permanently block a device; firmware reconnects on its backoff schedule. A stale connection number returns `404`. This is useful for checking reconnect behavior while retained replay remains available.
 
 ## Activity, logs, and alerts 🧾
 
@@ -201,7 +203,7 @@ The OAuth endpoints exist only in live mode:
 
 - **`GET /twitch/authorize`** returns `302` with a Twitch `Location` URL and `Cache-Control: no-store`. It starts a single-use, ten-minute state. Do not follow it with a client that would forward management credentials to Twitch.
 - **`GET /twitch/callback`** receives Twitch's `code` and `state`, or its error parameters. It returns HTML with `200` or `400`. Start at `/authorize`, not a manually constructed callback.
-- **`GET /twitch/authorization`** returns `authorized`, optional `login`/`userId`/`expiresAt`, `scopes`, `missingScopes`, and `authorizeUrl`. `authorized` reports that a grant is held; readiness is separate. Tokens are never returned.
+- **`GET /twitch/authorization`** returns `authorized`, optional `login`/`userId`/`expiresAt`, `scopes`, `missingScopes`, and `authorizeUrl`. `authorized` is true only while the retained grant is usable. Expired or rejected grants may retain identity and scopes for diagnosis while reporting false; readiness remains separate. Tokens are never returned.
 - **`DELETE /twitch/authorization`** clears the in-memory grant and attempts saved-file deletion and provider revocation. It returns `204`, or `404` when none is held. File-deletion and provider failures are logged; confirm that the saved token file is gone before relying on sign-out across a restart.
 
 Follow [Twitch setup](../guides/twitch-app-setup.md) for app registration, login identity, and callback routing.
@@ -230,3 +232,4 @@ Typical error shape:
 Basic password verification permits two concurrent derivations; additional checks receive `503`. Prefer Bearer authentication for frequent automated polling. Retry GET requests as appropriate; notification POST retries can publish another card.
 
 Source trail: [API assembly](../../twitch-screen-relay/src/twitchscreen/relay/Apis.scala), [HTTP transport](../../twitch-screen-relay/src/twitchscreen/relay/http/HttpApi.scala), [notification contract](../../twitch-screen-relay/src/twitchscreen/relay/device/NotificationApi.scala), and [authentication](../../twitch-screen-relay/src/twitchscreen/relay/http/ManagementAuth.scala).
+

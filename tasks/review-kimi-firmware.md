@@ -24,7 +24,7 @@ vector-generation anchoring and cross-project integration.
 | uiNotifyShow long method | Fixed: extracted kind presentation, text binding and entrance handling. |
 | Backoff burned while close-worker/DNS unavailable | Fixed: `readyForConnect()` defers local resource waits without increasing the failure count. DNS is cancelled on timeout instead of remaining unavailable. Session regression verifies the first actual failure still uses initial backoff. |
 | WELCOME trusts unadvertised capability bits | Fixed: intersect with `DEVICE_CAPS` before storing and forwarding capabilities; regression checks the all-capabilities golden WELCOME. |
-| Backoff reset contradicts protocol prose | Firmware already resets only after 60 seconds of stable streaming, with a host regression; root updates the protocol prose to this behavior. |
+| Backoff reset contradicts protocol prose | Already aligned on baseline: firmware and protocol §12/§12.1 require 60 seconds of stable streaming. Existing host regression retained. |
 | Null close-task notification | Fixed: descriptor acquisition requires a created worker; the notification is additionally guarded. Impossible fallback retains descriptor ownership and emits a diagnostic instead of notifying null. |
 | Replay cards still animate | Fixed: replay immediately displays at y=0 with full opacity and no entrance, attention flash or ring pulse; also dismisses immediately after its hold. |
 | Asset descriptor trusts generated size | Fixed: static assertions bind 48/84-pixel RGB565 arrays to their dimensions. |

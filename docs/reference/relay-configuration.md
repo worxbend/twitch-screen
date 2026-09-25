@@ -65,7 +65,7 @@ Live callback validation accepts HTTPS or HTTP on the recognized loopback hosts 
 
 The backend receives access and refresh tokens through consent; there is **no user-access-token environment setting**. The grant's login must match `RELAY_TWITCH_CHANNEL`. A missing grant keeps relevant integrations awaiting authorization; it is not a reason to paste a Twitch token into firmware.
 
-Changing scope configuration requires a new consent round to obtain new permissions. The default follow and subscriber scopes are also expected by integration readiness checks; reducing the list can leave the source degraded.
+Changing scope configuration requires a new consent round to obtain new permissions. Readiness checks require only configured scopes. Reduced-scope grants still receive scope-free stream lifecycle and channel updates; follow and subscriber polling require their respective scopes. Scope names must be distinct and nonblank; an empty list is supported.
 
 ## EventSub transport 📬
 
@@ -96,7 +96,7 @@ Live and simulated Twitch event cards use protocol-defined TTLs: follows/chat 6 
 
 | Environment variable | HOCON key | Default | Meaning / constraint |
 |---|---|---|---|
-| `RELAY_ACTIVITY_BUFFER_SIZE` | `activity.buffer-size` | `500` | Positive number of retained activity entries |
+| `RELAY_ACTIVITY_BUFFER_SIZE` | `activity.buffer-size` | `500` | 1–65536 retained activity entries |
 | `RELAY_ALERT_NO_DEVICES_FOR` | `alerts.no-devices-connected-for` | `2 minutes` | Positive duration before the no-device rule triggers |
 | `RELAY_ALERT_TWITCH_DISCONNECTED_FOR` | `alerts.twitch-disconnected-for` | `1 minute` | Positive duration for the Twitch-disconnected rule |
 | `RELAY_ALERT_STREAM_OFFLINE_FOR` | `alerts.stream-offline-for` | Unset | Positive duration to enable the offline-stream rule |
@@ -111,20 +111,20 @@ These settings have **no explicit environment override** in the shipped file:
 |---|---|---|
 | `device-link.protocol-version` | `3` | Must be exactly 3 |
 | `device-link.accept-backlog` | `16` | Positive TCP accept backlog |
-| `device-link.handshake-timeout` | `5 seconds` | Positive time to receive the device greeting |
+| `device-link.handshake-timeout` | `5 seconds` | At least 1 ms to receive the device greeting |
 | `device-link.ping-interval` | `20 seconds` | 1–65535 whole seconds; shorter than idle timeout |
-| `device-link.outbound-queue-capacity` | `128` | Must hold at least `replay-buffer-size + 18` greeting frames |
+| `device-link.outbound-queue-capacity` | `128` | Must hold at least `replay-buffer-size + 18` greeting frames; at most 65553 |
 | `device-link.replay-buffer-size` | `64` | 1–65535 retained non-chat notifications; chat has a separate fixed 16-record ring |
 | `device-link.max-frame-length` | `256` | Must be exactly 256 bytes, including header |
 | `twitch.oauth.refresh-before` | `15 minutes` | Positive lead time for token refresh |
 | `twitch.simulation.chat-interval` | `2 seconds` | Positive synthetic-chat interval |
-| `bus.subscriber-queue-capacity` | `1024` | Positive per-consumer event queue capacity |
+| `bus.subscriber-queue-capacity` | `1024` | 1–65536 entries per consumer |
 | `stats.chat-rate-window` | `1 minute` | Positive rolling rate window |
 | `alerts.evaluation-interval` | `15 seconds` | Positive rule evaluation cadence |
-| `alerts.buffer-size` | `100` | Positive alert retention count |
+| `alerts.buffer-size` | `100` | 1–65536 retained alerts |
 | `alerts.error-rate-threshold` | `10` | Nonnegative threshold within the error-rate window |
-| `alerts.error-rate-window` | `5 minutes` | Positive error-rate window |
-| `observability.log-buffer-size` | `500` | Positive in-memory log retention count |
+| `alerts.error-rate-window` | `5 minutes` | At least 1 second |
+| `observability.log-buffer-size` | `500` | 1–65536 retained log records |
 
 For a standalone JAR, an external HOCON file can include application defaults and override selected keys. For example, save this as `data/relay-local.conf` beneath `twitch-screen-relay/`:
 
@@ -143,7 +143,9 @@ java -Dconfig.file=data/relay-local.conf -jar out/assembly.dest/out.jar
 
 This disables the no-device duration rule and retains 1000 log records. Explicit values in the external file override the included values; the environment substitutions still apply to settings you leave inherited. Keep secret values in the configured environment rather than this sample file.
 
-Additional fixed limits in code include 64 simultaneous TCP sessions, 128 HTTP connections, 65536-byte HTTP request bodies, and list `pageSize` values of 1–500. They are not deployment knobs in this version.
+Polling, simulation, aggregation and alert evaluation intervals must be at least 1 ms; statistics and failure-rate windows must be at least 1 second. TCP accept backlog is bounded to 1–1024.
+
+Additional fixed limits in code include 64 simultaneous TCP sessions, 128 HTTP connections, 65536-byte HTTP request bodies, and list `pageSize` values of 1–500. They are not deployment knobs in this version. HTTP connections also have a 30-second decoded-read deadline, including incomplete headers; Tapir bounds response production and idle connections. Non-loopback plaintext HTTP emits a startup warning: use a trusted TLS proxy and restrict direct access.
 
 ## OpenTelemetry and JVM options 📊
 

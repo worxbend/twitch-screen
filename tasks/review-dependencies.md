@@ -99,6 +99,8 @@ solely from the relay having authentication:
   This is source and reference inspection, not an exhaustive reflective call
   graph or a live-account penetration test.
 
+Reassessment task: repository owner to review the exact two exceptions by **2026-10-18**, one week before their **2026-10-25** expiry. Run the audit command below and record fresh reachability evidence; CI rejects expired exceptions.
+
 Follow-up by the expiry: replace or update the legacy Twitch4J/Hystrix/Archaius
 path, or explicitly reassess the exact findings with fresh evidence. Reassess
 immediately if JVM/classpath configuration becomes writable by untrusted users,
