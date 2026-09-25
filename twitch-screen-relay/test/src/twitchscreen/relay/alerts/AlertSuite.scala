@@ -81,6 +81,28 @@ class AlertStoreSuite extends munit.FunSuite:
     store.acknowledge(raised.id, at.plusSeconds(5)).discard
     assertEquals(store.activeCount, 0)
 
+  test("an acknowledged condition stays open until it resolves without raising another alert"):
+    val store = AlertStore(10)
+    val raised = store.raise(rule, "no device", at).get
+    store.acknowledge(raised.id, at.plusSeconds(5)).discard
+    assertEquals(store.raise(rule, "still no device", at.plusSeconds(10)), None)
+    assertEquals(store.resolve(rule.name, at.plusSeconds(15)).map(_.status), Some(AlertStatus.Resolved(at.plusSeconds(15))))
+    assert(store.raise(rule, "no device again", at.plusSeconds(20)).isDefined)
+
+  test("competing acknowledgements and resolutions cannot reopen a resolved alert"):
+    ox.supervised:
+      (1 to 100).foreach: _ =>
+        val store = AlertStore(10)
+        val raised = store.raise(rule, "no device", at).get
+        ox.par(store.acknowledge(raised.id, at.plusSeconds(5)), store.resolve(rule.name, at.plusSeconds(10))).discard
+        assertEquals(store.recent(1, None, activeOnly = false).head.status, AlertStatus.Resolved(at.plusSeconds(10)))
+
+  test("concurrent firings of one rule create one alert"):
+    ox.supervised:
+      val store = AlertStore(10)
+      val outcomes = ox.par(store.raise(rule, "first", at), store.raise(rule, "second", at))
+      assertEquals(List(outcomes._1, outcomes._2).flatten.size, 1)
+
   test("acknowledging an unknown alert says so"):
     assertEquals(AlertStore(10).acknowledge(99, at), Left(AcknowledgeFailure.NotFound(99)))
 

@@ -13,6 +13,10 @@ object AlertStatus:
   given Schema[AlertStatus] = Schema.derived
 
   extension (status: AlertStatus)
+    def isOpen: Boolean = status match
+      case Resolved(_) => false
+      case _           => true
+
     def isActive: Boolean = status match
       case Active => true
       case _      => false
