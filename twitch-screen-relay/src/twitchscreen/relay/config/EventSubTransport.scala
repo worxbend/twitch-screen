@@ -12,9 +12,6 @@ enum EventSubTransport:
   case Webhook
 
 object EventSubTransport:
-  given ConfigReader[EventSubTransport] = ConfigReader[String].emap: raw =>
-    values
-      .find(_.toString.equalsIgnoreCase(raw))
-      .toRight(ConfigReaderFailures.reason(s"Unknown EventSub transport '$raw', expected one of: ${values.mkString(", ")}"))
+  given ConfigReader[EventSubTransport] = EnumConfigReader("EventSub transport", values)
 
   given Schema[EventSubTransport] = Schema.derivedEnumeration[EventSubTransport].defaultStringBased

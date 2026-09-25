@@ -2,7 +2,7 @@ package twitchscreen.relay.config
 
 import com.github.plokhotnyuk.jsoniter_scala.core.JsonValueCodec
 import com.github.plokhotnyuk.jsoniter_scala.macros.JsonCodecMaker
-import com.typesafe.config.{Config as HoconConfig, ConfigFactory}
+import com.typesafe.config.{Config as HoconConfig}
 import scala.jdk.CollectionConverters.*
 import sttp.shared.Identity
 import sttp.tapir.*
@@ -27,30 +27,18 @@ final class ConfigApi(source: HoconConfig) extends ServerEndpoints:
     List(ConfigApi.getEndpoint.handleSuccess(_ => Config_OUT(ConfigApi.flatten(source))))
 
 object ConfigApi:
-  /** Paths whose values must never be rendered. Kept beside the reader that uses them, not in the HOCON file. */
-  private val secretPaths = Set(
-    "http.auth.basic-password-hash",
-    "http.auth.api-token",
-    "twitch.client-secret",
-    "twitch.event-sub.secret"
-  )
-
   private val Mask = "***"
 
-  /** Only the relay's own sections are rendered. `ConfigFactory.load()` also merges in every JVM system property, and those can carry
-    * credentials passed with `-D`; rendering the whole tree would publish them.
-    */
-  private val relaySections =
-    List("http", "device-link", "twitch", "notifications", "bus", "stats", "activity", "alerts", "observability")
-
-  def resolved(): HoconConfig = ConfigFactory.load()
+  private def secret(path: String): Boolean =
+    val key = path.toLowerCase(java.util.Locale.ROOT).filter(_.isLetterOrDigit)
+    List("secret", "token", "password", "passwordhash", "credential").exists(key.endsWith)
 
   private[config] def flatten(source: HoconConfig): Map[String, String] =
-    relaySections.view
+    Config.Sections.view
       .filter(source.hasPath)
       .flatMap: section =>
         source.getConfig(section).entrySet().asScala.map(entry => s"$section.${entry.getKey}" -> entry.getValue.unwrapped())
-      .map((path, value) => path -> (if secretPaths.contains(path) then Mask else String.valueOf(value)))
+      .map((path, value) => path -> (if secret(path) then Mask else String.valueOf(value)))
       .toMap
 
   val getEndpoint: PublicEndpoint[Unit, Fail, Config_OUT, Any] =

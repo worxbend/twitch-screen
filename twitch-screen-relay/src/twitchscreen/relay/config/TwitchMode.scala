@@ -15,9 +15,6 @@ enum TwitchMode:
   case Live
 
 object TwitchMode:
-  given ConfigReader[TwitchMode] = ConfigReader[String].emap: raw =>
-    values
-      .find(_.toString.equalsIgnoreCase(raw))
-      .toRight(ConfigReaderFailures.reason(s"Unknown twitch mode '$raw', expected one of: ${values.mkString(", ")}"))
+  given ConfigReader[TwitchMode] = EnumConfigReader("twitch mode", values)
 
   given Schema[TwitchMode] = Schema.derivedEnumeration[TwitchMode].defaultStringBased

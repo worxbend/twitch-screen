@@ -3,7 +3,7 @@ package twitchscreen.relay
 import java.time.Clock
 import ox.logback.InheritableMDC
 import ox.otel.context.PropagatingVirtualThreadFactory
-import ox.{Ox, OxApp, discard, tap}
+import ox.{Ox, OxApp, discard}
 import twitchscreen.relay.config.Config
 
 /** The relay: a bridge between the Twitch API and the round-display firmware.
@@ -22,7 +22,8 @@ object Main extends OxApp.Simple:
   override def run(using Ox): Unit = ApplicationLifetime.run:
     val clock = Clock.systemUTC()
     val startedAt = clock.instant()
-    val config = Config.read.tap(Config.log)
-    val dependencies = Dependencies.create(config, clock, startedAt)
+    val (config, source) = Config.load()
+    Config.log(config)
+    val dependencies = Dependencies.create(config, source, clock, startedAt)
     dependencies.serve().discard
     () => dependencies.hub.shutdown().discard

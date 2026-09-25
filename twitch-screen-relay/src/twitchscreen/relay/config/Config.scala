@@ -1,13 +1,16 @@
 package twitchscreen.relay.config
 
 import org.slf4j.LoggerFactory
-import java.net.URI
-import scala.util.Try
 import pureconfig.{ConfigReader, ConfigSource}
+import com.typesafe.config.{Config as HoconConfig, ConfigFactory}
 import scala.concurrent.duration.FiniteDuration
 
 /** Where the management/monitoring HTTP API listens. */
-final case class HttpConfig(host: Hostname, port: Port, auth: HttpAuthConfig = HttpAuthConfig()) derives ConfigReader
+final case class HttpConfig(host: Hostname, port: Port, auth: HttpAuthConfig):
+  auth.validate()
+
+object HttpConfig:
+  given ConfigReader[HttpConfig] = ValidatedConfigReader.derivedValidated[HttpConfig]
 
 /** The TCP listener the firmware connects to, and the parameters of TSB/3 (see `twitch-screen-firmware/docs/PROTOCOL.md`). */
 final case class DeviceLinkConfig(
@@ -35,9 +38,10 @@ final case class DeviceLinkConfig(
       s"device-link.outbound-queue-capacity must hold replay-buffer-size + ${DeviceLinkConfig.GreetingFrames} greeting frames " +
         s"(WELCOME, ${DeviceLinkConfig.ChatReplaySize} chat replays, STATS)"
     )
-    require(acceptBacklog > 0, "device-link.accept-backlog must be positive")
+    require(acceptBacklog > 0 && acceptBacklog <= 1024, "device-link.accept-backlog must be 1..1024")
+    require(outboundQueueCapacity <= 65535 + DeviceLinkConfig.GreetingFrames, "device-link.outbound-queue-capacity is too large")
     // Not a wire value: it only bounds how long the relay waits for HELLO, so sub-second is fine.
-    require(handshakeTimeout.toNanos > 0, "device-link.handshake-timeout must be positive")
+    require(handshakeTimeout.toMillis >= 1, "device-link.handshake-timeout must be at least 1 ms")
     // §6.2: WELCOME carries both as u16 seconds, so anything the device cannot be told exactly is refused.
     require(pingInterval.toSeconds >= 1 && pingInterval.toSeconds <= 65535, "device-link.ping-interval must be 1..65535 seconds")
     require(wholeSeconds(pingInterval), "device-link.ping-interval must be a whole number of seconds (WELCOME carries u16 seconds)")
@@ -56,7 +60,20 @@ final case class DeviceLinkConfig(
   private def wholeSeconds(duration: FiniteDuration): Boolean = duration.toNanos % 1_000_000_000L == 0
 
 /** EventSub delivery settings; only the fields of the selected `transport` are read. */
-final case class EventSubConfig(transport: EventSubTransport, callbackUrl: String, secret: Sensitive) derives ConfigReader
+final case class EventSubConfig(transport: EventSubTransport, callbackUrl: String, secret: Sensitive):
+  private[config] def validateLive(): Unit =
+    if transport == EventSubTransport.Webhook then
+      require(
+        CallbackUrl.valid(callbackUrl, "/api/v1/twitch/eventsub", webhook = true),
+        "twitch.event-sub.callback-url must be HTTPS on port 443 with path /api/v1/twitch/eventsub"
+      )
+      require(
+        secret.isSet && secret.value.length >= 10 && secret.value.length <= 100 && secret.value.forall(_ <= 127),
+        "twitch.event-sub.secret must contain 10..100 ASCII characters"
+      )
+
+object EventSubConfig:
+  given ConfigReader[EventSubConfig] = ValidatedConfigReader.derivedValidated[EventSubConfig]
 
 /** The browser consent flow that obtains the broadcaster's user token at runtime, so no Twitch token is ever configured.
   *
@@ -64,10 +81,23 @@ final case class EventSubConfig(transport: EventSubTransport, callbackUrl: Strin
   * exchanges for an access and refresh token pair. The pair is kept in `tokenFile` and refreshed `refreshBefore` it expires, so consent is
   * given once per deployment rather than once per process.
   */
-final case class TwitchOAuthConfig(redirectUrl: String, scopes: List[String], tokenFile: String, refreshBefore: FiniteDuration)
-    derives ConfigReader
+final case class TwitchOAuthConfig(redirectUrl: String, scopes: List[String], tokenFile: String, refreshBefore: FiniteDuration):
+  require(refreshBefore.toMillis >= 1, "twitch.oauth.refresh-before must be at least 1 ms")
+
+  private[config] def validateLive(): Unit =
+    require(
+      CallbackUrl.valid(redirectUrl, TwitchOAuthConfig.CallbackPath, webhook = false),
+      s"twitch.oauth.redirect-url must be HTTPS (or HTTP loopback) with path ${TwitchOAuthConfig.CallbackPath}"
+    )
+    require(tokenFile.trim.nonEmpty, "twitch.oauth.token-file is required when twitch.mode = live")
+    require(
+      scopes.forall(_.matches("[a-z][a-z0-9]*(?::[a-z][a-z0-9_]*)*")) && scopes.distinct.size == scopes.size,
+      "twitch.oauth.scopes must contain distinct nonblank scope names"
+    )
 
 object TwitchOAuthConfig:
+  given ConfigReader[TwitchOAuthConfig] = ValidatedConfigReader.derivedValidated[TwitchOAuthConfig]
+
   /** The path the relay serves its callback on. Twitch redirects to `redirectUrl` verbatim, so it has to land here. */
   val CallbackPath: String = "/api/v1/twitch/callback"
 
@@ -75,7 +105,7 @@ object TwitchOAuthConfig:
 
 /** Pacing of the synthetic event generator used by [[TwitchMode.Simulated]]. */
 final case class SimulationConfig(interval: FiniteDuration, chatInterval: FiniteDuration):
-  require(interval.toNanos > 0 && chatInterval.toNanos > 0, "twitch.simulation intervals must be positive")
+  require(interval.toMillis >= 1 && chatInterval.toMillis >= 1, "twitch.simulation intervals must be at least 1 ms")
 
 final case class TwitchConfig(
     mode: TwitchMode,
@@ -91,39 +121,13 @@ final case class TwitchConfig(
 
   /** Fails startup rather than at the first Helix call, so a half-configured relay never looks healthy. */
   private def validate(): Unit =
-    require(pollInterval.toNanos > 0, "twitch.poll-interval must be positive")
-    require(oauth.refreshBefore.toNanos > 0, "twitch.oauth.refresh-before must be positive")
+    require(pollInterval.toMillis >= 1, "twitch.poll-interval must be at least 1 ms")
     if mode == TwitchMode.Live then
       require(channel.trim.nonEmpty, "twitch.channel is required when twitch.mode = live")
       require(clientId.trim.nonEmpty, "twitch.client-id is required when twitch.mode = live")
       require(clientSecret.isSet, "twitch.client-secret is required when twitch.mode = live")
-      require(
-        validCallback(oauth.redirectUrl, TwitchOAuthConfig.CallbackPath, webhook = false),
-        "twitch.oauth.redirect-url must be an absolute http(s) URL"
-      )
-      require(
-        oauth.redirectUrl.endsWith(TwitchOAuthConfig.CallbackPath),
-        s"twitch.oauth.redirect-url must end in ${TwitchOAuthConfig.CallbackPath}, where the relay serves the callback"
-      )
-      require(oauth.tokenFile.trim.nonEmpty, "twitch.oauth.token-file is required when twitch.mode = live")
-      if eventSub.transport == EventSubTransport.Webhook then
-        require(
-          validCallback(eventSub.callbackUrl, "/api/v1/twitch/eventsub", webhook = true),
-          "twitch.event-sub.callback-url must be HTTPS on port 443 with path /api/v1/twitch/eventsub"
-        )
-        require(
-          eventSub.secret.isSet && eventSub.secret.value.length >= 10 && eventSub.secret.value.length <= 100 &&
-            eventSub.secret.value.forall(_ <= 127),
-          "twitch.event-sub.secret must contain 10..100 ASCII characters"
-        )
-
-  private def validCallback(raw: String, path: String, webhook: Boolean): Boolean =
-    Try(URI(raw)).toOption.exists: uri =>
-      val transport =
-        if webhook then uri.getScheme == "https" && (uri.getPort == -1 || uri.getPort == 443)
-        else uri.getScheme == "https" || (uri.getScheme == "http" && Set("localhost", "127.0.0.1", "[::1]").contains(uri.getHost))
-      transport && Option(uri.getHost).exists(_.nonEmpty) && uri.getPath == path && uri.getRawQuery == null &&
-      uri.getRawFragment == null && uri.getRawUserInfo == null
+      oauth.validateLive()
+      eventSub.validateLive()
 
 /** How Twitch events are turned into what the screen shows.
   *
@@ -143,7 +147,7 @@ final case class NotificationsConfig(
   )
 
 object NotificationsConfig:
-  given ConfigReader[NotificationsConfig] = ValidatedConfigReader(ConfigReader.derived[NotificationsConfig])
+  given ConfigReader[NotificationsConfig] = ValidatedConfigReader.derivedValidated[NotificationsConfig]
 
   /** §13.1: the list is overridable by environment variable. In lexical scope of the derived reader, so it applies here only. */
   private given ConfigReader[List[String]] = StringListReader.listOrCommaSeparated
@@ -156,15 +160,18 @@ object NotificationsConfig:
 
 /** Per-subscriber queue depth on the internal event bus. A subscriber that falls this far behind starts losing events. */
 final case class BusConfig(subscriberQueueCapacity: Int):
-  require(subscriberQueueCapacity > 0, "bus.subscriber-queue-capacity must be positive")
+  ConfigLimits.buffer(subscriberQueueCapacity, "bus.subscriber-queue-capacity")
 
 /** How often the aggregated dashboard figures are recomputed and pushed to every device. */
 final case class StatsConfig(broadcastInterval: FiniteDuration, chatRateWindow: FiniteDuration):
-  require(broadcastInterval.toNanos > 0 && chatRateWindow.toNanos > 0, "stats intervals must be positive")
+  require(
+    broadcastInterval.toMillis >= 1 && chatRateWindow.toSeconds >= 1,
+    "stats broadcast interval must be at least 1 ms and rate window at least 1 s"
+  )
 
 /** Size of the in-memory activity ring buffer served by `GET /api/v1/activity`. */
 final case class ActivityConfig(bufferSize: Int):
-  require(bufferSize > 0, "activity.buffer-size must be positive")
+  ConfigLimits.buffer(bufferSize, "activity.buffer-size")
 
 /** Thresholds for the built-in alert rules. A threshold left unset disables its rule. */
 final case class AlertsConfig(
@@ -176,17 +183,20 @@ final case class AlertsConfig(
     errorRateThreshold: Int,
     errorRateWindow: FiniteDuration
 ):
-  require(bufferSize > 0, "alerts.buffer-size must be positive")
-  require(evaluationInterval.toNanos > 0 && errorRateWindow.toNanos > 0, "alerts intervals must be positive")
+  ConfigLimits.buffer(bufferSize, "alerts.buffer-size")
   require(
-    List(noDevicesConnectedFor, twitchDisconnectedFor, streamOfflineFor).flatten.forall(_.toNanos > 0),
-    "alerts thresholds must be positive when enabled"
+    evaluationInterval.toMillis >= 1 && errorRateWindow.toSeconds >= 1,
+    "alerts evaluation interval must be at least 1 ms and error window at least 1 s"
+  )
+  require(
+    List(noDevicesConnectedFor, twitchDisconnectedFor, streamOfflineFor).flatten.forall(_.toMillis >= 1),
+    "alerts thresholds must be at least 1 ms when enabled"
   )
   require(errorRateThreshold >= 0, "alerts.error-rate-threshold must be nonnegative")
 
 /** Size of the in-memory log ring buffer served by `GET /api/v1/logs`. */
 final case class ObservabilityConfig(logBufferSize: Int):
-  require(logBufferSize > 0, "observability.log-buffer-size must be positive")
+  ConfigLimits.buffer(logBufferSize, "observability.log-buffer-size")
 
 final case class Config(
     http: HttpConfig,
@@ -203,7 +213,11 @@ final case class Config(
 object Config:
   private val logger = LoggerFactory.getLogger(getClass)
 
-  def read: Config = ConfigSource.default.loadOrThrow[Config]
+  val Sections: List[String] = List("http", "device-link", "twitch", "notifications", "bus", "stats", "activity", "alerts", "observability")
+
+  def load(): (Config, HoconConfig) =
+    val source = ConfigFactory.load()
+    (ConfigSource.fromConfig(source).loadOrThrow[Config], source)
 
   /** `Sensitive` masks itself in `toString`, so the whole tree is safe to log. */
   def log(config: Config): Unit =
@@ -229,25 +243,25 @@ object DeviceLinkConfig:
   /** §11.1: the frames a greeting burst adds on top of the durable replay — one WELCOME, the whole chat ring and one trailing STATS. */
   private[relay] val GreetingFrames: Int = ChatReplaySize + 2
 
-  given ConfigReader[DeviceLinkConfig] = ValidatedConfigReader(ConfigReader.derived[DeviceLinkConfig])
+  given ConfigReader[DeviceLinkConfig] = ValidatedConfigReader.derivedValidated[DeviceLinkConfig]
 
 object SimulationConfig:
-  given ConfigReader[SimulationConfig] = ValidatedConfigReader(ConfigReader.derived[SimulationConfig])
+  given ConfigReader[SimulationConfig] = ValidatedConfigReader.derivedValidated[SimulationConfig]
 
 object TwitchConfig:
-  given ConfigReader[TwitchConfig] = ValidatedConfigReader(ConfigReader.derived[TwitchConfig])
+  given ConfigReader[TwitchConfig] = ValidatedConfigReader.derivedValidated[TwitchConfig]
 
 object BusConfig:
-  given ConfigReader[BusConfig] = ValidatedConfigReader(ConfigReader.derived[BusConfig])
+  given ConfigReader[BusConfig] = ValidatedConfigReader.derivedValidated[BusConfig]
 
 object StatsConfig:
-  given ConfigReader[StatsConfig] = ValidatedConfigReader(ConfigReader.derived[StatsConfig])
+  given ConfigReader[StatsConfig] = ValidatedConfigReader.derivedValidated[StatsConfig]
 
 object ActivityConfig:
-  given ConfigReader[ActivityConfig] = ValidatedConfigReader(ConfigReader.derived[ActivityConfig])
+  given ConfigReader[ActivityConfig] = ValidatedConfigReader.derivedValidated[ActivityConfig]
 
 object AlertsConfig:
-  given ConfigReader[AlertsConfig] = ValidatedConfigReader(ConfigReader.derived[AlertsConfig])
+  given ConfigReader[AlertsConfig] = ValidatedConfigReader.derivedValidated[AlertsConfig]
 
 object ObservabilityConfig:
-  given ConfigReader[ObservabilityConfig] = ValidatedConfigReader(ConfigReader.derived[ObservabilityConfig])
+  given ConfigReader[ObservabilityConfig] = ValidatedConfigReader.derivedValidated[ObservabilityConfig]

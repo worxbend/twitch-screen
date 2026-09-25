@@ -9,7 +9,9 @@ opaque type Hostname = String
 object Hostname:
   def apply(value: String): Either[String, Hostname] =
     val trimmed = value.trim
-    if trimmed.isEmpty then Left("Hostname must not be blank") else Right(trimmed)
+    if trimmed.isEmpty then Left("Hostname must not be blank")
+    else if trimmed.exists(c => c.isWhitespace || c.isControl) then Left("Hostname must not contain whitespace or controls")
+    else Right(trimmed)
 
   extension (host: Hostname) def value: String = host
 

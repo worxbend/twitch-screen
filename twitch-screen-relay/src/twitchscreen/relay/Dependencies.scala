@@ -7,7 +7,8 @@ import sttp.tapir.server.netty.sync.NettySyncServerBinding
 import twitchscreen.relay.activity.ActivityLog
 import twitchscreen.relay.alerts.{AlertMonitor, AlertRule, AlertStore}
 import twitchscreen.relay.bus.EventBus
-import twitchscreen.relay.config.{Config, ConfigApi}
+import twitchscreen.relay.config.Config
+import com.typesafe.config.{Config as HoconConfig}
 import twitchscreen.relay.device.{DeviceHub, DeviceLinkServer, NotificationRouter}
 import twitchscreen.relay.http.HttpApi
 import twitchscreen.relay.observability.{LogBuffer, Otel, RelayMetrics}
@@ -27,7 +28,7 @@ private[relay] final case class Dependencies(httpApi: HttpApi, hub: DeviceHub, t
   * messages before scope cancellation closes the listeners, Twitch client and background consumers.
   */
 private[relay] object Dependencies:
-  def create(config: Config, clock: Clock, startedAt: Instant)(using Ox): Dependencies =
+  def create(config: Config, source: HoconConfig, clock: Clock, startedAt: Instant)(using Ox): Dependencies =
     LogBuffer.resize(config.observability.logBufferSize)
     val otel = Otel.initialize()
 
@@ -59,7 +60,7 @@ private[relay] object Dependencies:
       alertStore,
       alertRules,
       twitch,
-      ConfigApi.resolved()
+      source
     )
 
     Dependencies(HttpApi(apis.all, config.http, otel), hub, twitch)

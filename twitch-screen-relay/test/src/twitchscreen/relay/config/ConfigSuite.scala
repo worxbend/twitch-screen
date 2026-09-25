@@ -157,6 +157,36 @@ class ConfigSuite extends munit.FunSuite:
     assertEquals(rendered("http.auth.api-token"), "***")
     assertEquals(rendered("http.auth.basic-password-hash"), "***")
 
+  test("unknown secret keys are masked independent of spelling convention"):
+    val source = ConfigFactory.parseString("""twitch { clientSecret = "private", access_token = "private", passwordHash = "private" }""")
+    assert(ConfigApi.flatten(source).values.forall(_ == "***"))
+
+  test("config rejects sub-millisecond timers and unbounded queue sizes"):
+    List[() => Any](
+      () => SimulationConfig(1.nanos, 1.second),
+      () => StatsConfig(1.nanos, 1.second),
+      () => StatsConfig(1.second, 999.millis),
+      () => BusConfig(Int.MaxValue),
+      () => ActivityConfig(Int.MaxValue),
+      () => ObservabilityConfig(Int.MaxValue)
+    ).foreach(build => intercept[IllegalArgumentException](build()).discard)
+
+  test("HTTP config cannot construct a readiness bypass with absent authentication"):
+    intercept[IllegalArgumentException](HttpConfig(Hostname("localhost").toOption.get, Port(8080).toOption.get, HttpAuthConfig())).discard
+
+  test("callback schemes and hosts are case insensitive while scopes reject malformed names"):
+    val config = liveTwitchConfig("client")
+    assertEquals(config.copy(oauth = config.oauth.copy(redirectUrl = "HTTP://LOCALHOST/api/v1/twitch/callback")).mode, TwitchMode.Live)
+    List(List(""), List("read scope"), List("channel:read:subscriptions", "channel:read:subscriptions")).foreach: scopes =>
+      intercept[IllegalArgumentException](config.copy(oauth = config.oauth.copy(scopes = scopes))).discard
+    assertEquals(config.copy(oauth = config.oauth.copy(scopes = Nil)).oauth.scopes, Nil)
+
+  test("hostnames reject embedded whitespace and list settings reject numeric scalar coercion"):
+    assert(Hostname("bad host").isLeft)
+    assert(Hostname("bad\nhost").isLeft)
+    val source = ConfigFactory.parseString("notifications.ignored-display-names = 123").withFallback(configured)
+    assert(ConfigSource.fromConfig(source).load[Config].isLeft)
+
   test("the rendered configuration is limited to the relay's own sections, so system properties cannot leak"):
     val sections = ConfigApi.flatten(ConfigFactory.load()).keys.map(_.takeWhile(_ != '.')).toSet
     assertEquals(
