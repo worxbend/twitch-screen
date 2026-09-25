@@ -31,7 +31,7 @@ Nominal envelope: **64 × 86 × 78.1 mm**, before adhesive feet.
 | --- | --- |
 | ![Rear CAD render showing the recessed USB-C opening](output/preview/02_rear_usb.png) | ![Exploded CAD render showing the four printed parts and electronics](output/preview/06_exploded.png) |
 
-New to the build? The [step-by-step device guide](../docs/guides/device-build.md) covers the parts list, exact GPIO wiring, slicer starting points and assembly. Prove the electronics with [simulated events](../docs/guides/first-simulated-stream.md), then close the case. 💜
+New to the build? The [step-by-step device guide](../docs/guides/device-build.md) covers the parts list, exact GPIO wiring, slicer starting points and assembly. Prove the electronics with the [LAN-reachable simulated relay](../docs/guides/firmware-setup.md#start-a-relay-the-physical-device-can-reach), then close the case. 💜
 
 All four hardware photos and five added concept screenshots were inspected.
 The exterior follows their light curved pod, thin rim/dark face, side and rear
