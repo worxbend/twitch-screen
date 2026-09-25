@@ -1,5 +1,7 @@
 # Review Summary — twitch-screen (Kimi swarm review, 2026-09-25)
 
+**Remediation:** see the [integrated result and finding-by-finding dispositions](tasks/review-kimi-summary.md). The original findings below are retained as the review record.
+
 **Scope:** `twitch-screen-relay/` (Scala 3, ~98 source files + tests) and `twitch-screen-firmware/` (C++/PlatformIO, all of `src/`, `include/`, `test/`), plus `demo-server/`, `tools/`, `platformio.ini`, `build.mill`, CI workflow, and `docs/PROTOCOL.md`.
 
 **Method:** 21-agent swarm in 4 passes, every file reviewed line by line, findings cross-checked against `REVIEW_CONSOLIDATED.md` and `tasks/review-*.md` (marked NEW or KNOWN):
