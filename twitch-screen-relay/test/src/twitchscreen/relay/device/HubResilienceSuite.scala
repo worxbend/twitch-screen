@@ -117,9 +117,10 @@ class HubResilienceSuite extends munit.FunSuite:
             override def write(bytes: Array[Byte], offset: Int, length: Int): Unit =
               guard()
               underlying.write(bytes, offset, length)
-            override def flush(): Unit =
-              guard()
-              underlying.flush()
+            // Deliberately unguarded: FrameSink flushes after writing, and the device can read STATS before the writer's
+            // flush runs. A guarded flush would fail the STATS write, so the writer fork would close the socket first
+            // (ReadFailed) instead of the PONG path under test.
+            override def flush(): Unit = underlying.flush()
       class Listener extends java.net.ServerSocket(0):
         def accepted(): PongFailingSocket =
           val socket = PongFailingSocket()

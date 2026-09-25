@@ -15,8 +15,8 @@ private enum MonitorInput:
 /** Evaluates the configured [[AlertRule]]s on a timer.
   *
   * Like the statistics aggregator, events and the timer are merged into one flow, so the monitor's view of the world is threaded through a
-  * single fold rather than shared between threads. The rules themselves are pure functions of that state ([[MonitorState.check]]); this
-  * object only decides when to run them and where to put the result.
+  * single fold rather than shared between threads. The rules themselves are pure functions of that state ([[AlertRule.check]]); this object
+  * only decides when to run them and where to put the result.
   */
 private[relay] object AlertMonitor:
   private val logger = LoggerFactory.getLogger(getClass)

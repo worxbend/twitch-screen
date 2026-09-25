@@ -58,3 +58,40 @@ Findings: **K-057** (Low) Failed PONG write discarded; **K-084** (Low) Version-m
 - `./mill --no-daemon test`: PASS, 38 suites / 427 tests, 0 failed.
 - `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS.
 - `git diff --check`: PASS.
+
+## test(relay): pin empty-rule AlertMonitor skip and fix stale rule doc link
+
+Findings: **K-072** (Low) Alert monitor runs with zero rules; **K-094** (Low) Rule knowledge shotgun (AlertRule + MonitorState). The K-072 fix was already on main: `AlertMonitor.start` logs "No alert rules are enabled" and starts no `foldTimed` subscriber when `rules.isEmpty`. The rule logic had already moved into `AlertRule.check`. This unit adds the missing regression test and fixes the dangling scaladoc link. Production behaviour does not change.
+
+### Change
+
+- `alerts/AlertMonitor.scala` (scaladoc only): `([[MonitorState.check]])` becomes `([[AlertRule.check]])`. scalafmt rewrapped the paragraph.
+- New `test/src/twitchscreen/relay/alerts/AlertMonitorSuite.scala` (2 tests). The fixtures are a fixed clock, `AlertsConfig` with `evaluationInterval = 1.hour` (so the timer never fires), `EventBus(clock, 16)` and a `DeviceHub` from the `ApiSuite`-style `DeviceLinkConfig`. Each test runs inside `supervised`:
+  - "no configured rules starts no alerts subscriber": `AlertMonitor.start(config, Nil, …)`. `bus.subscriberStats` has no `alerts` entry and `store.activeCount == 0`.
+  - "a configured rule subscribes the monitor to the bus": `List(AlertRule.NoDevicesConnected(1.minute))`. The `alerts` subscriber is present and `activeCount == 0`.
+
+### Tests written first, with the revert check
+
+- With the `if rules.isEmpty` guard disabled (`if false`), the Nil test fails at `AlertMonitorSuite.scala:46`: obtained `(true, 0)`, expected `(false, 0)`. The log shows "Evaluating 0 alert rules". Suite result: 1 failed / 2.
+- After restoring, `git diff src/` shows only the scaladoc line and the suite passes 2 / 2.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `grep -rn 'MonitorState.check' .`: no output (exit 1).
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.alerts.*'`: PASS, 4 suites / 22 tests (AlertMonitorSuite 2, AlertRuleSuite 3, MonitorStateSuite 8, AlertStoreSuite 9), 0 failed. Repeated 3 times, and it passed each time.
+- `./mill --no-daemon test`: PASS, 39 suites / 429 tests, 0 failed, in 4 of 4 consecutive runs, after the K-057 test fix below. Before that fix, 2 of 4 runs failed the K-057 test.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS after `reformatAll` rewrapped the scaladoc.
+- `git diff --check`: PASS.
+
+### Fix after judge round 1: K-057 test flake (HubResilienceSuite)
+
+The first full-suite runs were flaky: 2 of 4 failed the K-057 test from a43a815. The detach reason was `read failed: Socket closed` instead of `WriteFailed`.
+
+- **Root cause (test fixture, not production):** `FrameSink.write` calls `frame.writeTo(target)` and then `target.flush()`. The device can read STATS as soon as `writeTo` returns, before the writer fork's `flush()` runs. The test then set `failing`, and its guarded `flush()` threw inside the *STATS* write. The writer fork closed the socket before the PING reached the reader, so the reader ended with `ReadFailed` and the PONG path never ran.
+- **Fix:** In `HubResilienceSuite`, the failing socket's `flush()` is no longer guarded. The underlying socket stream's flush is a no-op, and it now has a comment explaining why. `write(Int)` and `write(Array,Int,Int)` still fail once the flag is set, so the PONG write still fails. Production code does not change.
+- **Deterministic reproduction:** I made two temporary changes, both reverted afterwards: `Thread.sleep(100)` between `writeTo` and `flush` in `FrameSink.write`, and `Thread.sleep(300)` after `failing.set(true)` in the test. With those in place, the previous test fails every time (`obtained "read failed: Socket closed"`) and the fixed test passes 6 / 6. After the revert, `git diff src/` shows only the AlertMonitor scaladoc line.
+- **Red check still holds:** I replaced the PONG handling in `DeviceSession.handle` with `sink.write(...).discard; None`. The fixed test fails at `HubResilienceSuite.scala:142` (no `WriteFailed` detach within 2 s), and the suite result is 1 failed / 6. The production file was restored afterwards.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.device.HubResilienceSuite` ×5: PASS each time, 6 / 6.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.alerts.*'`: PASS, 4 suites / 22 tests.
+- `./mill --no-daemon test` ×4 consecutive: PASS each time, exit 0, 39 suites / 429 tests, 0 failed.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS. `grep -rn 'MonitorState.check' .`: no output. `git diff --check`: PASS.
