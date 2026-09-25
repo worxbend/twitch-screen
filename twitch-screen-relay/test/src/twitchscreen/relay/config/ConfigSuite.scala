@@ -2,22 +2,26 @@ package twitchscreen.relay.config
 
 import com.typesafe.config.ConfigFactory
 import pureconfig.ConfigSource
+import ox.discard
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
 class ConfigSuite extends munit.FunSuite:
+  private def configured =
+    ConfigFactory.parseString("http.auth.api-token = \"test-configuration-token-at-least-32-bytes\"").withFallback(ConfigFactory.load())
+  private def configSource = ConfigSource.fromConfig(configured)
   test("the configuration shipped in resources loads"):
-    val config = ConfigSource.default.loadOrThrow[Config]
+    val config = configSource.loadOrThrow[Config]
     assertEquals(config.deviceLink.port.value, 8099)
 
   test("the shipped configuration speaks TSB/3 and counts its frame limit in bytes"):
-    val config = ConfigSource.default.loadOrThrow[Config]
+    val config = configSource.loadOrThrow[Config]
     // §7 makes the version check exact equality, and §5 fixes the frame at 256 BYTES, header included —
     // not the 512 UTF-16 characters v2's line reader counted.
     assertEquals(config.deviceLink.protocolVersion, 3)
     assertEquals(config.deviceLink.maxFrameLength, 256)
 
   test("the shipped configuration carries §13.1's bot list, matched on the display name"):
-    val config = ConfigSource.default.loadOrThrow[Config]
+    val config = configSource.loadOrThrow[Config]
     assertEquals(
       config.notifications.ignoredDisplayNames,
       List("streamelements", "nightbot", "moobot", "streamlabs", "fossabot", "sery_bot")
@@ -25,7 +29,7 @@ class ConfigSuite extends munit.FunSuite:
 
   test("§13.1: the bot list overridden from a comma-separated environment variable is split, trimmed and loaded"):
     val env = ConfigFactory.parseString("notifications.ignored-display-names = \"nightbot, foo,,\"")
-    val config = ConfigSource.fromConfig(env.withFallback(ConfigFactory.load())).loadOrThrow[Config]
+    val config = ConfigSource.fromConfig(env.withFallback(configured)).loadOrThrow[Config]
     assertEquals(config.notifications.ignoredDisplayNames, List("nightbot", "foo"))
 
   test("a configuration claiming a protocol version this build cannot encode is rejected at load"):
@@ -37,7 +41,7 @@ class ConfigSuite extends munit.FunSuite:
     assert(failure.getMessage.contains("max-frame-length"), failure.getMessage)
 
   test("the shipped configuration obtains the Twitch user token through the consent flow, never from the environment"):
-    val config = ConfigSource.default.loadOrThrow[Config]
+    val config = configSource.loadOrThrow[Config]
     assertEquals(config.twitch.oauth.redirectUrl, "http://localhost:8080/api/v1/twitch/callback")
     assertEquals(config.twitch.oauth.scopes, List("moderator:read:followers", "channel:read:subscriptions"))
     assert(!ConfigFactory.load().hasPath("twitch.user-access-token"))
@@ -75,7 +79,7 @@ class ConfigSuite extends munit.FunSuite:
       handshakeTimeout = 5.seconds,
       idleTimeout = 10.seconds,
       pingInterval = pingInterval,
-      outboundQueueCapacity = 8,
+      outboundQueueCapacity = 26,
       replayBufferSize = 8,
       maxFrameLength = maxFrameLength
     )
@@ -83,6 +87,9 @@ class ConfigSuite extends munit.FunSuite:
   test("the rendered configuration masks every secret"):
     val rendered = ConfigApi.flatten(ConfigFactory.load())
     assertEquals(rendered("twitch.client-secret"), "***")
+    assertEquals(rendered("twitch.event-sub.secret"), "***")
+    assertEquals(rendered("http.auth.api-token"), "***")
+    assertEquals(rendered("http.auth.basic-password-hash"), "***")
 
   test("the rendered configuration is limited to the relay's own sections, so system properties cannot leak"):
     val sections = ConfigApi.flatten(ConfigFactory.load()).keys.map(_.takeWhile(_ != '.')).toSet
@@ -102,3 +109,30 @@ class ConfigSuite extends munit.FunSuite:
       pollInterval = 30.seconds,
       simulation = SimulationConfig(10.seconds, 2.seconds)
     )
+
+  test("invalid configuration returns a path-qualified reader failure rather than throwing"):
+    val source = ConfigFactory.parseString("stats.broadcast-interval = 0 seconds").withFallback(configured)
+    val result = ConfigSource.fromConfig(source).load[Config]
+    assert(result.isLeft)
+    assert(result.swap.toOption.exists(_.toString.contains("stats")))
+
+  test("blank secrets do not count as configured"):
+    assert(!Sensitive("  ").isSet)
+
+  test("webhook provider constraints reject insecure callbacks and short secrets"):
+    val base = liveTwitchConfig("abc")
+    intercept[IllegalArgumentException](
+      base.copy(eventSub =
+        EventSubConfig(EventSubTransport.Webhook, "http://relay.example/api/v1/twitch/eventsub", Sensitive("0123456789"))
+      )
+    ).discard
+    val failure = intercept[IllegalArgumentException](
+      base.copy(eventSub = EventSubConfig(EventSubTransport.Webhook, "https://relay.example/api/v1/twitch/eventsub", Sensitive("short")))
+    )
+    assert(failure.getMessage.contains("secret"))
+
+  test("missing management credentials fail configuration loading with an auth path"):
+    val result =
+      ConfigSource.fromConfig(ConfigFactory.parseString("http.auth.api-token = \"\"").withFallback(ConfigFactory.load())).load[Config]
+    assert(result.isLeft)
+    assert(result.swap.toOption.exists(_.toString.contains("http.auth")))

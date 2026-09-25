@@ -88,7 +88,10 @@ private[twitch] object TwitchAuthApi:
       .description("Open this in a browser. Twitch returns to /api/v1/twitch/callback, and the relay stores the token it is given.")
 
   val callbackEndpoint: PublicEndpoint[(Option[String], Option[String], Option[String], Option[String]), Fail, (StatusCode, String), Any] =
-    base.get
+    Http.callbackEndpoint
+      .tag("twitch")
+      .in("twitch")
+      .get
       .in("callback")
       .in(query[Option[String]]("code"))
       .in(query[Option[String]]("state"))

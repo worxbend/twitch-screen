@@ -29,7 +29,7 @@ final class HealthApi extends ServerEndpoints:
 
 object HealthApi:
   val healthEndpoint: PublicEndpoint[Unit, Fail, Health_OUT, Any] =
-    Http.baseEndpoint.get
+    Http.publicEndpoint.get
       .in("health")
       .out(jsonBody[Health_OUT])
       .summary("Liveness check")

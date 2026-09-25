@@ -6,7 +6,7 @@ import pureconfig.ConfigReader
 final case class Sensitive(value: String):
   override def toString: String = "***"
 
-  def isSet: Boolean = value.nonEmpty
+  def isSet: Boolean = value.trim.nonEmpty
 
 object Sensitive:
   val Empty: Sensitive = Sensitive("")

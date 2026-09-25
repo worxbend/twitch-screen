@@ -29,6 +29,8 @@ final class ConfigApi(source: HoconConfig) extends ServerEndpoints:
 object ConfigApi:
   /** Paths whose values must never be rendered. Kept beside the reader that uses them, not in the HOCON file. */
   private val secretPaths = Set(
+    "http.auth.basic-password-hash",
+    "http.auth.api-token",
     "twitch.client-secret",
     "twitch.event-sub.secret"
   )

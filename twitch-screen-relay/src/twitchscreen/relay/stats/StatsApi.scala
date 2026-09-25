@@ -32,7 +32,7 @@ final class StatsApi(hub: DeviceHub) extends ServerEndpoints:
 
 object StatsApi:
   val getEndpoint: PublicEndpoint[Unit, Fail, Stats_OUT, Any] =
-    Http.baseEndpoint.get
+    Http.publicEndpoint.get
       .in("stats")
       .out(jsonBody[Stats_OUT])
       .summary("The stream figures last broadcast to the devices")

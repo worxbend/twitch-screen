@@ -2,10 +2,9 @@ package twitchscreen.relay.http
 
 import io.opentelemetry.api.OpenTelemetry
 import org.slf4j.LoggerFactory
-import ox.{Ox, tap}
+import ox.{Ox, discard, tap}
 import sttp.shared.Identity
 import sttp.tapir.server.ServerEndpoint
-import sttp.tapir.server.interceptor.cors.CORSInterceptor
 import sttp.tapir.server.metrics.opentelemetry.OpenTelemetryMetrics
 import sttp.tapir.server.model.ValuedEndpointOutput
 import sttp.tapir.server.netty.NettyConfig
@@ -22,7 +21,7 @@ import twitchscreen.relay.observability.SetTraceIdInMDCInterceptor
 final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenTelemetry):
   private val logger = LoggerFactory.getLogger(getClass)
 
-  private val apiEndpoints: List[ServerEndpoint[Any, Identity]] = apis.flatMap(_.endpoints)
+  private val apiEndpoints: List[ServerEndpoint[Any, Identity]] = apis.flatMap(_.endpoints).map(ManagementAuth(config.auth).protect)
 
   private val docEndpoints: List[ServerEndpoint[Any, Identity]] =
     SwaggerInterpreter().fromServerEndpoints[Identity](apiEndpoints, "twitch-screen-relay", RelayVersion.current)
@@ -33,13 +32,22 @@ final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenT
     .prependInterceptor(SetTraceIdInMDCInterceptor)
     // Decode failures and unmatched routes get the same JSON error shape as endpoint failures.
     .defaultHandlers(message => ValuedEndpointOutput(Http.jsonErrorOutOutput, Error_OUT(message)), notFoundWhenRejected = true)
-    .corsInterceptor(CORSInterceptor.default[Identity])
     .metricsInterceptor(OpenTelemetryMetrics.default[Identity](otel).metricsInterceptor())
     .options
 
   /** Binds and serves. The server is registered in the enclosing scope and stops with it. */
-  def start()(using Ox): NettySyncServerBinding =
-    NettySyncServer(serverOptions, NettyConfig.default.host(config.host.value).port(config.port.value))
+  def start()(using Ox): NettySyncServerBinding = startOnPort(config.port.value)
+
+  private[http] def startOnPort(port: Int)(using Ox): NettySyncServerBinding =
+    val netty = NettyConfig.default
+      .host(config.host.value)
+      .port(port)
+      .maxConnections(128)
+      .initPipeline: settings =>
+        (pipeline, handler) =>
+          NettyConfig.defaultInitPipeline(settings)(pipeline, handler)
+          pipeline.addAfter("serverCodecHandler", "requestBodyLimit", RequestBodyLimit(65536)).discard
+    NettySyncServer(serverOptions, netty)
       .addEndpoints(apiEndpoints ++ docEndpoints)
       .start()
       .tap: binding =>

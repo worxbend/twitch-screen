@@ -135,7 +135,7 @@ private[twitch] object EventSubWebhookApi:
   private val ReplayWindow = java.time.Duration.ofMinutes(10)
 
   val callbackEndpoint: PublicEndpoint[(String, String, String, String, String), Fail, String, Any] =
-    Http.baseEndpoint.post
+    Http.callbackEndpoint.post
       .in("twitch" / "eventsub")
       .in(header[String]("Twitch-Eventsub-Message-Id"))
       .in(header[String]("Twitch-Eventsub-Message-Timestamp"))
