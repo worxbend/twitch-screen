@@ -59,7 +59,7 @@ Chat cards are hidden by default; chat still contributes to activity stats. No t
 
 ## 🚀 First run: summon the pretend chat
 
-You need Git, a POSIX shell (Linux, macOS, or WSL), `curl`, and OpenSSL. The included Mill launcher downloads its pinned tooling and JDK on first use, so allow network access and time for the initial build.
+You need Git, a POSIX shell (Linux, macOS, or WSL), `curl`, OpenSSL, and JDK 25 on your `PATH` for this setup. The included Mill launcher downloads its pinned tooling and Temurin JDK; older Linux systems use a JVM launcher that needs an existing Java installation to bootstrap. Follow the [Java setup notes](docs/guides/development.md#checkout-and-prerequisites) and allow network access and time for the initial build.
 
 Run this in a terminal:
 
