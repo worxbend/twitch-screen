@@ -157,3 +157,27 @@ Findings: **K-138** (Low) Identical frames re-encoded per session. The code fix 
 - `./mill --no-daemon test`: PASS, exit 0, 40 suites / 451 tests, 0 failed.
 - `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS on the first run, so no reformat was needed.
 - `git diff --check`: PASS. `git status` lists only the new suite and this record. No production source changed.
+
+## test(relay): pin uptime clamp on backward clock step
+
+Findings: **K-160** (Nit) Negative uptime on backward clock step. The fix was already on main. `StatusApi.status()` (health/StatusApi.scala:65) computes `uptimeSeconds = math.max(0L, JDuration.between(startedAt, clock.instant()).toSeconds)`. This clamp is accepted in place of a monotonic clock. Before this unit, the only test was ManagementRoutesSuite (`startedAt = now - 300s`, which asserts `"uptimeSeconds":300`), and it passes with or without the clamp. This unit adds tests only. Production code does not change.
+
+### Change
+
+- `test/src/twitchscreen/relay/http/ApiSuite.scala`: the helper that was `statusDeviceLink(initial)` is now `statusOf(initial: SeqNo = SeqNo.Zero, startedAt: Instant = clock.instant()): Either[Unit, Status_OUT]`. It passes `startedAt` to `StatusApi(...)` and returns the whole `Status_OUT`. `statusDeviceLink(initial)` is kept as `statusOf(initial).map(_.deviceLink)`, so the existing callers read the same as before. `Status_OUT` was added to the `health` import.
+
+### Tests
+
+- "K-160: the status endpoint clamps uptime to 0 when the wall clock has stepped back before startedAt". Setup: `startedAt = clock.instant().plusSeconds(60)`, where the fixed clock sits 60 s behind startedAt. The test asserts `uptimeSeconds == Right(0L)` and `startedAt == Right(startedAt)`, so the future startedAt is reported unchanged. As a companion it asserts `startedAt = now - 90s` gives `uptimeSeconds == Right(90L)`, which shows the clamp does not flatten forward uptime. The body is decoded with the jsoniter `Status_OUT` codec, so the decoded `0L` is the same value as the wire `"uptimeSeconds":0`.
+
+### Revert check
+
+- Line 65 of StatusApi.scala was changed to `uptimeSeconds = JDuration.between(startedAt, clock.instant()).toSeconds`. `./mill --no-daemon test.testOnly twitchscreen.relay.http.ApiSuite` then gave FAIL. The K-160 test failed at `ApiSuite.scala:111` with "values are not the same ... value = -60". The file was restored with `git checkout -- src`, after which `git diff --stat src` was empty and the suite passed 28 / 28.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly twitchscreen.relay.http.ApiSuite` ×3: PASS each time, 28 / 28, 0 failed.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.http.*'`: PASS, 4 suites / 49 tests, 0 failed. This includes ManagementRoutesSuite at 5 / 5 (`"uptimeSeconds":300`).
+- `./mill --no-daemon test`: PASS (SUCCESS), 40 suites / 456 tests, 0 failed.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS on the first run, so no reformat was needed.
+- `git diff --check`: PASS. `git status` lists only ApiSuite.scala and this record. No production source changed.

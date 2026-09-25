@@ -17,7 +17,7 @@ import twitchscreen.relay.alerts.{AlertRule, AlertStore, AlertsApi}
 import twitchscreen.relay.bus.{BusEvent, EventBus, EventCategory, RelayEvent}
 import twitchscreen.relay.config.{ActivityConfig, ChatNotifications, Config, DeviceLinkConfig, Hostname, NotificationsConfig, Port}
 import twitchscreen.relay.device.{DeviceApi, DeviceHub, Notification_IN, NotificationApi}
-import twitchscreen.relay.health.{DeviceLink_OUT, HealthApi, Health_OUT, HealthStatus, StatusApi}
+import twitchscreen.relay.health.{DeviceLink_OUT, HealthApi, Health_OUT, HealthStatus, StatusApi, Status_OUT}
 import twitchscreen.relay.protocol.{NotificationKind, SeqNo}
 import twitchscreen.relay.observability.{LogBuffer, LogLevel, LogRecord, LogsApi, Logs_OUT}
 import twitchscreen.relay.twitch.{BotFilter, TwitchSource}
@@ -75,6 +75,10 @@ class ApiSuite extends munit.FunSuite:
 
   /** `deviceLink` from the status endpoint, over a hub whose counter starts at `initial`. */
   private def statusDeviceLink(initial: SeqNo): Either[Unit, DeviceLink_OUT] =
+    statusOf(initial).map(_.deviceLink)
+
+  /** The status endpoint's body, over a hub whose counter starts at `initial`, for a relay started at `startedAt`. */
+  private def statusOf(initial: SeqNo = SeqNo.Zero, startedAt: Instant = clock.instant()): Either[Unit, Status_OUT] =
     supervised:
       val config = ConfigSource
         .fromConfig(
@@ -84,14 +88,13 @@ class ApiSuite extends munit.FunSuite:
       val bus = EventBus(clock, queueCapacity = 32)
       val hub = DeviceHub.startingAt(deviceLinkConfig, ChatNotifications.Hide, clock, bus, initial)
       val twitch = TwitchSource.start(config.twitch, bus, BotFilter.from(config.notifications), clock)
-      val status = StatusApi(twitch, hub, bus, ActivityLog.start(ActivityConfig(50), bus), AlertStore(10), clock, clock.instant())
+      val status = StatusApi(twitch, hub, bus, ActivityLog.start(ActivityConfig(50), bus), AlertStore(10), clock, startedAt)
       val backend = TapirSyncStubInterpreter().whenServerEndpointsRunLogic(status.endpoints).backend()
       SttpClientInterpreter()
         .toRequestThrowDecodeFailures(StatusApi.getEndpoint, basePath)
         .apply(())
         .send(backend)
         .body
-        .map(_.deviceLink)
         .left
         .map(_ => ())
 
@@ -101,6 +104,13 @@ class ApiSuite extends munit.FunSuite:
 
   test("the status endpoint reports device connections refused at the session limit"):
     assertEquals(statusDeviceLink(SeqNo.Zero).map(_.connectionsRefused), Right(0L))
+
+  test("K-160: the status endpoint clamps uptime to 0 when the wall clock has stepped back before startedAt"):
+    val startedAt = clock.instant().plusSeconds(60)
+    val status = statusOf(startedAt = startedAt)
+    assertEquals(status.map(_.uptimeSeconds), Right(0L))
+    assertEquals(status.map(_.startedAt), Right(startedAt))
+    assertEquals(statusOf(startedAt = clock.instant().minusSeconds(90)).map(_.uptimeSeconds), Right(90L))
 
   test("the liveness endpoint reports up"):
     withApi: (backend, _, _) =>
