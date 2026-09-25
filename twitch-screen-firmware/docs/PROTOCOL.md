@@ -1693,15 +1693,20 @@ a7 53 03 25 20 00 00 75 01 00 03 00 1e 00 00 00
 
 ---
 
-## 19. Documents and code this changes
+## 19. Migration from v2 (completed, non-normative)
 
-* This file replaces the NDJSON v2 specification entirely.
-* `demo-server/twitch_server.py` speaks v2 and is **obsolete**. It is not to be updated; the
-  relay is the only v3 server.
-* `twitch-screen-relay/README.md` must stop describing the link as "NDJSON over TCP :8099".
-* `twitch-screen-firmware/PLAN.md`'s architecture diagram says "TCP v2 push"; it is stale.
-* `application.conf`: `protocol-version = 3`, `max-frame-length = 256` (bytes),
-  `notifications.ignored-display-names` added under `notifications`.
-* The `msg_total` field that v2's specification documented and the relay never sent is
-  finally satisfied by §6.5, which requires a cumulative, bot-filtered counter on the stats
-  fold that does not exist today.
+*Historical note: this section sets no requirements. The normative protocol is §1–§18.*
+
+The migration from the NDJSON v2 link to TSB/3 is complete. When the switch was made:
+
+* This document replaced the NDJSON v2 specification entirely.
+* `demo-server/twitch_server.py`, the v2 demo server, was retired. It now exits immediately
+  and points to `twitch-screen-relay` in simulated mode; the relay is the only TSB/3 server.
+* `twitch-screen-relay/README.md` and the architecture diagram in
+  `twitch-screen-firmware/PLAN.md` were updated to describe TSB/3 binary over TCP :8099. They
+  previously said "NDJSON over TCP :8099" and "TCP v2 push".
+* The relay's `application.conf` gained `protocol-version = 3`, `max-frame-length = 256`
+  (bytes) and `notifications.ignored-display-names`.
+* v2's specification documented a `msg_total` field that the relay never sent. §6.5 now
+  covers it: the relay keeps a per-stream cumulative, bot-filtered `messagesTotal` on its
+  stats fold and writes it into `STATS.msg_total`.

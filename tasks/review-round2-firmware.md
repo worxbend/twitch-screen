@@ -52,3 +52,29 @@
     fuzz 3,000, wire 849, session 91. No ASan/UBSan output.
   - `grep -n "reset on .WELCOME\|resets after a successful" twitch-screen-firmware/docs/PROTOCOL.md`
     finds nothing.
+
+## PROTO-09: PROTOCOL.md §19 recast as completed migration history
+
+- Change: `docs/PROTOCOL.md` §19 was retitled "Migration from v2 (completed,
+  non-normative)" and rewritten in the past tense as a historical note that
+  sets no requirements. The stale phrases "does not exist today", "must stop
+  describing" and "it is stale" were removed. The section number is unchanged,
+  and §1–§18 (including the §18 V1–V20 vectors) are byte-identical: `cmp` of
+  lines 1–1695 against the pre-edit copy matched, and the diff is one hunk at
+  line 1696.
+- Preconditions checked before writing each claim:
+  - `grep -n 'TSB/3 binary over TCP :8099' twitch-screen-relay/README.md` matches line 46.
+  - `grep -n 'TSB/3 binary push' twitch-screen-firmware/PLAN.md` matches line 64.
+  - `grep -n 'protocol-version = 3\|max-frame-length = 256\|ignored-display-names' twitch-screen-relay/resources/application.conf`
+    matches lines 28, 51 and 135.
+  - `grep -n 'messagesTotal' .../protocol/Tsb3Encoder.scala` matches line 101
+    (`STATS.msg_total`). §6.5 (line 528) is the STATS section.
+  - `demo-server/twitch_server.py` is the retired stub. It exits and points
+    to the relay's simulated mode.
+- Evidence:
+  - `grep -n 'does not exist today\|must stop describing\|it is stale' twitch-screen-firmware/docs/PROTOCOL.md`
+    finds nothing (exit code 1). §19 contains no MUST, SHOULD, must or should.
+  - `git diff --check` is clean.
+  - As a no-op sanity check, `platformio test -d twitch-screen-firmware -e native` passed
+    5/5, and `./mill test.testOnly twitchscreen.relay.protocol.Tsb3GoldenVectorSuite`
+    passed 23 of 23 tests.
