@@ -25,7 +25,7 @@ private[http] final class RequestBodyLimit(maxBytes: Long) extends ChannelInboun
       if exceeds then
         rejected.set(true)
         ReferenceCountUtil.release(message).discard
-        val bytes = "{\"error\":\"Request body exceeds 65536 bytes\"}".getBytes(UTF_8)
+        val bytes = s"{\"error\":\"Request body exceeds $maxBytes bytes\"}".getBytes(UTF_8)
         val response =
           DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.REQUEST_ENTITY_TOO_LARGE, Unpooled.wrappedBuffer(bytes))
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json").discard

@@ -14,6 +14,11 @@ import sttp.tapir.swagger.bundle.SwaggerInterpreter
 import twitchscreen.relay.RelayVersion
 import twitchscreen.relay.config.HttpConfig
 import twitchscreen.relay.observability.SetTraceIdInMDCInterceptor
+import io.netty.handler.codec.http.HttpServerCodec
+import io.netty.handler.timeout.ReadTimeoutHandler
+import io.netty.channel.ChannelHandlerContext
+import java.util.concurrent.TimeUnit
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
 /** The management and monitoring API: every feature's endpoints, the Swagger UI that documents them, and the interceptor chain they all run
   * through.
@@ -39,18 +44,38 @@ final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenT
   /** Binds and serves. The server is registered in the enclosing scope and stops with it. */
   def start(afterBind: Int => Unit = _ => ())(using Ox): NettySyncServerBinding = startOnPort(config.port.value, afterBind)
 
-  private[http] def startOnPort(port: Int, afterBind: Int => Unit = _ => ())(using Ox): NettySyncServerBinding =
+  private[http] def startOnPort(
+      port: Int,
+      afterBind: Int => Unit = _ => (),
+      readTimeout: FiniteDuration = HttpApi.ReadTimeout
+  )(using Ox): NettySyncServerBinding =
+    if !Set("localhost", "127.0.0.1", "::1", "[::1]").contains(config.host.value.toLowerCase(java.util.Locale.ROOT)) then
+      logger.warn(
+        "Management credentials are served over plaintext HTTP on a non-loopback interface; use a trusted TLS proxy and restrict direct access"
+      )
     val netty = NettyConfig.default
       .host(config.host.value)
       .port(port)
-      .maxConnections(128)
+      .maxConnections(HttpApi.MaxConnections)
       .initPipeline: settings =>
         (pipeline, handler) =>
           NettyConfig.defaultInitPipeline(settings)(pipeline, handler)
-          pipeline.addAfter("serverCodecHandler", "requestBodyLimit", RequestBodyLimit(65536)).discard
+          val codec = pipeline.context(classOf[HttpServerCodec]).name()
+          // After the codec: partial header bytes cannot indefinitely reset this deadline.
+          pipeline.addAfter(codec, "requestReadTimeout", RequestReadTimeout(readTimeout)).discard
+          pipeline.addAfter("requestReadTimeout", "requestBodyLimit", RequestBodyLimit(HttpApi.MaxBodyBytes)).discard
     NettySyncServer(serverOptions, netty)
       .addEndpoints(apiEndpoints ++ docEndpoints)
       .start()
       .tap: binding =>
         logger.info(s"Management API on http://${config.host.value}:${binding.port}/docs (${apiEndpoints.size} endpoints)")
         afterBind(binding.port)
+
+object HttpApi:
+  private[http] val MaxConnections: Int = 128
+  private[http] val MaxBodyBytes: Long = 65536
+  private[http] val ReadTimeout: FiniteDuration = 30.seconds
+
+/** An expected slow/incomplete request closes quietly instead of producing an exception stack trace per connection. */
+private final class RequestReadTimeout(timeout: FiniteDuration) extends ReadTimeoutHandler(timeout.toMillis, TimeUnit.MILLISECONDS):
+  override protected def readTimedOut(context: ChannelHandlerContext): Unit = context.close().discard

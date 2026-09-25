@@ -1,7 +1,7 @@
 package twitchscreen.relay.http
 
 import io.opentelemetry.api.OpenTelemetry
-import java.net.URI
+import java.net.{URI, Socket}
 import java.io.ByteArrayInputStream
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
 import java.nio.charset.StandardCharsets.UTF_8
@@ -14,6 +14,7 @@ import sttp.shared.Identity
 import sttp.tapir.*
 import sttp.tapir.server.ServerEndpoint
 import twitchscreen.relay.config.*
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
 class ManagementAuthSuite extends munit.FunSuite:
   ox.logback.InheritableMDC.init
@@ -26,7 +27,7 @@ class ManagementAuthSuite extends munit.FunSuite:
   private val auth = HttpAuthConfig("operator", Sensitive(hash), Sensitive(token))
   private val basic = "Basic " + Base64.getEncoder.encodeToString(s"operator:$password".getBytes(UTF_8))
 
-  private def withServer(test: (Int, AtomicInteger) => Unit): Unit = supervised:
+  private def withServer(readTimeout: FiniteDuration = 30.seconds)(test: (Int, AtomicInteger) => Unit): Unit = supervised:
     val calls = AtomicInteger()
     val api = new ServerEndpoints:
       override val endpoints: List[ServerEndpoint[Any, Identity]] = List(
@@ -47,7 +48,7 @@ class ManagementAuthSuite extends munit.FunSuite:
         Http.baseEndpoint.get.in("failure").out(stringBody).handleSuccess(_ => throw IllegalStateException("private exception detail"))
       )
     val config = HttpConfig(Hostname("127.0.0.1").toOption.get, Port(8080).toOption.get, auth)
-    val binding = HttpApi(List(api), config, OpenTelemetry.noop()).startOnPort(0)
+    val binding = HttpApi(List(api), config, OpenTelemetry.noop()).startOnPort(0, readTimeout = readTimeout)
     test(binding.port, calls)
 
   private def request(
@@ -71,13 +72,13 @@ class ManagementAuthSuite extends munit.FunSuite:
     finally client.close()
 
   test("both credential alternatives independently authorize before management logic"):
-    withServer: (port, calls) =>
+    withServer(): (port, calls) =>
       assertEquals(request(port, "/api/v1/protected", Some(basic), Some("basic")).statusCode(), 200)
       assertEquals(request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("token")).statusCode(), 200)
       assertEquals(calls.get(), 2)
 
   test("missing malformed and incorrect credentials are JSON 401s without executing handlers"):
-    withServer: (port, calls) =>
+    withServer(): (port, calls) =>
       List(None, Some("Basic !!!"), Some("Basic"), Some("Bearer wrong"), Some("Unknown foo")).foreach: credential =>
         val result = request(port, "/api/v1/protected", credential, Some("body"))
         assertEquals(result.statusCode(), 401)
@@ -86,9 +87,10 @@ class ManagementAuthSuite extends munit.FunSuite:
       assertEquals(calls.get(), 0)
 
   test("Basic browser cross-site management is rejected; same-origin succeeds"):
-    withServer: (port, calls) =>
+    withServer(): (port, calls) =>
       val rejected = request(port, "/api/v1/protected", Some(basic), Some("bad"), List("Origin" -> "https://evil.example"))
       assertEquals(rejected.statusCode(), 403)
+      assert(!rejected.headers().firstValue("WWW-Authenticate").isPresent)
       assert(rejected.body().startsWith("{\"error\":"))
       assertEquals(request(port, "/api/v1/protected", Some(basic), Some("bad"), List("Sec-Fetch-Site" -> "cross-site")).statusCode(), 403)
       assertEquals(
@@ -98,7 +100,7 @@ class ManagementAuthSuite extends munit.FunSuite:
       assertEquals(calls.get(), 1)
 
   test("public routes and docs require no credentials; management tokens cannot bypass callback checks"):
-    withServer: (port, _) =>
+    withServer(): (port, _) =>
       assertEquals(request(port, "/api/v1/health").statusCode(), 200)
       val missing = request(port, "/unknown-route")
       assertEquals(missing.statusCode(), 404)
@@ -115,7 +117,7 @@ class ManagementAuthSuite extends munit.FunSuite:
       assertEquals(request(port, "/api/v1/callback", Some(s"Bearer $token"), Some("unsigned")).statusCode(), 401)
 
   test("oversized bodies are bounded before handling and exception responses preserve JSON without details"):
-    withServer: (port, calls) =>
+    withServer(): (port, calls) =>
       List(false, true).foreach: chunked =>
         val oversized = request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("x" * 65537), chunked = chunked)
         assertEquals(oversized.statusCode(), 413)
@@ -158,3 +160,34 @@ class ManagementAuthSuite extends munit.FunSuite:
       finally release.countDown()
       assertEquals(first.join().code.code, 200)
       assertEquals(second.join().code.code, 200)
+
+  test("silent connections and incomplete HTTP headers hit a read deadline"):
+    withServer(readTimeout = 200.millis): (port, calls) =>
+      List("", "GET /api/v1/health HTTP/1.1\r\nHost: local").foreach: prefix =>
+        val socket = Socket("127.0.0.1", port)
+        try
+          socket.setSoTimeout(3000)
+          socket.getOutputStream.write(prefix.getBytes(UTF_8))
+          assertEquals(socket.getInputStream.read(), -1)
+        finally socket.close()
+      assertEquals(calls.get(), 0)
+
+  test("Basic compares usernames without skipping password work and accepts host case differences"):
+    val checked = AtomicInteger()
+    val gate = ManagementAuth(
+      auth,
+      (_, _) =>
+        checked.incrementAndGet().discard
+        true
+    )
+    val endpoint = gate.protect(Http.baseEndpoint.post.in("probe").out(stringBody).handleSuccess(_ => "ok"))
+    val backend = sttp.tapir.server.stub4.TapirSyncStubInterpreter().whenServerEndpointRunLogic(endpoint).backend()
+    def send(username: String) = sttp.client4.basicRequest
+      .post(sttp.model.Uri.unsafeParse("http://localhost/api/v1/probe"))
+      .header("Authorization", "Basic " + Base64.getEncoder.encodeToString(s"$username:password".getBytes(UTF_8)))
+      .header("Host", "LOCALHOST")
+      .header("Origin", "http://localhost")
+      .send(backend)
+    assertEquals(send("wrong").code.code, 401)
+    assertEquals(send("operator").code.code, 200)
+    assertEquals(checked.get(), 2)

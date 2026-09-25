@@ -17,15 +17,6 @@ private[relay] object ApiJson:
       // non-Scala client reading an absent field rather than an empty list.
       .withTransientEmpty(false)
 
-  /** Enum values are lower-cased, matching a schema built with `encode = Some(_.wire)`. Used for the notification DTOs, whose vocabulary is
-    * fixed by the device protocol rather than by Scala naming.
-    */
-  inline def lowerCaseEnums: CodecMakerConfig =
-    CodecMakerConfig
-      .withDiscriminatorFieldName(None)
-      .withAdtLeafClassNameMapper(name => JsonCodecMaker.simpleClassName(name).toLowerCase)
-      .withSkipUnexpectedFields(true)
-
   /** The notification DTOs, which speak the device protocol's vocabulary: lower-cased kinds, and `type` for the field Scala has to call
     * `kind`.
     */

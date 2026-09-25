@@ -19,6 +19,7 @@ private[relay] enum HttpAccess:
 /** Runs before body decoding or any management operation. */
 private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword: (String, String) => Boolean = PasswordVerifier.verify):
   config.validate()
+  // Excess concurrent PBKDF2 requests receive 503 so expensive logins cannot starve the API; Bearer bypasses this budget.
   private val passwordChecks = Semaphore(2)
 
   def protect(endpoint: ServerEndpoint[Any, Identity]): ServerEndpoint[Any, Identity] =
@@ -31,7 +32,7 @@ private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword
             .and(credentialInput("Bearer").securitySchemeName("ManagementToken"))
             .and(extractFromRequest(identity)),
           statusCode
-            .and(header("WWW-Authenticate", "Basic realm=\"relay\", Bearer realm=\"relay\""))
+            .and(header[Option[String]]("WWW-Authenticate"))
             .and(Http.jsonErrorOutOutput)
             .mapTo[ManagementRejection]
         )(authorize.tupled)
@@ -56,14 +57,14 @@ private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword
           checkBasic(encoded).flatMap: valid =>
             if !valid then Left(ManagementRejection.unauthorized)
             else if crossSite(request) then
-              Left(ManagementRejection(StatusCode.Forbidden, Error_OUT("Cross-site management request rejected")))
+              Left(ManagementRejection(StatusCode.Forbidden, None, Error_OUT("Cross-site management request rejected")))
             else Right(())
         case None => Left(ManagementRejection.unauthorized)
 
   private def checkBasic(encoded: String): Either[ManagementRejection, Boolean] =
     if !config.basicPasswordHash.isSet || encoded.length > 2048 then Right(false)
     else if !passwordChecks.tryAcquire() then
-      Left(ManagementRejection(StatusCode.ServiceUnavailable, Error_OUT("Password verification busy; retry request")))
+      Left(ManagementRejection(StatusCode.ServiceUnavailable, None, Error_OUT("Password verification busy; retry request")))
     else
       try
         Right(
@@ -87,7 +88,10 @@ private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword
       .exists: origin =>
         val uri = Try(java.net.URI(origin)).toOption
         val host = request.header("Host")
-        !uri.exists(u => Set("http", "https").contains(u.getScheme) && host.contains(u.getRawAuthority) && u.getRawUserInfo == null)
+        !uri.exists(u =>
+          Option(u.getScheme).exists(s => Set("http", "https").contains(s.toLowerCase(java.util.Locale.ROOT))) &&
+            host.exists(_.equalsIgnoreCase(u.getRawAuthority)) && u.getRawUserInfo == null
+        )
     foreignFetch || foreignOrigin
 
   private def equal(a: String, b: String): Boolean =
@@ -96,6 +100,10 @@ private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword
       MessageDigest.getInstance("SHA-256").digest(b.getBytes(UTF_8))
     )
 
-private final case class ManagementRejection(status: StatusCode, body: Error_OUT)
+private final case class ManagementRejection(status: StatusCode, challenge: Option[String], body: Error_OUT)
 private object ManagementRejection:
-  val unauthorized: ManagementRejection = ManagementRejection(StatusCode.Unauthorized, Error_OUT("Invalid management credentials"))
+  val unauthorized: ManagementRejection = ManagementRejection(
+    StatusCode.Unauthorized,
+    Some("Basic realm=\"relay\", Bearer realm=\"relay\""),
+    Error_OUT("Invalid management credentials")
+  )
