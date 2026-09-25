@@ -4,6 +4,7 @@ import com.typesafe.config.{ConfigFactory, ConfigValueFactory}
 import pureconfig.ConfigSource
 import ox.discard
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
+import twitchscreen.relay.twitch.TwitchScopes
 
 class ConfigSuite extends munit.FunSuite:
   private def configured =
@@ -43,7 +44,7 @@ class ConfigSuite extends munit.FunSuite:
   test("the shipped configuration obtains the Twitch user token through the consent flow, never from the environment"):
     val config = configSource.loadOrThrow[Config]
     assertEquals(config.twitch.oauth.redirectUrl, "http://localhost:8080/api/v1/twitch/callback")
-    assertEquals(config.twitch.oauth.scopes, List("moderator:read:followers", "channel:read:subscriptions"))
+    assertEquals(config.twitch.oauth.scopes, TwitchScopes.Default)
     assert(!ConfigFactory.load().hasPath("twitch.user-access-token"))
 
   test("a live relay whose redirect URL does not land on the callback path is rejected at load"):
@@ -196,7 +197,7 @@ class ConfigSuite extends munit.FunSuite:
   test("callback schemes and hosts are case insensitive while scopes reject malformed names"):
     val config = liveTwitchConfig("client")
     assertEquals(config.copy(oauth = config.oauth.copy(redirectUrl = "HTTP://LOCALHOST/api/v1/twitch/callback")).mode, TwitchMode.Live)
-    List(List(""), List("read scope"), List("channel:read:subscriptions", "channel:read:subscriptions")).foreach: scopes =>
+    List(List(""), List("read scope"), List(TwitchScopes.Subscriptions, TwitchScopes.Subscriptions)).foreach: scopes =>
       intercept[IllegalArgumentException](config.copy(oauth = config.oauth.copy(scopes = scopes))).discard
     assertEquals(config.copy(oauth = config.oauth.copy(scopes = Nil)).oauth.scopes, Nil)
 

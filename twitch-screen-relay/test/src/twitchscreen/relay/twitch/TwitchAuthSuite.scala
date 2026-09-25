@@ -16,7 +16,7 @@ import twitchscreen.relay.config.*
 class TwitchAuthSuite extends munit.FunSuite:
   private val start = Instant.ofEpochSecond(1790309000L)
   private val redirectUrl = "http://localhost:8080/api/v1/twitch/callback"
-  private val scopes = List("moderator:read:followers", "channel:read:subscriptions")
+  private val scopes = TwitchScopes.Default
 
   private final class MovableClock(var now: Instant) extends Clock:
     override def getZone: ZoneId = ZoneOffset.UTC
@@ -40,7 +40,7 @@ class TwitchAuthSuite extends munit.FunSuite:
     override def exchange(code: String): Either[TwitchCallFailure, UserToken] =
       exchangedCodes += code
       if code == "bad" then Left(TwitchCallFailure("exchange the authorization code", "Rejected", Some(400)))
-      else if code == "partial" then Right(next("somechannel", scopes.filterNot(_ == "moderator:read:followers")))
+      else if code == "partial" then Right(next("somechannel", scopes.filterNot(_ == TwitchScopes.Followers)))
       else Right(next("somechannel", scopes))
 
     override def refresh(token: UserToken): Either[TwitchCallFailure, UserToken] =
@@ -89,6 +89,7 @@ class TwitchAuthSuite extends munit.FunSuite:
     assertEquals(params("response_type"), "code")
     assertEquals(params("client_id"), "client-id")
     assertEquals(params("redirect_uri"), redirectUrl)
+    // A literal on purpose: it pins the exact wire format Twitch receives, independent of TwitchScopes.
     assertEquals(params("scope"), "moderator:read:followers channel:read:subscriptions")
     assertEquals(params("state"), "xyz")
 
@@ -322,7 +323,7 @@ class TwitchAuthSuite extends munit.FunSuite:
         basicRequest.get(uri"$base/authorize").followRedirects(false).send(backend).header("Location").getOrElse(fail("no Location"))
       val completed = basicRequest.get(uri"$base/callback?code=partial&state=${stateOf(location)}").send(backend)
       assertEquals(completed.code, StatusCode.Ok)
-      assert(completed.body.exists(_.contains("did not grant moderator:read:followers")), completed.body.toString)
+      assert(completed.body.exists(_.contains(s"did not grant ${TwitchScopes.Followers}")), completed.body.toString)
 
   tempDir.test("missing scopes are computed from the issued grant, not re-read from state"): dir =>
     supervised:
@@ -330,7 +331,7 @@ class TwitchAuthSuite extends munit.FunSuite:
       val auth = newAuth(dir, clock, ScriptedTwitch(clock))
       val granted = auth.completeAuthorization("partial", stateOf(auth.beginAuthorization())).getOrElse(fail("not granted"))
       assert(auth.signOut())
-      assertEquals(auth.missingScopesOf(granted), List("moderator:read:followers"))
+      assertEquals(auth.missingScopesOf(granted), List(TwitchScopes.Followers))
       assertEquals(auth.view.missingScopes, scopes, "the state now holds no grant at all")
 
   tempDir.test("Twitch4J receives an immutable credential snapshot"): dir =>

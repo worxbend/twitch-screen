@@ -7,7 +7,7 @@ import scala.collection.mutable.ListBuffer
 class WebSocketRegistrationSuite extends munit.FunSuite:
   private val credential = OAuth2Credential("twitch", "user-token")
   private val subscriptions = EventSubWebhookApi.unscopedSubscriptions("123") ++ EventSubWebhookApi.scopedSubscriptions("123")
-  private val Follow = "moderator:read:followers"
+  private val Follow = TwitchScopes.Followers
 
   /** Stays a failure, not awaiting: health has always reported a missing broadcaster grant as a failed connection. */
   private val AwaitingGrant = ("eventsub-connection", EventSubOutcome.Failed("awaiting broadcaster authorization"))
@@ -124,7 +124,7 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
   test("the same grant after registration does nothing"):
     val harness = Harness()
     assertEquals(
-      harness.step(token = Some("a"), missing = List("channel:read:subscriptions"), registeredGrant = Some("a")),
+      harness.step(token = Some("a"), missing = List(TwitchScopes.Subscriptions), registeredGrant = Some("a")),
       WebSocketStep.Unchanged
     )
     assertEquals(harness.log.toList, Nil)

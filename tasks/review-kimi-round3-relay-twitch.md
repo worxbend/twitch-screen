@@ -441,3 +441,62 @@ All paths are under `twitch-screen-relay/src/twitchscreen/relay/twitch/`.
 | `./mill --no-daemon compile` | SUCCESS, with `-Werror` (no unused imports) |
 | `./mill --no-daemon test` | SUCCESS. 42 suites, 474 tests, 0 failed, 0 ignored. That is 14 more declared `test(` cases than HEAD `08cd1c1` (441 declared, now 455). |
 | `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS, after `reformatAll` |
+
+## K-039: Scope-name literals scattered across five sites
+
+- Severity: Medium-smell. Area: relay-twitch.
+- **Disposition: fixed.** It closes the `[partial]` config drift gap. Runtime code already used `TwitchScopes`, but the default in `application.conf` was not tied to it.
+
+### Change
+
+- `twitch-screen-relay/src/twitchscreen/relay/twitch/TwitchScopes.scala`
+  - Added `val Default: List[String] = List(Followers, Subscriptions)`. Its scaladoc says it is the default of `twitch.oauth.scopes` in `application.conf` and that ConfigSuite pins the two as equal.
+  - The object doc now also calls it the reference for the shipped config default.
+  - No production call site needs the whole list, because the default reaches runtime through config. No runtime use was forced.
+- `twitch-screen-relay/resources/application.conf`: the literal list is kept. Its comment now says it must equal `TwitchScopes.Default` and that ConfigSuite pins them.
+- `twitch-screen-relay/test/src/twitchscreen/relay/config/ConfigSuite.scala`
+  - Imports `twitchscreen.relay.twitch.TwitchScopes`.
+  - The shipped-default assertion is now `assertEquals(config.twitch.oauth.scopes, TwitchScopes.Default)`.
+  - The duplicate-scope rejection case now uses `List(TwitchScopes.Subscriptions, TwitchScopes.Subscriptions)`.
+- `twitch-screen-relay/test/src/twitchscreen/relay/twitch/TwitchAuthSuite.scala`
+  - The fixture `scopes` is now `TwitchScopes.Default`.
+  - The `partial` grant uses `filterNot(_ == TwitchScopes.Followers)`.
+  - The callback-page and `missingScopesOf` assertions now use `TwitchScopes.Followers`.
+  - **Kept as a literal:** `assertEquals(params("scope"), "moderator:read:followers channel:read:subscriptions")`. It has a comment saying it is literal on purpose, because it pins the exact wire format Twitch receives.
+- `twitch-screen-relay/test/src/twitchscreen/relay/twitch/WebSocketRegistrationSuite.scala`
+  - `Follow` is now `TwitchScopes.Followers`.
+  - The missing-scope step uses `List(TwitchScopes.Subscriptions)`.
+
+### Why the HOCON literal is kept
+
+HOCON cannot reference a Scala constant, so `application.conf` has to hold the strings. The drift guard is ConfigSuite's "the configuration shipped in resources loads" test. It loads the real resource and asserts that it equals `TwitchScopes.Default`. If either side is renamed without the other, the test fails.
+
+### Red, then green
+
+- Red: ConfigSuite was changed first. `./mill --no-daemon test.testOnly 'twitchscreen.relay.config.ConfigSuite'` then failed to compile with `value Default is not a member of object twitchscreen.relay.twitch.TwitchScopes`.
+- Green: after `Default` was added, the same command passed.
+- Drift proof, run by hand and reverted: `TwitchScopes.Subscriptions` was temporarily changed to `"channel:read:subscriptionz"`. ConfigSuite then failed (exit 1, `1 tests failed`, with the diff showing `"channel:read:subscriptionz"`).
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.config.ConfigSuite'` | SUCCESS. 41 tests, 0 failed. |
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.twitch.*'` | SUCCESS. 12 suites, 127 tests, 0 failed. |
+| `./mill --no-daemon test` | SUCCESS. 44 suites, 482 tests, 0 failed, 0 ignored. No `[warn]` lines, with `-Werror`. |
+| `./mill --no-daemon mill.scalalib.scalafmt/` then `mill.scalalib.scalafmt/checkFormatAll` | SUCCESS, clean |
+| `git diff --stat` | Only the 5 intended files, plus this record. |
+
+`grep -rn "moderator:read:followers\|channel:read:subscriptions" src test resources`:
+
+```
+src/twitchscreen/relay/twitch/TwitchScopes.scala:5:  val Followers: String = "moderator:read:followers"
+src/twitchscreen/relay/twitch/TwitchScopes.scala:6:  val Subscriptions: String = "channel:read:subscriptions"
+src/twitchscreen/relay/twitch/EventSubWebhookApi.scala:173:  /** Follows need `moderator:read:followers` granted ... (doc comment)
+src/twitchscreen/relay/twitch/HelixPoller.scala:109:  /** ... a missing `moderator:read:followers` scope ... (doc comment)
+test/src/twitchscreen/relay/twitch/TwitchAuthSuite.scala:93:    assertEquals(params("scope"), "moderator:read:followers channel:read:subscriptions")
+resources/application.conf:78:    # moderator:read:followers: follow events ... channel:read:subscriptions: the subscriber total.
+resources/application.conf:80:    scopes = ["moderator:read:followers", "channel:read:subscriptions"]
+```
+
+Every hit is one of these: the constants, the guarded HOCON default and its comment, the one wire-format assertion kept on purpose, or doc comments.
