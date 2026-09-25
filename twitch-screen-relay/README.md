@@ -87,7 +87,7 @@ flowchart LR
   Hub -->|"TSB/3 · TCP 8099"| ESP32["ESP32 displays"]
 ```
 
-`DeviceHub` serializes sequence allocation and retains a bounded replay buffer, **64 notifications** by default. A reconnect can replay retained events; relay restarts reset that history. TSB/3 provides best-effort replay, not durable delivery.
+`DeviceHub` serializes sequence allocation and retains two bounded replay rings: **64 non-chat notifications** by default and **16 chat notifications**. A reconnect can replay retained events; relay restarts reset that history. TSB/3 provides best-effort replay, not durable delivery.
 
 Internal consumers have bounded queues so slow diagnostics cannot stall Twitch ingestion. Per-device backpressure protects event ordering: a failed event enqueue closes the affected connection before later events can pass it; stats frames may be dropped. Device sessions and workers live inside the application lifetime managed by Ox.
 

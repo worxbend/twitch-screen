@@ -114,7 +114,7 @@ These settings have **no explicit environment override** in the shipped file:
 | `device-link.handshake-timeout` | `5 seconds` | Positive time to receive the device greeting |
 | `device-link.ping-interval` | `20 seconds` | 1–65535 whole seconds; shorter than idle timeout |
 | `device-link.outbound-queue-capacity` | `128` | Must hold at least `replay-buffer-size + 18` greeting frames |
-| `device-link.replay-buffer-size` | `64` | 1–65535 retained notifications, in memory |
+| `device-link.replay-buffer-size` | `64` | 1–65535 retained non-chat notifications; chat has a separate fixed 16-record ring |
 | `device-link.max-frame-length` | `256` | Must be exactly 256 bytes, including header |
 | `twitch.oauth.refresh-before` | `15 minutes` | Positive lead time for token refresh |
 | `twitch.simulation.chat-interval` | `2 seconds` | Positive synthetic-chat interval |

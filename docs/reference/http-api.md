@@ -103,7 +103,7 @@ curl --fail --silent --show-error \
   'http://localhost:8080/api/v1/notifications?pageSize=20'
 ```
 
-The default `pageSize` is 20. Retention is bounded by the replay buffer, 64 notifications by default; requesting 500 does not create a longer history.
+The default `pageSize` is 20. The response combines the two replay rings: up to 64 non-chat notifications by default and a separate fixed 16 chat notifications. Requesting 500 does not create a longer history.
 
 ## Health, readiness, and stats 🩺
 

@@ -227,7 +227,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317 ./mill run
 
 Replace `collector` with a reachable collector hostname. Container deployments must explicitly forward these variables in their Compose environment. No collector, Grafana instance, or Prometheus endpoint is installed by this command.
 
-For an update, stop the old process, retain configuration and token storage, build the selected revision, and start with the same environment. Check health, authenticated readiness, and a manual device notification afterward. Devices and relay must both speak **TSB/3**; older NDJSON firmware cannot connect to this relay. Missed notifications are replayed only while retained by the current process, with a 64-record buffer by default.
+For an update, stop the old process, retain configuration and token storage, build the selected revision, and start with the same environment. Check health, authenticated readiness, and a manual device notification afterward. Devices and relay must both speak **TSB/3**; older NDJSON firmware cannot connect to this relay. Missed notifications are eligible for replay only while retained by the current process: 64 non-chat records by default, plus a separate 16-record chat ring.
 
 For a problem report, include the commit, runtime/OS, selected mode, redacted status, relevant logs, and whether a manual notification arrives. Leave out the environment file, authorization headers, and token JSON. Follow the [troubleshooting guide](troubleshooting.md) for symptoms and the [firmware setup guide](firmware-setup.md) for the other half of the connection.
 
