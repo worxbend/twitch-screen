@@ -8,7 +8,11 @@ services:
       - "8080:8080"   # management API and Swagger UI
       - "8099:8099"   # device link
     environment:
-      RELAY_TWITCH_MODE: simulated
+      RELAY_TWITCH_MODE: live
+      RELAY_TWITCH_CHANNEL: worxbend
+      RELAY_TWITCH_CLIENT_ID: ${RELAY_TWITCH_CLIENT_ID:-}
+      RELAY_TWITCH_CLIENT_SECRET: ${RELAY_TWITCH_CLIENT_SECRET:-}
+      RELAY_CHAT_NOTIFICATIONS: ${RELAY_CHAT_NOTIFICATIONS:-}
       # Configure at least one complete method. Missing/invalid credentials fail startup.
       RELAY_HTTP_AUTH_API_TOKEN: ${RELAY_HTTP_AUTH_API_TOKEN:-}
       RELAY_HTTP_AUTH_BASIC_USERNAME: ${RELAY_HTTP_AUTH_BASIC_USERNAME:-}
