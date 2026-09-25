@@ -24,7 +24,15 @@ We will start the relay, inspect it, watch its figures change, send a card, and 
 
 ## Before you start
 
-Use a Linux or macOS terminal with Git, `curl`, OpenSSL, and Python 3 available. The checked-in Mill launcher downloads its pinned Mill 1.1.9 and Temurin JDK 25 toolchain and dependencies on first use, so allow internet access and time for those downloads. Ports 8080 and 8099 must be free on this machine.
+Use a Linux or macOS terminal with Git, `curl`, OpenSSL, Python 3, and JDK 25 available on `PATH`. Follow [Adoptium's installation guide](https://adoptium.net/installation) to install Java, then check the selected version:
+
+```sh
+java -version
+```
+
+- `java -version` reports the Java runtime selected by this terminal. Confirm that the reported major version is **25** before continuing.
+
+The bundled launcher downloads Mill 1.1.9 and the configured Temurin JDK 25; on older Linux systems it uses a JVM launcher that needs an existing Java installation to bootstrap. Allow internet access and time for the first toolchain and dependency downloads. Ports 8080 and 8099 must be free on this machine.
 
 This walkthrough uses the repository defaults except for binding both listeners to your own computer. It creates an ignored `.env.tutorial` file in the relay directory for a temporary management token.
 

@@ -15,7 +15,7 @@ The first command creates the checkout; the second enters the repository root us
 
 | Work | Tools | Version source |
 |---|---|---|
-| Relay | Bundled `./mill` launcher; internet for initial toolchain and dependency downloads | [build.mill](../../twitch-screen-relay/build.mill): Mill 1.1.9, Temurin JDK 25, Scala 3.9.0. |
+| Relay | JDK 25 on `PATH`, bundled `./mill` launcher, and internet for initial toolchain and dependency downloads | [build.mill](../../twitch-screen-relay/build.mill): Mill 1.1.9, Temurin JDK 25, Scala 3.9.0. |
 | Firmware and native suites | Python 3, PlatformIO 6.1.18; a host C++ compiler for native tests | [platformio.ini](../../twitch-screen-firmware/platformio.ini) pins platform and library versions. CI uses Python 3.13 on Ubuntu 24.04. |
 | Root checks | Python 3 standard library; dependency audit also uses Mill and reaches OSV | [tools/](../../tools). |
 | Container checks | Docker Engine and Docker CLI; Compose for the supplied deployment file | [Dockerfile](../../twitch-screen-relay/Dockerfile), [compose.yaml](../../twitch-screen-relay/compose.yaml). |
@@ -23,6 +23,14 @@ The first command creates the checkout; the second enters the repository root us
 | Firmware image asset regeneration | Python with Pillow | [make_glitch.py](../../twitch-screen-firmware/tools/make_glitch.py). |
 
 These are the repository's configured or recorded tool versions, not a recommendation to substitute the newest available release. The first Mill or PlatformIO run downloads dependencies. Native checks can run without a connected board; ESP32 compilation needs a local credentials header, but it does not contact Wi-Fi or flash hardware.
+
+Install JDK 25 using [Adoptium's installation guide](https://adoptium.net/installation), then confirm the runtime selected by your shell:
+
+```sh
+java -version
+```
+
+The command should report major version **25**. The bundled launcher downloads Mill 1.1.9 and the configured Temurin JDK 25; on older Linux systems it uses a JVM launcher that needs an existing Java installation to bootstrap. The checked-in launcher selects its Linux native binary only when it detects glibc 2.39 or newer. See [Mill's launcher requirements](https://mill-build.org/mill/cli/installation-ide.html#_mill_native_and_jvm_executables) for the distinction between native and JVM launchers.
 
 Create the isolated PlatformIO environment from the repository root:
 
