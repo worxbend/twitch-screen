@@ -151,7 +151,11 @@ private[relay] object DeviceHub:
     val sessionId = SessionId.fromWire(sessionIdSource())
     val initial = HubSnapshot(0, 0L, 0L, initialSequence, 0, StreamStats.Unknown, initialSequence.next.isEmpty)
     val observed = AtomicReference(initial)
-    new DeviceHub(Actor.create(new DeviceHubState(config, chat, clock, bus, connected, initialSequence, sessionId, observed)), connected, observed)
+    new DeviceHub(
+      Actor.create(new DeviceHubState(config, chat, clock, bus, connected, initialSequence, sessionId, observed)),
+      connected,
+      observed
+    )
 
 /** The hub's mutable state. The `var`s are safe because every method runs inside the actor that owns this instance; nothing else may hold a
   * reference to it.
