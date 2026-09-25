@@ -12,5 +12,9 @@
 - Parallel agents may use temporary worktrees or local branches, but each
   validated change must be rebased onto `origin/main` and pushed to `main`.
   Delete temporary branches when finished.
+- Review gates come first. In an orchestrated groom → implement → review
+  workflow, an implement or fix step that is told not to commit leaves its
+  changes uncommitted. Only the designated commit step pushes to `main`, after
+  the review approves.
 - Use small conventional commits (`fix:`, `test:`, `docs:`, `ci:`, `build:`,
   `refactor:`) with a body naming the review finding IDs addressed, if any.
