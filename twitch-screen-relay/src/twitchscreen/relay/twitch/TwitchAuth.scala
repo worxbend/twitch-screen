@@ -1,7 +1,5 @@
 package twitchscreen.relay.twitch
 
-import com.github.philippheuer.credentialmanager.domain.OAuth2Credential
-import com.github.twitch4j.auth.providers.TwitchIdentityProvider
 import java.nio.file.Path
 import java.security.SecureRandom
 import java.time.{Clock, Duration as JDuration, Instant}
@@ -11,7 +9,6 @@ import ox.*
 import ox.channels.{Actor, ActorRef}
 import scala.concurrent.duration.DurationInt
 import scala.annotation.tailrec
-import scala.jdk.CollectionConverters.*
 import scala.jdk.DurationConverters.*
 import scala.util.control.NonFatal
 import sttp.model.Uri
@@ -25,8 +22,10 @@ import twitchscreen.relay.config.TwitchConfig
   * hands back — the CSRF guard that stops a third party from binding their own account to this relay — and swaps the code for a token. The
   * token is persisted to [[TokenFile]] and kept fresh by [[maintain]], which the application scope runs once a minute.
   *
-  * twitch4j keeps the credential object it was given and reads its access token each time it (re)subscribes, so the relay hands it one
-  * [[OAuth2Credential]] view whose getters read the same atomic authorization state on every call.
+  * Every read goes through [[view]]: one [[AuthorizationView]] built from a single `state.get()`, so the held grant, the usable grant and
+  * the missing scopes always describe the same grant. twitch4j never sees this state; each subscription plan hands it an immutable
+  * `TwitchOAuthClient.credentialOf(plan.grant)` snapshot (see [[EventSubTransportStrategy]]), and a refresh or rejection resubscribes with
+  * a new snapshot rather than mutating a credential twitch4j already holds.
   */
 private[twitch] final class TwitchAuth private (
     config: TwitchConfig,
@@ -42,28 +41,17 @@ private[twitch] final class TwitchAuth private (
   private val logger = LoggerFactory.getLogger(getClass)
   private val lastFailure = AtomicReference(Option.empty[String])
 
-  /** A stable foreign handle with volatile-backed getters; twitch4j never reads mutable, stale credential fields. */
-  private val handle = new OAuth2Credential(TwitchIdentityProvider.PROVIDER_NAME, ""):
-    override def getAccessToken: String = view.usable.map(_.accessToken.value).getOrElse("")
-    override def getRefreshToken: String = current.map(_.refreshToken.value).getOrElse("")
-    override def getUserId: String = current.map(_.userId).getOrElse("")
-    override def getUserName: String = current.map(_.login).getOrElse("")
-    override def getScopes: java.util.List[String] = current.fold(List.empty[String])(_.scopes).asJava
-    override def getExpiresAt: Instant = current.fold(Instant.MIN)(_.expiresAt)
-    override def isExpired: Boolean = view.usable.isEmpty
-
   def view: AuthorizationView =
     val held = state.get()
     val usable = held.token.filter(token => !held.rejected && !held.refreshRejected && token.expiresAt.isAfter(clock.instant()))
-    AuthorizationView(held.token, usable, config.oauth.scopes.diff(held.token.toList.flatMap(_.scopes)))
+    AuthorizationView(held.token, usable, held.token.fold(config.oauth.scopes)(missingScopesOf))
 
-  def current: Option[UserToken] = view.held
-  def accessToken: Option[String] = view.usable.map(_.accessToken.value)
+  /** The configured scopes `granted` lacks. Pure: it never reads the authorization state, so it describes exactly that grant. */
+  def missingScopesOf(granted: UserToken): List[String] = config.oauth.scopes.diff(granted.scopes)
+
   def rejectAccessToken(): Unit = state.updateAndGet(_.copy(rejected = true)).discard
   def rejectAccessToken(token: String): Unit =
     state.updateAndGet(before => if before.token.exists(_.accessToken.value == token) then before.copy(rejected = true) else before).discard
-  def credential: Option[OAuth2Credential] = view.usable.map(_ => handle)
-  def missingScopes: List[String] = view.missingScopes
 
   /** Starts a consent round trip: the URL to send the browser to. */
   def beginAuthorization(): String =
@@ -80,7 +68,8 @@ private[twitch] final class TwitchAuth private (
       logger.info(s"Twitch authorized by '${issued.login}' (${issued.scopes.mkString(" ")})")
       if !issued.login.equalsIgnoreCase(config.channel) then
         logger.warn(s"The token belongs to '${issued.login}', not the broadcaster '${config.channel}'; subscriber totals will be refused")
-      if missingScopes.nonEmpty then logger.warn(s"Twitch did not grant ${missingScopes.mkString(", ")}")
+      val missing = missingScopesOf(issued)
+      if missing.nonEmpty then logger.warn(s"Twitch did not grant ${missing.mkString(", ")}")
       issued
 
   /** Forgets the token, revokes it at Twitch and deletes the file. `false` when there was nothing to forget. */

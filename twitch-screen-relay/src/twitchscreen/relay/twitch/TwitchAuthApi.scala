@@ -52,7 +52,7 @@ private[twitch] final class TwitchAuthApi(auth: TwitchAuth) extends ServerEndpoi
       case (None, Some(code), Some(state)) =>
         auth.completeAuthorization(code, state) match
           case Right(granted) =>
-            val missing = auth.missingScopes
+            val missing = auth.missingScopesOf(granted)
             val caveat = if missing.isEmpty then "" else s" Twitch did not grant ${missing.mkString(", ")}."
             (StatusCode.Ok, TwitchAuthApi.page("Twitch connected", s"Authorized as ${granted.login}.$caveat You can close this window."))
           case Left(reason) =>
