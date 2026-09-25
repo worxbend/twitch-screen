@@ -10,7 +10,7 @@ import sttp.tapir.Schema.annotations.encodedName
 import sttp.tapir.json.jsoniter.jsonBody
 import sttp.tapir.server.ServerEndpoint
 import twitchscreen.relay.config.NotificationsConfig
-import twitchscreen.relay.http.{ApiJson, Fail, Http, ServerEndpoints}
+import twitchscreen.relay.http.{ApiJson, Fail, Http, HttpPageSize, ServerEndpoints}
 import twitchscreen.relay.protocol.{Notification, NotificationKind, NotificationRequest, SeqNo}
 
 /** The JSON field is `type`, matching the device protocol; `type` is a Scala keyword, hence the rename. */
@@ -69,24 +69,30 @@ final class NotificationApi(hub: DeviceHub, config: NotificationsConfig) extends
   private def create(request: Notification_IN): Either[Fail, Notification_OUT] =
     for
       title <- required("title", request.title)
+      body <- bounded("body", request.body)
       ttl <- ttlOf(request.ttlMs)
-    yield Notification_OUT.from(hub.publish(NotificationRequest(request.kind, title, request.body, ttl)))
+    yield Notification_OUT.from(hub.publish(NotificationRequest(request.kind, title, body, ttl)))
 
   private def required(field: String, value: String): Either[Fail, String] =
-    Option(value).map(_.trim).filter(_.nonEmpty).toRight(Fail.IncorrectInput(s"$field must not be blank"))
+    bounded(field, value).flatMap(text => Option(text.trim).filter(_.nonEmpty).toRight(Fail.IncorrectInput(s"$field must not be blank")))
+
+  private def bounded(field: String, value: String): Either[Fail, String] =
+    Option(value).filter(_.length <= MaxTextLength).toRight(Fail.IncorrectInput(s"$field must contain at most $MaxTextLength characters"))
 
   private def ttlOf(millis: Option[Long]): Either[Fail, FiniteDuration] = millis match
-    case None                     => Right(config.defaultTtl)
-    case Some(value) if value > 0 => Right(value.millis)
-    case Some(value)              => Left(Fail.IncorrectInput(s"ttlMs must be positive: $value"))
+    case None                                              => Right(config.defaultTtl)
+    case Some(value) if value > 0 && value <= MaxTtlMillis => Right(value.millis)
+    case Some(_)                                           => Left(Fail.IncorrectInput(s"ttlMs must be between 1 and $MaxTtlMillis"))
 
 object NotificationApi:
   private val DefaultPageSize = 20
+  private val MaxTextLength = 4096
+  private val MaxTtlMillis = 6553500L // u16 deciseconds, validated before FiniteDuration's nanosecond bound
 
   val listEndpoint: PublicEndpoint[Int, Fail, Notifications_OUT, Any] =
     Http.baseEndpoint.get
       .in("notifications")
-      .in(query[Int]("pageSize").default(DefaultPageSize).description("Most recent first, out of the replay buffer"))
+      .in(HttpPageSize.input(DefaultPageSize))
       .out(jsonBody[Notifications_OUT])
       .summary("List recently published notifications")
       .tag("notifications")
@@ -97,5 +103,7 @@ object NotificationApi:
       .in(jsonBody[Notification_IN])
       .out(jsonBody[Notification_OUT])
       .summary("Publish a notification to every attached device")
-      .description("Assigns the next sequence number, buffers it for replay, and pushes it immediately.")
+      .description(
+        "Returns 200 with the assigned sequence and replay record. Every accepted request creates a new notification; retries are not deduplicated. Text is limited to 4096 characters per field and ttlMs to 1–6553500; wire text may be truncated to fit the display."
+      )
       .tag("notifications")

@@ -14,6 +14,7 @@ import twitchscreen.relay.config.{ChatNotifications, DeviceLinkConfig, Hostname,
 import twitchscreen.relay.device.{DeviceApi, DeviceHub, Notification_IN, NotificationApi}
 import twitchscreen.relay.health.{HealthApi, Health_OUT, HealthStatus}
 import twitchscreen.relay.protocol.NotificationKind
+import twitchscreen.relay.observability.LogsApi
 
 /** The management API, exercised in process through Tapir's stub interpreter — no sockets, no ports. */
 class ApiSuite extends munit.FunSuite:
@@ -28,7 +29,7 @@ class ApiSuite extends munit.FunSuite:
     handshakeTimeout = 2.seconds,
     idleTimeout = 5.seconds,
     pingInterval = 4.seconds,
-    outboundQueueCapacity = 8,
+    outboundQueueCapacity = 32,
     replayBufferSize = 8,
     maxFrameLength = 256
   )
@@ -46,6 +47,7 @@ class ApiSuite extends munit.FunSuite:
         DeviceApi(hub),
         NotificationApi(hub, notificationsConfig),
         ActivityApi(ActivityLog.start(twitchscreen.relay.config.ActivityConfig(50), bus), clock),
+        LogsApi(),
         AlertsApi(alerts, AlertRule.from(alertsConfig, twitchscreen.relay.config.TwitchMode.Disabled), clock)
       )
       val backend = TapirSyncStubInterpreter().whenServerEndpointsRunLogic(apis.flatMap(_.endpoints)).backend()
@@ -92,6 +94,39 @@ class ApiSuite extends munit.FunSuite:
         .apply(Notification_IN(NotificationKind.Alert, "Rack A", "78C", Some(0L)))
         .send(backend)
       assertEquals(response.code, StatusCode.BadRequest)
+
+  test("a huge positive TTL returns a typed input error without publishing"):
+    withApi: (backend, hub, _) =>
+      val response = SttpClientInterpreter()
+        .toRequestThrowDecodeFailures(NotificationApi.createEndpoint, basePath)
+        .apply(Notification_IN(NotificationKind.Alert, "Rack A", "78C", Some(Long.MaxValue)))
+        .send(backend)
+      assertEquals(response.code, StatusCode.BadRequest)
+      assert(response.body.left.exists(_.isInstanceOf[Fail.IncorrectInput]))
+      assertEquals(hub.snapshot.notificationsPublished, 0L)
+
+  test("the largest wire TTL is accepted without wrapping"):
+    withApi: (backend, _, _) =>
+      val response = SttpClientInterpreter()
+        .toRequestThrowDecodeFailures(NotificationApi.createEndpoint, basePath)
+        .apply(Notification_IN(NotificationKind.Alert, "Rack A", "78C", Some(6553500L)))
+        .send(backend)
+      assertEquals(response.body.map(_.ttlMs), Right(6553500L))
+
+  test("oversized notification text is rejected before publication"):
+    withApi: (backend, hub, _) =>
+      val response = SttpClientInterpreter()
+        .toRequestThrowDecodeFailures(NotificationApi.createEndpoint, basePath)
+        .apply(Notification_IN(NotificationKind.Alert, "Rack A", "x" * 4097, None))
+        .send(backend)
+      assertEquals(response.code, StatusCode.BadRequest)
+      assertEquals(hub.snapshot.notificationsPublished, 0L)
+
+  test("all diagnostic list routes reject page sizes outside the shared bounds"):
+    withApi: (backend, _, _) =>
+      for route <- List("activity", "alerts", "logs", "notifications"); size <- List(0, -1, 501) do
+        val response = basicRequest.get(uri"http://localhost:8080/api/v1/$route?pageSize=$size").send(backend)
+        assertEquals(response.code, StatusCode.BadRequest, s"$route pageSize=$size")
 
   test("an unknown notification type is rejected rather than quietly treated as info"):
     withApi: (backend, _, _) =>

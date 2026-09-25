@@ -9,7 +9,7 @@ import sttp.tapir.*
 import sttp.tapir.json.jsoniter.jsonBody
 import sttp.tapir.server.ServerEndpoint
 import twitchscreen.relay.bus.EventCategory
-import twitchscreen.relay.http.{ApiJson, Fail, Http, ServerEndpoints}
+import twitchscreen.relay.http.{ApiJson, Fail, Http, HttpPageSize, ServerEndpoints}
 
 final case class Activity_OUT(entries: List[ActivityEntry]) derives Schema
 
@@ -50,7 +50,7 @@ object ActivityApi:
     def format(instant: java.time.Instant): String = formatter.format(instant)
 
   private val pageSize: EndpointInput.Query[Int] =
-    query[Int]("pageSize").default(DefaultPageSize).description("Most recent first")
+    HttpPageSize.input(DefaultPageSize)
 
   private val category: EndpointInput.Query[Option[EventCategory]] =
     query[Option[EventCategory]]("category").description("Restrict to one category of event")

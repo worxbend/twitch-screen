@@ -6,7 +6,7 @@ import sttp.shared.Identity
 import sttp.tapir.*
 import sttp.tapir.json.jsoniter.jsonBody
 import sttp.tapir.server.ServerEndpoint
-import twitchscreen.relay.http.{ApiJson, Fail, Http, ServerEndpoints}
+import twitchscreen.relay.http.{ApiJson, Fail, Http, HttpPageSize, ServerEndpoints}
 
 final case class Logs_OUT(records: List[LogRecord]) derives Schema
 
@@ -24,7 +24,7 @@ object LogsApi:
   val listEndpoint: PublicEndpoint[(Int, LogLevel), Fail, Logs_OUT, Any] =
     Http.baseEndpoint.get
       .in("logs")
-      .in(query[Int]("pageSize").default(DefaultPageSize).description("Most recent first"))
+      .in(HttpPageSize.input(DefaultPageSize))
       .in(query[LogLevel]("minLevel").default(LogLevel.Info))
       .out(jsonBody[Logs_OUT])
       .summary("Read the relay's recent log lines")

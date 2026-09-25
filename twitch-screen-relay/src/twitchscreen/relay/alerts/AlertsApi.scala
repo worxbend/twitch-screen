@@ -7,7 +7,7 @@ import sttp.shared.Identity
 import sttp.tapir.*
 import sttp.tapir.json.jsoniter.jsonBody
 import sttp.tapir.server.ServerEndpoint
-import twitchscreen.relay.http.{ApiJson, CustomMethod, Fail, Http, ServerEndpoints}
+import twitchscreen.relay.http.{ApiJson, CustomMethod, Fail, Http, HttpPageSize, ServerEndpoints}
 
 /** Where an alert stands, flattened for the wire: the domain's [[AlertStatus]] carries its timestamp inside the case. */
 enum AlertState:
@@ -84,7 +84,7 @@ object AlertsApi:
   val listEndpoint: PublicEndpoint[(Int, Option[AlertSeverity], Boolean), Fail, Alerts_OUT, Any] =
     Http.baseEndpoint.get
       .in("alerts")
-      .in(query[Int]("pageSize").default(DefaultPageSize))
+      .in(HttpPageSize.input(DefaultPageSize))
       .in(query[Option[AlertSeverity]]("severity"))
       .in(query[Boolean]("activeOnly").default(false))
       .out(jsonBody[Alerts_OUT])
