@@ -1,13 +1,18 @@
 package twitchscreen.relay.device
 
+import ch.qos.logback.classic.{Level, Logger as LogbackLogger}
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import java.io.{Closeable, IOException, OutputStream}
 import java.net.{ServerSocket, Socket}
 import java.time.Clock
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
+import org.slf4j.LoggerFactory
 import ox.*
 import ox.channels.Channel
 import scala.concurrent.duration.DurationInt
+import scala.jdk.CollectionConverters.*
 import twitchscreen.relay.bus.{EventBus, RelayEvent}
 import twitchscreen.relay.config.ChatNotifications
 import twitchscreen.relay.protocol.*
@@ -51,6 +56,28 @@ class DeviceBackpressureSuite extends munit.FunSuite:
       val refused = useCloseableInScope(Socket("127.0.0.1", port))
       refused.setSoTimeout(5000)
       assertEquals(refused.getInputStream.read(), -1)
+
+  test("an over-limit refusal is counted in the snapshot and logged with the running total"):
+    val logger = LoggerFactory.getLogger(DeviceLinkServer.getClass).asInstanceOf[LogbackLogger]
+    val appender = ListAppender[ILoggingEvent]()
+    appender.start()
+    logger.addAppender(appender)
+    try
+      supervised:
+        val (hub, port) = TestRelay.start(TestRelay.config.copy(handshakeTimeout = 30.seconds))
+        assertEquals(hub.snapshot.connectionsRefused, 0L)
+        (1 to DeviceLinkServer.MaxConnections).foreach(_ => useCloseableInScope(Socket("127.0.0.1", port)).discard)
+        val refused = useCloseableInScope(Socket("127.0.0.1", port))
+        refused.setSoTimeout(5000)
+        assertEquals(refused.getInputStream.read(), -1)
+        // The listener counts and logs before it closes the socket, so EOF above already orders both before this read.
+        assertEquals(hub.snapshot.connectionsRefused, 1L)
+        assertEquals(hub.connectionsRefused, 1L)
+        val warnings = appender.list.asScala.filter(_.getLevel == Level.WARN).map(_.getFormattedMessage).toList
+        assertEquals(warnings.count(_.contains("refused 1 connections")), 1, warnings)
+    finally
+      logger.detachAppender(appender).discard
+      appender.stop()
 
   test("EVENT overflow closes and removes the connection before any later event can cross the gap"):
     supervised:

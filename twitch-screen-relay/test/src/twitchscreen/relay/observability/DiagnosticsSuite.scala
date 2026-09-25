@@ -73,8 +73,13 @@ class DiagnosticsSuite extends munit.FunSuite:
           DeviceLinkConfig(Hostname("localhost").toOption.get, Port(8099).toOption.get, 3, 8, 2.seconds, 5.seconds, 4.seconds, 32, 8, 256)
         val hub = DeviceHub.start(config, ChatNotifications.Show, clock, bus)
         RelayMetrics.start(sdk, bus, hub).discard
-        assert(reader.collect().exists(_.getName == "relay.device.connected"))
-      assert(!reader.collect().exists(_.getName == "relay.device.connected"))
+        val measured = reader.collect()
+        assert(measured.exists(_.getName == "relay.device.connected"))
+        val refused = measured.find(_.getName == "relay.device.connections.refused")
+        assertEquals(refused.map(_.getLongSumData.getPoints.asScala.map(_.getValue).sum), Some(0L))
+      val after = reader.collect()
+      assert(!after.exists(_.getName == "relay.device.connected"))
+      assert(!after.exists(_.getName == "relay.device.connections.refused"))
 
 private final class CollectingReader extends MetricReader:
   private val registration = AtomicReference(CollectionRegistration.noop())

@@ -17,7 +17,7 @@ import twitchscreen.relay.alerts.{AlertRule, AlertStore, AlertsApi}
 import twitchscreen.relay.bus.{BusEvent, EventBus, EventCategory, RelayEvent}
 import twitchscreen.relay.config.{ActivityConfig, ChatNotifications, Config, DeviceLinkConfig, Hostname, NotificationsConfig, Port}
 import twitchscreen.relay.device.{DeviceApi, DeviceHub, Notification_IN, NotificationApi}
-import twitchscreen.relay.health.{HealthApi, Health_OUT, HealthStatus, StatusApi}
+import twitchscreen.relay.health.{DeviceLink_OUT, HealthApi, Health_OUT, HealthStatus, StatusApi}
 import twitchscreen.relay.protocol.{NotificationKind, SeqNo}
 import twitchscreen.relay.observability.{LogBuffer, LogLevel, LogRecord, LogsApi, Logs_OUT}
 import twitchscreen.relay.twitch.{BotFilter, TwitchSource}
@@ -71,6 +71,10 @@ class ApiSuite extends munit.FunSuite:
 
   /** `deviceLink.sequenceExhausted` from the status endpoint, over a hub whose counter starts at `initial`. */
   private def statusSequenceExhausted(initial: SeqNo): Either[Unit, Boolean] =
+    statusDeviceLink(initial).map(_.sequenceExhausted)
+
+  /** `deviceLink` from the status endpoint, over a hub whose counter starts at `initial`. */
+  private def statusDeviceLink(initial: SeqNo): Either[Unit, DeviceLink_OUT] =
     supervised:
       val config = ConfigSource
         .fromConfig(
@@ -87,13 +91,16 @@ class ApiSuite extends munit.FunSuite:
         .apply(())
         .send(backend)
         .body
-        .map(_.deviceLink.sequenceExhausted)
+        .map(_.deviceLink)
         .left
         .map(_ => ())
 
   test("the status endpoint reports whether the device link's sequence space is exhausted"):
     assertEquals(statusSequenceExhausted(SeqNo.Zero), Right(false))
     assertEquals(statusSequenceExhausted(SeqNo.Max), Right(true))
+
+  test("the status endpoint reports device connections refused at the session limit"):
+    assertEquals(statusDeviceLink(SeqNo.Zero).map(_.connectionsRefused), Right(0L))
 
   test("the liveness endpoint reports up"):
     withApi: (backend, _, _) =>

@@ -20,6 +20,8 @@ import twitchscreen.relay.twitch.{TwitchSource, TwitchStatus}
 final case class DeviceLink_OUT(
     connectedDevices: Int,
     connectionsAccepted: Long,
+    /** Connections closed at the device link's session limit (pending handshakes included) since start. */
+    connectionsRefused: Long,
     notificationsPublished: Long,
     latestSeq: SeqNo,
     replayBuffered: Int,
@@ -67,6 +69,7 @@ final class StatusApi(
       deviceLink = DeviceLink_OUT(
         connectedDevices = snapshot.connectedDevices,
         connectionsAccepted = snapshot.connectionsAccepted,
+        connectionsRefused = snapshot.connectionsRefused,
         notificationsPublished = snapshot.notificationsPublished,
         latestSeq = snapshot.latestSeq,
         replayBuffered = snapshot.replayBuffered,

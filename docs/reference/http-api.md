@@ -127,7 +127,7 @@ It only establishes that the HTTP server can respond. Docker's health check uses
 |---|---|
 | `version`, `startedAt`, `uptimeSeconds` | Running version and process lifetime |
 | `twitch` | `mode`, `health`, `channel`, `detail` |
-| `deviceLink` | Connected devices, accepted connections, published notifications, latest sequence, replay count, and `sequenceExhausted` (true once the `u32` sequence space is spent; restart the relay) |
+| `deviceLink` | Connected devices, accepted connections, `connectionsRefused` (connections closed at the 64-session limit, pending handshakes included; also exported as the `relay.device.connections.refused` metric; a rising value means too many devices, or a connection leak or flood), published notifications, latest sequence, replay count, and `sequenceExhausted` (true once the `u32` sequence space is spent; restart the relay) |
 | `subscribers` | Internal event-bus subscriber statistics, including losses |
 | `activityEntries`, `activeAlerts`, `bufferedLogRecords` | Current in-memory diagnostic counts |
 

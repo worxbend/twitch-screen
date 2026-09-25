@@ -65,5 +65,11 @@ private[relay] object RelayMetrics:
         .setDescription("Devices currently attached to the relay")
         .buildWithCallback(measurement => measurement.record(hub.connectedCount.toDouble))
     ).discard
+    useCloseableInScope(
+      metrics.meter
+        .counterBuilder("relay.device.connections.refused")
+        .setDescription("Device connections refused at the session limit since start")
+        .buildWithCallback(measurement => measurement.record(hub.connectionsRefused))
+    ).discard
     bus.consume("metrics")(message => metrics.observe(message.event))
     metrics

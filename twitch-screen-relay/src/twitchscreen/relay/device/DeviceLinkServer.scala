@@ -25,6 +25,12 @@ private[relay] object DeviceLinkServer:
 
   private[device] val MaxConnections: Int = 64
 
+  /** WARN on the first refusal at the session limit and on every 100th, each with the running total. */
+  private[device] def shouldLogRefusal(refused: Long): Boolean = refused == 1 || refused % 100 == 0
+
+  /** WARN on the first consecutive accept failure and on every 10th. The count is a `Long`, so the cadence never saturates. */
+  private[device] def shouldLogFailure(failures: Long): Boolean = failures == 1 || failures % 10 == 0
+
   /** A zero bind port is available to socket tests without weakening configured production ports. */
   private[device] def startOnPort(config: DeviceLinkConfig, hub: DeviceHub, clock: Clock, port: Int)(using Ox): ServerSocket =
     val listener = useCloseableInScope(ServerSocket())
@@ -39,7 +45,6 @@ private[relay] object DeviceLinkServer:
   private def acceptLoop(listener: ServerSocket, config: DeviceLinkConfig, hub: DeviceHub, clock: Clock)(using Ox): Unit =
     val sessions = AtomicInteger(0)
     var failures = 0L
-    var refused = 0L
     repeatWhile:
       accept(listener) match
         case Right(socket) =>
@@ -50,9 +55,8 @@ private[relay] object DeviceLinkServer:
               finally sessions.decrementAndGet().discard
           else
             sessions.decrementAndGet().discard
-            refused += 1
-            if refused == 1 || refused % 100 == 0 then
-              logger.warn(s"Device connection limit ($MaxConnections) reached; refused $refused connections")
+            val total = hub.recordRefusedConnection()
+            if shouldLogRefusal(total) then logger.warn(s"Device connection limit ($MaxConnections) reached; refused $total connections")
             socket.close().catching[IOException].discard
           true
         case Left(_) if listener.isClosed =>
@@ -61,7 +65,8 @@ private[relay] object DeviceLinkServer:
         case Left(error) =>
           // A refused connection must not take the listener down with it.
           failures += 1
-          if failures == 1 || failures % 10 == 0 then logger.warn("Accepting a device connection failed; retrying with backoff", error)
+          if shouldLogFailure(failures) then
+            logger.warn(s"Accepting a device connection failed ($failures consecutive); retrying with backoff", error)
           sleep((100 * (1 << math.min(failures - 1, 5L).toInt)).millis)
           true
 

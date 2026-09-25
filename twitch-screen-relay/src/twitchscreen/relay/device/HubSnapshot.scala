@@ -6,6 +6,8 @@ import twitchscreen.relay.protocol.{SeqNo, StreamStats}
 final case class HubSnapshot(
     connectedDevices: Int,
     connectionsAccepted: Long,
+    /** Connections closed unhandled because `MaxConnections` sessions (including pending handshakes) were already open. */
+    connectionsRefused: Long,
     notificationsPublished: Long,
     latestSeq: SeqNo,
     replayBuffered: Int,

@@ -3,7 +3,7 @@ package twitchscreen.relay.device
 import java.io.{Closeable, IOException}
 import java.time.{Clock, Instant}
 import java.util.concurrent.ThreadLocalRandom
-import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong, AtomicReference}
 import org.slf4j.LoggerFactory
 import ox.*
 import ox.channels.{Actor, ActorRef, Channel, ChannelClosed}
@@ -61,6 +61,7 @@ private[device] final case class AttachRequest(
 private[relay] final class DeviceHub private (
     state: ActorRef[DeviceHubState],
     connected: AtomicInteger,
+    refused: AtomicLong,
     observed: AtomicReference[HubSnapshot]
 ):
   // Ox's bounded default mailbox admits 16 pending operations. ask confines operation failures to the caller,
@@ -95,10 +96,18 @@ private[relay] final class DeviceHub private (
   /** Most recent notifications first, out of both replay rings. */
   def recentNotifications(limit: Int): List[Notification] = state.ask(_.recent(limit))
 
-  def snapshot: HubSnapshot = observed.get()
+  /** The actor's last published snapshot, overlaid with the refusal count, which the listener records without going through the actor. */
+  def snapshot: HubSnapshot = observed.get().copy(connectionsRefused = refused.get())
 
   /** Safe for telemetry callbacks even after the actor's scope has ended. */
   def connectedCount: Int = connected.get()
+
+  /** Connections the listener closed at its session limit since start. Safe for telemetry callbacks even after the actor's scope has ended.
+    */
+  def connectionsRefused: Long = refused.get()
+
+  /** Returns the running total. Never goes through the actor: the accept loop must not wait on the hub's mailbox. */
+  private[device] def recordRefusedConnection(): Long = refused.incrementAndGet()
 
   /** §6.7 code 8: tells every attached device why it is about to lose the link, so a relay restart is one log line on the device instead of
     * a silent drop into the blind exponential ramp. `ask` rather than `tell`, so that the caller knows the frames are queued before the
@@ -149,11 +158,13 @@ private[relay] object DeviceHub:
   )(using Ox): DeviceHub =
     val connected = AtomicInteger(0)
     val sessionId = SessionId.fromWire(sessionIdSource())
-    val initial = HubSnapshot(0, 0L, 0L, initialSequence, 0, StreamStats.Unknown, initialSequence.next.isEmpty)
+    // connectionsRefused is 0 here and in every actor snapshot: the facade overlays the live value.
+    val initial = HubSnapshot(0, 0L, 0L, 0L, initialSequence, 0, StreamStats.Unknown, initialSequence.next.isEmpty)
     val observed = AtomicReference(initial)
     new DeviceHub(
       Actor.create(new DeviceHubState(config, chat, clock, bus, connected, initialSequence, sessionId, observed)),
       connected,
+      AtomicLong(0),
       observed
     )
 
@@ -297,6 +308,7 @@ private[device] final class DeviceHubState(
     HubSnapshot(
       connectedDevices = attached.size,
       connectionsAccepted = connectionsAccepted,
+      connectionsRefused = 0L, // owned by the facade, which overlays the live value
       notificationsPublished = notificationsPublished,
       latestSeq = latestSequence,
       replayBuffered = replay.size,
