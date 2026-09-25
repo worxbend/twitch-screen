@@ -101,7 +101,7 @@ So extension of the library stack for our application should follow the same pri
 
 PureConfig              ← application configuration
 Typesafe Config/HOCON   ← source/merging/overrides
-MacWire                 ← wiring
+MacWire                 ← wiring1
 
 please make sure to leverage all the Scala skills and best practices available, including functional programming paradigms, type safety, immutability, and asynchronous programming, to build a robust and maintainable Twitch integration layer.
 
