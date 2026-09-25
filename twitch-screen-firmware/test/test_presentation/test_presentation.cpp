@@ -10,13 +10,21 @@ int main() {
   };
   struct Number { uint32_t value; const char *text; };
   const Number cases[] = {{0, "0"}, {999, "999"}, {1000, "1.0K"},
-    {9999, "9.9K"}, {10000, "10K"}, {999999, "999K"}, {1000000, "1.0M"},
-    {9999999, "9.9M"}, {10000000, "10M"}, {999999999, "999M"},
-    {1000000000, "1.0B"}, {0xffffffffu, "4.2B"}};
+    {1049, "1.0K"}, {1099, "1.0K"}, {1100, "1.1K"}, {9949, "9.9K"}, {9950, "9.9K"}, {9999, "9.9K"}, {10000, "10K"}, {999999, "999K"}, {1000000, "1.0M"},
+    {1099999, "1.0M"}, {1100000, "1.1M"}, {9999999, "9.9M"}, {10000000, "10M"}, {999999999, "999M"},
+    {1000000000, "1.0B"}, {1099999999, "1.0B"}, {1100000000, "1.1B"}, {0xffffffffu, "4.2B"}};
   for (const auto &c : cases) {
     char text[16]; formatCount(text, sizeof(text), c.value);
     check(strcmp(text, c.text) == 0 && strlen(text) <= 4, "bounded compact count");
   }
+  for (unsigned code = 0; code <= 255; ++code) {
+    const auto kind = kindFromCode(static_cast<uint8_t>(code));
+    const auto &style = kindPresentation(kind);
+    check(style.label && style.icon && style.holdMs >= 2500 && style.holdMs <= 5000,
+          "every wire kind has complete bounded presentation including unknown fallback");
+  }
+  check(kindPresentation(NotifyKind::Chat).holdMs == 2500, "chat hold default");
+  check(kindPresentation(NotifyKind::StreamStart).holdMs == 5000, "stream hold default");
   check(readableChatColor(0) == 0xffffff, "legal black color remains readable");
   check(readableChatColor(0x101010) == 0xffffff, "dark chatter color gets visible fallback");
   check(readableChatColor(0x00ff00) == 0x00ff00, "bright chatter color is retained");

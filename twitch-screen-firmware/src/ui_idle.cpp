@@ -5,6 +5,7 @@
 
 #include "assets/twitch_glitch.h"
 #include "presentation.h"
+#include "ui_common.h"
 
 // Layout for the 240x240 round panel (radius 120, center 120,120).
 // Usable half-width at offset y from center: sqrt(120^2 - y^2) minus ~8 px
@@ -43,6 +44,17 @@ lv_obj_t *connectGroup = nullptr;
 lv_obj_t *connLabel = nullptr;
 
 bool linkUp = false;
+bool covered = false;
+lv_timer_t *dotsTimer = nullptr;
+lv_timer_t *uptimeTimer = nullptr;
+lv_obj_t *connectSpinner = nullptr;
+lv_obj_t *connectLogo = nullptr;
+StreamStats latestStats;
+char viewersText[8] = {};
+char uptimeText[16] = {};
+
+static_assert(sizeof(twitch_glitch_48) == 48u * 48u * sizeof(uint16_t), "48px asset size");
+static_assert(sizeof(twitch_glitch_84) == 84u * 84u * sizeof(uint16_t), "84px asset size");
 
 lv_image_dsc_t glitch48, glitch84;
 
@@ -84,13 +96,6 @@ lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font, lv_color_t color,
   return makeLabelAt(parent, font, color, align, 0, y);
 }
 
-void clearDecor(lv_obj_t *o) {
-  lv_obj_set_style_border_width(o, 0, 0);
-  lv_obj_remove_style(o, nullptr, LV_PART_SCROLLBAR);
-  lv_obj_set_scrollable(o, false);
-  lv_obj_set_clickable(o, false);
-}
-
 void pulseAnim(void *var, int32_t v) {
   lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
 }
@@ -111,7 +116,7 @@ void startPulse(lv_obj_t *obj, lv_opa_t lo, lv_opa_t hi, uint32_t ms) {
 void viewersAnim(void *var, int32_t v) {
   char text[8];
   formatCount(text, sizeof(text), v < 0 ? 0u : (uint32_t)v);
-  lv_label_set_text((lv_obj_t *)var, text);
+  setStaticLabel(static_cast<lv_obj_t *>(var), viewersText, text);
 }
 
 void setViewers(uint32_t v) {
@@ -120,7 +125,7 @@ void setViewers(uint32_t v) {
   if (v >= 10000) {
     char text[8];
     formatCount(text, sizeof(text), v);
-    lv_label_set_text(viewersValue, text);
+    setStaticLabel(viewersValue, viewersText, text);
     shownViewers = v;
     return;
   }
@@ -145,11 +150,11 @@ void renderUptime() {
   const uint32_t sec = uptimeBase + (millis() - uptimeAnchorMs) / 1000;
   char buf[16];
   formatUptime(buf, sizeof(buf), sec);
-  lv_label_set_text(uptimeLabel, buf);
+  setStaticLabel(uptimeLabel, uptimeText, buf);
 }
 
 void uptimeTickCb(lv_timer_t *) {
-  if (!curLive) return;
+  if (!curLive || !linkUp || covered) return;
   renderUptime();
 }
 
@@ -160,17 +165,17 @@ void uptimeTickCb(lv_timer_t *) {
 lv_obj_t *makeChip(lv_obj_t *parent, int x, const char *caption) {
   lv_obj_t *value = makeLabelAt(parent, &lv_font_montserrat_14, COL_TEXT,
                                 LV_ALIGN_CENTER, x, 62);
-  lv_label_set_text(value, "0");
+  lv_label_set_text_static(value, "0");
   lv_obj_t *cap = makeLabelAt(parent, &lv_font_montserrat_14, COL_DIM,
                               LV_ALIGN_CENTER, x, 80);
   lv_obj_set_style_text_letter_space(cap, 1, 0);
-  lv_label_set_text(cap, caption);
+  lv_label_set_text_static(cap, caption);
   return value;
 }
 
 void buildLive(lv_obj_t *scr) {
   liveGroup = lv_obj_create(scr);
-  lv_obj_set_size(liveGroup, 240, 240);
+  lv_obj_set_size(liveGroup, PANEL, PANEL);
   lv_obj_center(liveGroup);
   lv_obj_set_style_bg_opa(liveGroup, LV_OPA_TRANSP, 0);
   lv_obj_set_style_pad_all(liveGroup, 0, 0);
@@ -207,18 +212,17 @@ void buildLive(lv_obj_t *scr) {
   lv_obj_set_style_bg_color(liveDot, lv_color_white(), 0);
   lv_obj_set_style_radius(liveDot, LV_RADIUS_CIRCLE, 0);
   clearDecor(liveDot);
-  startPulse(liveDot, 255, 60, 700);
 
   lv_obj_t *liveTxt = makeLabel(pill, &lv_font_montserrat_14,
                                 lv_color_white(), LV_ALIGN_LEFT_MID, 0);
   lv_obj_set_x(liveTxt, 22);
-  lv_label_set_text(liveTxt, "LIVE");
+  lv_label_set_text_static(liveTxt, "LIVE");
 
   // Time since stream start — one of the three numbers the screen exists for.
   uptimeLabel = makeLabel(liveGroup, &lv_font_montserrat_14, COL_DIM,
                           LV_ALIGN_CENTER, -70);
-  lv_label_set_text(uptimeLabel, "0:00:00");
-  lv_timer_create(uptimeTickCb, 1000, nullptr);
+  lv_label_set_text_static(uptimeLabel, "0:00:00");
+  uptimeTimer = lv_timer_create(uptimeTickCb, 1000, nullptr);
 
   lv_obj_t *logo = lv_image_create(liveGroup);
   lv_image_set_src(logo, &glitch48);
@@ -226,12 +230,12 @@ void buildLive(lv_obj_t *scr) {
 
   viewersValue = makeLabel(liveGroup, &lv_font_montserrat_48, COL_TEXT,
                            LV_ALIGN_CENTER, 8);
-  lv_label_set_text(viewersValue, "0");
+  lv_label_set_text_static(viewersValue, "0");
 
   lv_obj_t *caption = makeLabel(liveGroup, &lv_font_montserrat_14, COL_DIM,
                                 LV_ALIGN_CENTER, 44);
   lv_obj_set_style_text_letter_space(caption, 2, 0);
-  lv_label_set_text(caption, "VIEWERS");
+  lv_label_set_text_static(caption, "VIEWERS");
 
   chipFoll = makeChip(liveGroup, -50, "FLW");
   chipChat = makeChip(liveGroup, 0, "MSG");
@@ -240,7 +244,7 @@ void buildLive(lv_obj_t *scr) {
 
 void buildOffline(lv_obj_t *scr) {
   offlineGroup = lv_obj_create(scr);
-  lv_obj_set_size(offlineGroup, 240, 240);
+  lv_obj_set_size(offlineGroup, PANEL, PANEL);
   lv_obj_center(offlineGroup);
   lv_obj_set_style_bg_opa(offlineGroup, LV_OPA_TRANSP, 0);
   lv_obj_set_style_pad_all(offlineGroup, 0, 0);
@@ -258,11 +262,11 @@ void buildOffline(lv_obj_t *scr) {
   lv_obj_t *off = makeLabel(offlineGroup, &lv_font_montserrat_28, COL_DIM,
                             LV_ALIGN_CENTER, 8);
   lv_obj_set_style_text_letter_space(off, 2, 0);
-  lv_label_set_text(off, "OFFLINE");
+  lv_label_set_text_static(off, "OFFLINE");
 
   lv_obj_t *sub = makeLabel(offlineGroup, &lv_font_montserrat_14, COL_DIM,
                             LV_ALIGN_CENTER, 34);
-  lv_label_set_text(sub, "waiting to go live");
+  lv_label_set_text_static(sub, "waiting to go live");
 
   offChipFoll = makeChip(offlineGroup, -50, "FLW");
   offChipChat = makeChip(offlineGroup, 0, "MSG");
@@ -273,7 +277,7 @@ void buildOffline(lv_obj_t *scr) {
 
 lv_obj_t *makeGroup(lv_obj_t *scr) {
   lv_obj_t *g = lv_obj_create(scr);
-  lv_obj_set_size(g, 240, 240);
+  lv_obj_set_size(g, PANEL, PANEL);
   lv_obj_center(g);
   lv_obj_set_style_bg_opa(g, LV_OPA_TRANSP, 0);
   lv_obj_set_style_pad_all(g, 0, 0);
@@ -288,15 +292,15 @@ void spinAnim(void *var, int32_t v) {
 void dotsCb(lv_timer_t *) {
   static uint8_t n = 0;
   n = (n + 1) % 4;
-  lv_label_set_text(connLabel, n == 0 ? "CONNECTING" : n == 1 ? "CONNECTING."
-                                   : n == 2 ? "CONNECTING.." : "CONNECTING...");
+  static const char *const labels[] = {"CONNECTING", "CONNECTING.", "CONNECTING..", "CONNECTING..."};
+  lv_label_set_text_static(connLabel, labels[n]);
 }
 
 void buildConnect(lv_obj_t *scr) {
   connectGroup = makeGroup(scr);
 
   // Purple spinner arc orbiting the logo.
-  lv_obj_t *spinner = lv_arc_create(connectGroup);
+  lv_obj_t *spinner = connectSpinner = lv_arc_create(connectGroup);
   lv_obj_set_size(spinner, 140, 140);
   lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -14);
   lv_arc_set_bg_angles(spinner, 0, 80);
@@ -310,41 +314,68 @@ void buildConnect(lv_obj_t *scr) {
   lv_obj_remove_style(spinner, nullptr, LV_PART_KNOB);
   lv_obj_set_clickable(spinner, false);
 
+  lv_obj_t *logo = connectLogo = lv_image_create(connectGroup);
+  lv_image_set_src(logo, &glitch84);
+  lv_obj_align(logo, LV_ALIGN_CENTER, 0, -14);
+
+  connLabel = makeLabel(connectGroup, &lv_font_montserrat_20, COL_DIM,
+                        LV_ALIGN_CENTER, 72);
+  lv_label_set_text_static(connLabel, "CONNECTING");
+  dotsTimer = lv_timer_create(dotsCb, 450, nullptr);
+}
+
+void renderVisibleStats() {
+  if (!linkUp || covered) return;
+  char text[16];
+  formatCount(text, sizeof(text), latestStats.msgTotal);
+  setLabelIfChanged(curLive ? chipChat : offChipChat, text);
+  formatCount(text, sizeof(text), latestStats.followers);
+  setLabelIfChanged(curLive ? chipFoll : offChipFoll, text);
+  formatCount(text, sizeof(text), latestStats.subs);
+  setLabelIfChanged(curLive ? chipSubs : offChipSubs, text);
+  if (!curLive) return;
+  renderUptime();
+  setViewers(latestStats.viewers);
+  const int32_t rate = latestStats.chatRate > 100 ? 100 : latestStats.chatRate;
+  if (lv_arc_get_value(edgeArc) != rate) lv_arc_set_value(edgeArc, rate);
+}
+
+void startSpinner() {
   lv_anim_t a;
   lv_anim_init(&a);
-  lv_anim_set_var(&a, spinner);
+  lv_anim_set_var(&a, connectSpinner);
   lv_anim_set_values(&a, 0, 360);
   lv_anim_set_duration(&a, 1400);
   lv_anim_set_exec_cb(&a, spinAnim);
   lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
   lv_anim_start(&a);
 
-  lv_obj_t *logo = lv_image_create(connectGroup);
-  lv_image_set_src(logo, &glitch84);
-  lv_obj_align(logo, LV_ALIGN_CENTER, 0, -14);
-  startPulse(logo, 110, 255, 1200);  // breathing glow
-
-  connLabel = makeLabel(connectGroup, &lv_font_montserrat_20, COL_DIM,
-                        LV_ALIGN_CENTER, 72);
-  lv_label_set_text(connLabel, "CONNECTING");
-  lv_timer_create(dotsCb, 450, nullptr);
 }
 
 void applyVisibility() {
-  if (!linkUp) {
-    lv_obj_set_hidden(connectGroup, false);
-    lv_obj_set_hidden(liveGroup, true);
-    lv_obj_set_hidden(offlineGroup, true);
-    return;
+  const bool connecting = !covered && !linkUp;
+  const bool live = !covered && linkUp && curLive;
+  lv_obj_set_hidden(connectGroup, !connecting);
+  lv_obj_set_hidden(liveGroup, !live);
+  lv_obj_set_hidden(offlineGroup, covered || !linkUp || curLive);
+  lv_timer_pause(dotsTimer);
+  lv_timer_pause(uptimeTimer);
+  lv_anim_delete(connectSpinner, spinAnim);
+  lv_anim_delete(connectLogo, pulseAnim);
+  lv_anim_delete(liveDot, pulseAnim);
+  if (connecting) {
+    lv_timer_resume(dotsTimer);
+    startSpinner();
+    startPulse(connectLogo, 110, 255, 1200);
   }
-  lv_obj_set_hidden(connectGroup, true);
-  if (curLive) {
-    lv_obj_set_hidden(liveGroup, false);
-    lv_obj_set_hidden(offlineGroup, true);
+  if (live) {
+    lv_timer_resume(uptimeTimer);
+    startPulse(liveDot, 255, 60, 700);
   } else {
-    lv_obj_set_hidden(liveGroup, true);
-    lv_obj_set_hidden(offlineGroup, false);
+    lv_anim_delete(viewersValue, viewersAnim);
+    shownViewers = -1;
   }
+  renderVisibleStats();
 }
 
 }  // namespace
@@ -363,52 +394,25 @@ void uiIdleBuild() {
 }
 
 void uiIdleSetStats(const StreamStats &s) {
-  const bool live = s.live != 0;   // §6.5: any non-zero value means live
-  if (live != curLive) {
-    curLive = live;
-    applyVisibility();
-  }
-
-  // §6.5: msg_total resets when a stream STARTS and deliberately not when one
-  // ends — "the last value stays on screen until the next stream begins" — and the
-  // relay keeps sending all three totals in every offline STATS (vector V5 pins
-  // msg_total = 2135 with live = 0). Applying them only while live threw the
-  // final message count of the stream that just ended straight on the floor, and
-  // the viewer never learned it. Both screens carry the row; only the live one
-  // carries viewers, uptime and the chat-rate ring, which are the figures that
-  // genuinely have no meaning offline.
-  char buf[16];
-  formatCount(buf, sizeof(buf), s.msgTotal);
-  lv_label_set_text(chipChat, buf);
-  lv_label_set_text(offChipChat, buf);
-  formatCount(buf, sizeof(buf), s.followers);
-  lv_label_set_text(chipFoll, buf);
-  lv_label_set_text(offChipFoll, buf);
-  formatCount(buf, sizeof(buf), s.subs);
-  lv_label_set_text(chipSubs, buf);
-  lv_label_set_text(offChipSubs, buf);
-
-  if (!live) {
-    uptimeValid = false;
-    return;
-  }
-
-  // §6.5: stream_started_at is carried alongside uptime_s precisely so a device
-  // can prefer the absolute anchor. Use it when the relay knows both clocks,
-  // and fall back to the relative snapshot when either is unknown.
+  latestStats = s;
+  const bool changed = curLive != (s.live != 0);
+  curLive = s.live != 0;
+  uptimeValid = curLive;
   uptimeBase = (s.streamStartedAt != 0 && s.serverTime >= s.streamStartedAt)
-                   ? (s.serverTime - s.streamStartedAt)
-                   : s.uptimeSec;
+                   ? (s.serverTime - s.streamStartedAt) : s.uptimeSec;
   uptimeAnchorMs = millis();
-  uptimeValid = true;
-  renderUptime();
-
-  setViewers(s.viewers);
-  lv_arc_set_value(edgeArc, (int32_t)(s.chatRate > 100 ? 100 : s.chatRate));
+  if (changed) applyVisibility();
+  else renderVisibleStats();
 }
 
 void uiIdleSetOnline(bool online) {
   if (!connectGroup || online == linkUp) return;
   linkUp = online;
+  applyVisibility();
+}
+
+void uiIdleSetCovered(bool value) {
+  if (!connectGroup || covered == value) return;
+  covered = value;
   applyVisibility();
 }

@@ -5,12 +5,14 @@
 #include <string.h>
 
 #include "presentation.h"
+#include "ui_common.h"
+#include "ui_idle.h"
 
 // Full-screen event card for the 240x240 round panel. Content stays inside
 // the circle: nothing wider than ~170 px below the vertical center, and the
 // accent ring hugs the edge.
 //
-// The kind switched on below is the WIRE CODE from EVENT payload byte +20
+// The kind is the WIRE CODE from EVENT payload byte +20
 // (docs/PROTOCOL.md §6.4.1), not an ordinal. That is the whole point: 0x12 is
 // FOLLOW here because 0x12 is FOLLOW on the wire, and a kind added to the
 // protocol later cannot renumber the ones already flashed.
@@ -25,8 +27,6 @@ constexpr uint32_t ALERT_MS = 200;  // one flash pulse half-period
 // defaults; anything non-zero on the wire wins, and the decoder has already
 // clamped it to 6000 (10 min).
 constexpr uint32_t HOLD_DEFAULT_MS = 3500;
-constexpr uint32_t HOLD_CHAT_MS    = 2500;
-constexpr uint32_t HOLD_STREAM_MS  = 5000;
 
 lv_obj_t *overlay = nullptr;
 lv_obj_t *flash = nullptr;
@@ -39,6 +39,7 @@ lv_obj_t *bodyLabel = nullptr;
 lv_obj_t *seqLabel = nullptr;
 
 bool busy = false;
+bool replayCard = false;
 uint32_t holdMs = HOLD_DEFAULT_MS;   // how long the current card stays up
 
 void animY(void *var, int32_t v) { lv_obj_set_y((lv_obj_t *)var, v); }
@@ -62,14 +63,15 @@ void animate(lv_obj_t *obj, lv_anim_exec_xcb_t cb, int32_t from, int32_t to,
 void hideReady(lv_anim_t *) {
   lv_obj_set_hidden(overlay, true);
   busy = false;
+  uiIdleSetCovered(false);
 }
 
 void hideStart() {
   lv_anim_delete(ring, animOpa);  // stop the hold-time ring pulse
   lv_obj_set_style_opa(ring, LV_OPA_COVER, 0);
-  animate(overlay, animY, 0, 240, SLIDE_OUT_MS, lv_anim_path_ease_in, hideReady);
-  animate(overlay, animOpa, LV_OPA_COVER, LV_OPA_TRANSP, SLIDE_OUT_MS,
-          lv_anim_path_ease_in, nullptr);
+  if (replayCard) { hideReady(nullptr); return; }
+  uiIdleSetCovered(false);
+  animate(overlay, animY, 0, PANEL, SLIDE_OUT_MS, lv_anim_path_ease_in, hideReady);
 }
 
 void holdTimerCb(lv_timer_t *t) {
@@ -80,12 +82,11 @@ void holdTimerCb(lv_timer_t *t) {
 void showReady(lv_anim_t *) { lv_timer_create(holdTimerCb, holdMs, nullptr); }
 
 // Slide the card in and keep the accent ring breathing while it is up. Reached
-// either straight away (a replayed card, §6.4) or after the alert blink.
+// after the optional alert blink. Replay cards bypass this entirely.
 void slideIn() {
   lv_obj_set_hidden(overlay, false);
-  animate(overlay, animY, 240, 0, SLIDE_IN_MS, lv_anim_path_ease_out, showReady);
-  animate(overlay, animOpa, LV_OPA_TRANSP, LV_OPA_COVER, SLIDE_IN_MS,
-          lv_anim_path_ease_out, nullptr);
+  lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
+  animate(overlay, animY, PANEL, 0, SLIDE_IN_MS, lv_anim_path_ease_out, showReady);
 
   lv_anim_t a;
   lv_anim_init(&a);
@@ -104,51 +105,8 @@ void flashDone(lv_anim_t *) {
   slideIn();
 }
 
-// Bold event glyph inside the colored disc (Twitch semantic colors). One case
-// per wire code; the default arm is the §6.4.2 unknown-kind rule and is reached
-// only through kindFromCode() having already folded the code to Info.
-const char *kindIcon(NotifyKind k) {
-  switch (k) {
-    case NotifyKind::StreamStart: return LV_SYMBOL_PLAY;
-    case NotifyKind::StreamEnd:   return LV_SYMBOL_STOP;
-    case NotifyKind::Follow:      return "F";
-    case NotifyKind::Sub:         return "S";
-    case NotifyKind::Gift:        return "G";
-    case NotifyKind::Raid:        return "R";
-    case NotifyKind::Chat:        return "C";
-    case NotifyKind::Bits:        return "B";
-    case NotifyKind::Message:     return "M";
-    case NotifyKind::Warning:     return "!";
-    case NotifyKind::Alert:       return "!";
-    default:                      return "i";
-  }
-}
-
-lv_color_t kindLvColor(NotifyKind k) {
-  switch (k) {
-    case NotifyKind::StreamStart: return lv_color_hex(0x00E676);  // go-live green
-    case NotifyKind::StreamEnd:   return lv_color_hex(0x78909C);  // slate
-    case NotifyKind::Follow:      return lv_color_hex(0x9146FF);  // twitch purple
-    case NotifyKind::Sub:         return lv_color_hex(0xFFB300);  // gold
-    case NotifyKind::Gift:        return lv_color_hex(0xFF75E6);  // pink
-    case NotifyKind::Raid:        return lv_color_hex(0xEB0400);  // live red
-    case NotifyKind::Chat:        return lv_color_hex(0x26C6DA);  // cyan
-    case NotifyKind::Bits:        return lv_color_hex(0xBF94FF);  // light purple
-    case NotifyKind::Message:     return lv_color_hex(0x66BB6A);
-    case NotifyKind::Warning:     return lv_color_hex(0xFFA726);
-    case NotifyKind::Alert:       return lv_color_hex(0xEF5350);
-    default:                      return lv_color_hex(0x26C6DA);
-  }
-}
-
 uint32_t holdMsFor(const Notification &n) {
-  if (n.ttl_ds != 0) return (uint32_t)n.ttl_ds * 100u;   // §6.4, already clamped
-  switch (n.kind) {
-    case NotifyKind::Chat:        return HOLD_CHAT_MS;
-    case NotifyKind::StreamStart:
-    case NotifyKind::StreamEnd:   return HOLD_STREAM_MS;
-    default:                      return HOLD_DEFAULT_MS;
-  }
+  return n.ttl_ds ? static_cast<uint32_t>(n.ttl_ds) * 100u : kindPresentation(n.kind).holdMs;
 }
 
 void formatDuration(char *buf, size_t n, uint32_t sec) {
@@ -216,13 +174,6 @@ void composeBody(char *buf, size_t cap, const Notification &n) {
   }
 }
 
-void clearDecor(lv_obj_t *o) {
-  lv_obj_set_style_border_width(o, 0, 0);
-  lv_obj_remove_style(o, nullptr, LV_PART_SCROLLBAR);
-  lv_obj_set_scrollable(o, false);
-  lv_obj_set_clickable(o, false);
-}
-
 // The widgets are shared by every kind, so each show re-applies a full layout.
 // Chat inverts the priority: icon, caption and username shrink into a top
 // strip and the message gets the big font and most of the circle — the text
@@ -265,7 +216,7 @@ void layoutChat() {
 
 void uiNotifyInit() {
   overlay = lv_obj_create(lv_layer_top());
-  lv_obj_set_size(overlay, 240, 240);
+  lv_obj_set_size(overlay, PANEL, PANEL);
   lv_obj_center(overlay);
   lv_obj_set_style_bg_color(overlay, lv_color_black(), 0);
   lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0);
@@ -317,7 +268,7 @@ void uiNotifyInit() {
   // Full-screen alert flash (above the overlay): blinks in the event's
   // accent color before the card slides in, to catch peripheral vision.
   flash = lv_obj_create(lv_layer_top());
-  lv_obj_set_size(flash, 240, 240);
+  lv_obj_set_size(flash, PANEL, PANEL);
   lv_obj_center(flash);
   lv_obj_set_style_bg_opa(flash, LV_OPA_COVER, 0);
   lv_obj_set_style_opa(flash, LV_OPA_TRANSP, 0);
@@ -328,22 +279,20 @@ void uiNotifyInit() {
 
 bool uiNotifyBusy() { return busy; }
 
-void uiNotifyShow(const Notification &n) {
-  if (busy || !overlay) return;
-  busy = true;
-
-  holdMs = holdMsFor(n);
-
+namespace {
+void applyKindPresentation(const Notification &n) {
   if (n.kind == NotifyKind::Chat) layoutChat();
-  else                            layoutDefault();
-
-  lv_color_t accent = kindLvColor(n.kind);
+  else layoutDefault();
+  const KindPresentation &presentation = kindPresentation(n.kind);
+  const lv_color_t accent = lv_color_hex(presentation.color);
   lv_obj_set_style_border_color(ring, accent, 0);
   lv_obj_set_style_bg_color(iconCircle, accent, 0);
   lv_obj_set_style_text_color(kindTxt, accent, 0);
+  lv_label_set_text_static(iconLabel, presentation.icon);
+  lv_label_set_text_static(kindTxt, presentation.label);
+}
 
-  lv_label_set_text(iconLabel, kindIcon(n.kind));
-  lv_label_set_text(kindTxt, kindLabel(n.kind));
+void applyTexts(const Notification &n) {
   lv_label_set_text(titleLabel, headlineFor(n));
 
   // §6.4.1: CHAT.value is the chatter's name colour, and only when
@@ -361,17 +310,23 @@ void uiNotifyShow(const Notification &n) {
 
   lv_label_set_text_fmt(seqLabel, "#%lu", (unsigned long)n.seq);
 
-  // §6.4: a replayed card is drawn without the entrance animation, so that a
-  // fifteen-event replay burst after a reconnect is not fifteen full-screen
-  // takeovers. The card itself, its timing and its palette are unchanged.
+}
+
+void playEntrance(const Notification &n) {
+  // Replay displays immediately, with no slide, flash, or perpetual ring pulse.
   if (n.replay) {
+    lv_obj_set_y(overlay, 0);
+    lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
+    lv_obj_set_hidden(overlay, false);
+    showReady(nullptr);
+    return;
+  }
+  // Routine cards only slide. Full-screen attention is reserved for severity.
+  if (n.kind != NotifyKind::Warning && n.kind != NotifyKind::Alert) {
     slideIn();
     return;
   }
-
-  // Attention grab: blink the whole panel in the accent color (3 pulses,
-  // ~840 ms total), then flashDone slides the card in.
-  lv_obj_set_style_bg_color(flash, accent, 0);
+  lv_obj_set_style_bg_color(flash, lv_color_hex(kindPresentation(n.kind).color), 0);
   lv_obj_set_hidden(flash, false);
   lv_anim_t a;
   lv_anim_init(&a);
@@ -384,4 +339,17 @@ void uiNotifyShow(const Notification &n) {
   lv_anim_set_repeat_count(&a, 2);  // 3 pulses total
   lv_anim_set_completed_cb(&a, flashDone);
   lv_anim_start(&a);
+}
+
+}  // namespace
+
+void uiNotifyShow(const Notification &n) {
+  if (busy || !overlay) return;
+  busy = true;
+  replayCard = n.replay;
+  uiIdleSetCovered(true);
+  holdMs = holdMsFor(n);
+  applyKindPresentation(n);
+  applyTexts(n);
+  playEntrance(n);
 }

@@ -58,6 +58,11 @@
 #define LV_USE_WIN              0
 
 
-#define LV_USE_FLOAT            1
+#define LV_USE_FLOAT            0
+
+/* Report allocation/assert failures without a panic/reboot loop. */
+#define LV_USE_ASSERT_MALLOC    1
+#define LV_ASSERT_USE_CUSTOM_INCLUDE 1
+#define LV_ASSERT_CUSTOM_INCLUDE "ui_fault.h"
 
 #endif /* LV_CONF_H */

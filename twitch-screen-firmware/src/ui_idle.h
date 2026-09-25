@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stdbool.h>
 #include "stats.h"
 
 // Idle screen "Twitch Orbit": full-ring chat-activity gauge on the panel
@@ -13,3 +12,6 @@ void uiIdleSetStats(const StreamStats &s);
 
 // Full-screen CONNECTING until WiFi and the TSB/3 WELCOME handshake are ready.
 void uiIdleSetOnline(bool online);
+
+// Suspend hidden timers/animations while a notification covers the screen.
+void uiIdleSetCovered(bool covered);

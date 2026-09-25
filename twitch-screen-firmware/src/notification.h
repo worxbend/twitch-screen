@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
-#include <string.h>
+#include <stddef.h>
 
 // One notification card, populated from a TSB/3 EVENT payload
 // (docs/PROTOCOL.md §6.4). This is the *display* record, not the wire record:
@@ -44,41 +44,46 @@ struct Notification {
   char     text[96]  = {0};   // EVENT +72, matches char[96] on the wire (§5)
 };
 
-// §6.4.1 — is this a kind this firmware knows how to draw specifically?
+// Wire ordinals stay stable; reserved slots are empty. Presentation policy lives
+// in one table shared by the display and host tests, without an LVGL dependency.
+struct KindPresentation {
+  const char *label;
+  const char *icon;
+  uint32_t color;
+  uint32_t holdMs;
+};
+constexpr KindPresentation KIND_PRESENTATIONS[] = {
+  {"INFO", "i", 0x26C6DA, 3500},
+  {"MESSAGE", "M", 0x66BB6A, 3500},
+  {"WARNING", "!", 0xFFA726, 3500},
+  {"ALERT", "!", 0xEF5350, 3500},
+  {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+  {"STREAM LIVE", "\xef\x81\x8b", 0x00E676, 5000}, // LV_SYMBOL_PLAY
+  {"STREAM ENDED", "\xef\x81\x8d", 0x78909C, 5000}, // LV_SYMBOL_STOP
+  {"FOLLOW", "F", 0x9146FF, 3500},
+  {"SUB", "S", 0xFFB300, 3500},
+  {"GIFT", "G", 0xFF75E6, 3500},
+  {"RAID", "R", 0xEB0400, 3500},
+  {"CHAT", "C", 0x26C6DA, 2500},
+  {"BITS", "B", 0xBF94FF, 3500}
+};
+static_assert(sizeof(KIND_PRESENTATIONS) / sizeof(KIND_PRESENTATIONS[0]) ==
+              static_cast<size_t>(NotifyKind::Bits) + 1, "kind presentation coverage");
+
 inline bool kindIsKnown(uint8_t code) {
-  switch (code) {
-    case 0x00: case 0x01: case 0x02: case 0x03:
-    case 0x10: case 0x11: case 0x12: case 0x13:
-    case 0x14: case 0x15: case 0x16: case 0x17:
-      return true;
-    default:
-      return false;   // includes 0x18, permanently reserved
-  }
+  return code < sizeof(KIND_PRESENTATIONS) / sizeof(KIND_PRESENTATIONS[0]) &&
+         KIND_PRESENTATIONS[code].label != nullptr;
 }
 
-// §6.4.2 — the validator that replaces v2's kindFromString(). An unknown kind
-// MUST render as INFO from actor/text; it MUST NOT be dropped and MUST NOT
-// close the link. Keep the raw byte in Notification::wireKind for the log line.
 inline NotifyKind kindFromCode(uint8_t code) {
-  return kindIsKnown(code) ? (NotifyKind)code : NotifyKind::Info;
+  return kindIsKnown(code) ? static_cast<NotifyKind>(code) : NotifyKind::Info;
 }
 
-inline const char *kindLabel(NotifyKind k) {
-  switch (k) {
-    case NotifyKind::Message:     return "MESSAGE";
-    case NotifyKind::Warning:     return "WARNING";
-    case NotifyKind::Alert:       return "ALERT";
-    case NotifyKind::StreamStart: return "STREAM LIVE";
-    case NotifyKind::StreamEnd:   return "STREAM ENDED";
-    case NotifyKind::Follow:      return "FOLLOW";
-    case NotifyKind::Sub:         return "SUB";
-    case NotifyKind::Gift:        return "GIFT";
-    case NotifyKind::Raid:        return "RAID";
-    case NotifyKind::Chat:        return "CHAT";
-    case NotifyKind::Bits:        return "BITS";
-    default:                      return "INFO";
-  }
+inline const KindPresentation &kindPresentation(NotifyKind kind) {
+  return KIND_PRESENTATIONS[static_cast<uint8_t>(kindFromCode(static_cast<uint8_t>(kind)))];
 }
+
+inline const char *kindLabel(NotifyKind kind) { return kindPresentation(kind).label; }
 
 // §6.4 tier: 0 is NOT APPLICABLE, not Prime. Returns nullptr when there is no
 // tier to render, so a caller never prints "Tier 0".
@@ -88,6 +93,6 @@ inline const char *tierName(uint8_t tier) {
     case 2: return "Tier 1";
     case 3: return "Tier 2";
     case 4: return "Tier 3";
-    default: return 0;   // 0 = n/a; >4 is normalised to 0 by the decoder
+    default: return nullptr;   // 0 = n/a; >4 is normalised to 0 by the decoder
   }
 }

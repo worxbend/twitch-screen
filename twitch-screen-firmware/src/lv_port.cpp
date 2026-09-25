@@ -1,15 +1,17 @@
 #include "lv_port.h"
 
 #include <Arduino.h>
+#include <esp_task_wdt.h>
+#include "app_log.h"
+#include "ui_common.h"
 #include <TFT_eSPI.h>
 #include <lvgl.h>
 
 namespace {
 
-constexpr int SCREEN_W = 240;
-constexpr int SCREEN_H = 240;
+
 constexpr int BUF_LINES = 40;
-constexpr size_t DRAW_BYTES = SCREEN_W * BUF_LINES * 2; // RGB565, 19,200 bytes
+constexpr size_t DRAW_BYTES = PANEL * BUF_LINES * 2; // RGB565, 19,200 bytes
 uint32_t lastTickAt = 0;
 
 TFT_eSPI tft;
@@ -42,7 +44,8 @@ void lvPortInit() {
   lv_init();
   lastTickAt = millis();
 
-  lv_display_t *disp = lv_display_create(SCREEN_W, SCREEN_H);
+  lv_display_t *disp = lv_display_create(PANEL, PANEL);
+  if (!disp) uiFaultHalt(__FILE__, __LINE__);
   // GC9A01 wants RGB565 MSB-first over SPI; LVGL renders little-endian.
   // Render straight into the swapped format so flush needs no byte juggling.
   lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565_SWAPPED);
@@ -51,7 +54,7 @@ void lvPortInit() {
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
-  Serial.printf("[display] synchronous RGB565 buffer=%u B\n", (unsigned)sizeof(drawBuf));
+  appLog("[display] synchronous RGB565 buffer=%u B\n", (unsigned)sizeof(drawBuf));
 }
 
 void lvPortPump() {
@@ -59,4 +62,16 @@ void lvPortPump() {
   lv_tick_inc(now - lastTickAt);
   lastTickAt = now;
   lv_timer_handler();
+}
+
+extern "C" void uiFaultHalt(const char *file, int line) {
+  // LVGL can no longer render safely. Keep the UART/idle task alive and retain
+  // the diagnostic instead of repeating an allocation-triggered boot panic.
+  for (;;) {
+    appLog("[display] LVGL failure %s:%d; rendering halted\n", file, line);
+    for (unsigned i = 0; i < 50; ++i) {
+      if (esp_task_wdt_status(nullptr) == ESP_OK) esp_task_wdt_reset();
+      delay(100);
+    }
+  }
 }

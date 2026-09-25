@@ -19,7 +19,7 @@
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 
-#include "credentials.h"
+#include "app_log.h"
 #include "notification.h"
 #include "notify_queue.h"
 #include "link_client.h"
@@ -31,6 +31,8 @@ namespace {
 
 // §5: the device notification queue holds at least 8 entries.
 constexpr size_t QUEUE_CAP = 8;
+constexpr uint32_t WATCHDOG_TIMEOUT_S = 10;
+constexpr uint32_t STACK_REPORT_MS = 60000;
 
 // The queue and the sequence accounting live in notify_queue.h so that §10.2
 // and §10.5 are covered by the host test rather than only by this comment.
@@ -40,13 +42,13 @@ NotifyQueue<QUEUE_CAP> queue;
 void onWelcome(const LinkWelcome &w) {
   const NotifyQueue<QUEUE_CAP>::Greet g = queue.greet(w.latestSeq, w.sessionId);
   if (queue.sessionChanged()) {
-    Serial.printf("[app] relay session changed: %08lx\n", (unsigned long)w.sessionId);
+    appLog("[app] relay session changed: %08lx\n", (unsigned long)w.sessionId);
   }
   if (g == NotifyQueue<QUEUE_CAP>::Greet::Rebaselined) {
-    Serial.printf("[app] re-baseline: last_seq=%lu session=%08lx\n",
+    appLog("[app] re-baseline: last_seq=%lu session=%08lx\n",
                   (unsigned long)queue.lastSeq(), (unsigned long)w.sessionId);
   } else {
-    Serial.printf("[app] resuming at last_seq=%lu, expecting replay of up to %u\n",
+    appLog("[app] resuming at last_seq=%lu, expecting replay of up to %u\n",
                   (unsigned long)queue.lastSeq(), (unsigned)w.replayWindow);
   }
 }
@@ -59,7 +61,7 @@ bool onNotify(const Notification &n) {
   if (r == NotifyQueue<QUEUE_CAP>::Offer::Refused) {
     // §10.5 rule 2: the newest is refused and the high-water mark does not move,
     // so the next greet replays this event instead of stepping over it.
-    Serial.printf("[app] queue full, refused #%lu %s (last_seq stays %lu, "
+    appLog("[app] queue full, refused #%lu %s (last_seq stays %lu, "
                   "%lu refused, %lu shown)\n",
                   (unsigned long)n.seq, kindLabel(n.kind),
                   (unsigned long)queue.lastSeq(), (unsigned long)queue.refused(),
@@ -69,10 +71,10 @@ bool onNotify(const Notification &n) {
 
   if (!kindIsKnown(n.wireKind)) {
     // §6.4.2: rendered as INFO from actor/text, never dropped.
-    Serial.printf("[app] new #%lu unknown kind 0x%02x -> INFO: %s\n",
+    appLog("[app] new #%lu unknown kind 0x%02x -> INFO: %s\n",
                   (unsigned long)n.seq, (unsigned)n.wireKind, n.actor);
   } else {
-    Serial.printf("[app] new #%lu %s%s: %s\n", (unsigned long)n.seq,
+    appLog("[app] new #%lu %s%s: %s\n", (unsigned long)n.seq,
                   kindLabel(n.kind), n.replay ? " (replay)" : "", n.actor);
   }
   return true;
@@ -91,7 +93,7 @@ const LinkHooks HOOKS = {onWelcome, onNotify, canReceiveNotify, onStats, getLast
 void setup() {
   Serial.setTxBufferSize(1024);
   Serial.begin(115200);
-  Serial.printf("[app] reset reason=%d\n", (int)esp_reset_reason());
+  appLog("[app] reset reason=%d\n", (int)esp_reset_reason());
 
   lvPortInit();
   uiIdleBuild();
@@ -99,8 +101,13 @@ void setup() {
 
   lvPortPump(); // render CONNECTING before starting network work
   linkInit(&HOOKS, linkPlatform());
-  esp_task_wdt_init(10, true);
-  enableLoopWDT();
+  // IDF 4.4 updates an existing TWDT configuration; do not assume success.
+  const esp_err_t watchdog = esp_task_wdt_init(WATCHDOG_TIMEOUT_S, true);
+  if (watchdog == ESP_OK) enableLoopWDT();
+  const esp_err_t subscribed = esp_task_wdt_status(nullptr);
+  appLog("[app] watchdog init=%s loop=%s timeout=%lus\n",
+         esp_err_to_name(watchdog), esp_err_to_name(subscribed),
+         (unsigned long)WATCHDOG_TIMEOUT_S);
 }
 
 void loop() {
@@ -115,5 +122,13 @@ void loop() {
     uiNotifyShow(n);
   }
 
+  static uint32_t lastStackReportAt = 0;
+  if (millis() - lastStackReportAt >= STACK_REPORT_MS) {
+    lastStackReportAt = millis();
+    // ESP-IDF reports the task high-water mark in bytes. Hardware runs must
+    // exercise rendering/replay to establish the actual minimum headroom.
+    appLog("[app] loop stack minimum free=%lu B\n",
+           (unsigned long)uxTaskGetStackHighWaterMark(nullptr));
+  }
   delay(5);
 }
