@@ -39,7 +39,7 @@ lv_obj_t *bodyLabel = nullptr;
 lv_obj_t *seqLabel = nullptr;
 
 bool busy = false;
-bool replayCard = false;
+Entrance cardEntrance = Entrance::Slide;  // decided once per card in uiNotifyShow
 uint32_t holdMs = HOLD_DEFAULT_MS;   // how long the current card stays up
 
 void animY(void *var, int32_t v) { lv_obj_set_y((lv_obj_t *)var, v); }
@@ -69,7 +69,7 @@ void hideReady(lv_anim_t *) {
 void hideStart() {
   lv_anim_delete(ring, animOpa);  // stop the hold-time ring pulse
   lv_obj_set_style_opa(ring, LV_OPA_COVER, 0);
-  if (replayCard) { hideReady(nullptr); return; }
+  if (cardEntrance == Entrance::None) { hideReady(nullptr); return; }  // replay leaves at once
   uiIdleSetCovered(false);
   animate(overlay, animY, 0, PANEL, SLIDE_OUT_MS, lv_anim_path_ease_in, hideReady);
 }
@@ -313,18 +313,20 @@ void applyTexts(const Notification &n) {
 }
 
 void playEntrance(const Notification &n) {
-  // Replay displays immediately, with no slide, flash, or perpetual ring pulse.
-  if (n.replay) {
-    lv_obj_set_y(overlay, 0);
-    lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
-    lv_obj_set_hidden(overlay, false);
-    showReady(nullptr);
-    return;
-  }
-  // Routine cards only slide. Full-screen attention is reserved for severity.
-  if (n.kind != NotifyKind::Warning && n.kind != NotifyKind::Alert) {
-    slideIn();
-    return;
+  switch (cardEntrance) {
+    case Entrance::None:
+      // Replay displays immediately, with no slide, flash, or perpetual ring pulse.
+      lv_obj_set_y(overlay, 0);
+      lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
+      lv_obj_set_hidden(overlay, false);
+      showReady(nullptr);
+      return;
+    case Entrance::Slide:
+      // Routine cards only slide. Full-screen attention is reserved for severity.
+      slideIn();
+      return;
+    case Entrance::FlashThenSlide:  // Warning and Alert blink, then flashDone slides in
+      break;
   }
   lv_obj_set_style_bg_color(flash, lv_color_hex(kindPresentation(n.kind).color), 0);
   lv_obj_set_hidden(flash, false);
@@ -346,7 +348,7 @@ void playEntrance(const Notification &n) {
 void uiNotifyShow(const Notification &n) {
   if (busy || !overlay) return;
   busy = true;
-  replayCard = n.replay;
+  cardEntrance = entranceFor(n.replay, n.kind);
   uiIdleSetCovered(true);
   holdMs = holdMsFor(n);
   applyKindPresentation(n);

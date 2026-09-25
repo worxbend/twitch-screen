@@ -131,6 +131,27 @@ int main() {
     check(visibleStatsGroup(linkUp, covered, live) == expected,
           "one visibility rule for every link, cover and live combination");
   }
+  // K-107: replayed cards skip the entrance animation (§6.4).
+  for (int code = 0; code < 256; ++code) {
+    const NotifyKind kind = kindFromCode(static_cast<uint8_t>(code));
+    check(entranceFor(true, kind) == Entrance::None, "replay never animates, any kind");
+    const bool severe = kind == NotifyKind::Warning || kind == NotifyKind::Alert;
+    check(entranceFor(false, kind) == (severe ? Entrance::FlashThenSlide : Entrance::Slide),
+          "live cards flash only for warning and alert, any code");
+  }
+  check(entranceFor(true, NotifyKind::Alert) == Entrance::None, "replayed alert skips flash");
+  check(entranceFor(true, NotifyKind::Warning) == Entrance::None, "replayed warning skips flash");
+  check(entranceFor(false, NotifyKind::Alert) == Entrance::FlashThenSlide, "live alert flashes");
+  check(entranceFor(false, NotifyKind::Warning) == Entrance::FlashThenSlide,
+        "live warning flashes");
+  {
+    const NotifyKind routine[] = {
+        NotifyKind::Info, NotifyKind::Message, NotifyKind::StreamStart, NotifyKind::StreamEnd,
+        NotifyKind::Follow, NotifyKind::Sub, NotifyKind::Gift, NotifyKind::Raid,
+        NotifyKind::Chat, NotifyKind::Bits, kindFromCode(0x18), kindFromCode(0xff)};
+    for (size_t i = 0; i < sizeof(routine) / sizeof(routine[0]); ++i)
+      check(entranceFor(false, routine[i]) == Entrance::Slide, "routine live cards only slide");
+  }
   printf("%d checks, %d failures\n", checks, failures);
   return failures != 0;
 }

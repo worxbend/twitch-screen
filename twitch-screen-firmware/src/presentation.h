@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "notification.h"
+
 // At most four content characters across the full u32 range. Bottom chips have
 // about 45 px each at font 14, so six-digit K strings cannot fit.
 inline void formatCount(char *out, size_t size, uint32_t value) {
@@ -27,4 +29,15 @@ inline uint32_t readableChatColor(uint32_t rgb) {
   const uint32_t brightness = 299u * (rgb >> 16) +
       587u * ((rgb >> 8) & 255u) + 114u * (rgb & 255u);
   return brightness >= 90000u ? rgb : 0x00ffffffu;
+}
+
+// How a card arrives. PROTOCOL.md §6.4: a receiver SHOULD render a replayed card
+// without the entrance animation, so replay shows at once and leaves at once.
+// Full-screen attention (the flash) is reserved for severity.
+enum class Entrance : uint8_t { None, Slide, FlashThenSlide };
+
+inline Entrance entranceFor(bool replay, NotifyKind kind) {
+  if (replay) return Entrance::None;
+  return kind == NotifyKind::Warning || kind == NotifyKind::Alert ? Entrance::FlashThenSlide
+                                                                  : Entrance::Slide;
 }

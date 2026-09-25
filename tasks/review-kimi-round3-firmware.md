@@ -86,3 +86,69 @@ The mirror starts from what `buildLive`/`makeChip` draw ("0" chips, arc 0),
 so the first frame writes exactly what the old `lv_label_get_text` or
 `lv_arc_get_value` comparisons wrote. None of this has been observed on
 hardware.
+
+## K-107: replayed cards still play the slide-in
+
+Finding K-107 (Low, firmware), "Replayed cards still play slide-in despite
+comment/§6.4", at `ui_notify.cpp:364-370`.
+
+### Status
+
+The behaviour was already fixed before this round: `playEntrance` showed a
+replayed card at once, and `hideStart` skipped the slide-out for it. No test
+covered it, because `ui_notify.cpp` is not built in `env:native`. This unit
+moves the entrance decision into a pure function and pins it with a regression
+test. On-device behaviour is unchanged. `docs/PROTOCOL.md:469` and `:1477`
+say "A receiver SHOULD render a replayed card without the entrance animation".
+
+### Change
+
+- `src/presentation.h`: includes `notification.h` (pure, no cycle) and adds
+  `enum class Entrance : uint8_t { None, Slide, FlashThenSlide }` and
+  `entranceFor(bool replay, NotifyKind kind)`. Replay gives `None` for every
+  kind. Otherwise Warning and Alert give `FlashThenSlide`, and every other kind
+  gives `Slide`.
+- `src/ui_notify.cpp`: `bool replayCard` is now `Entrance cardEntrance`, set once
+  in `uiNotifyShow` from `entranceFor(n.replay, n.kind)`. `hideStart` skips the
+  slide-out when it is `None`. `playEntrance` switches on it (None: immediate
+  show; Slide: `slideIn()`; FlashThenSlide: the unchanged flash block). The
+  inline `n.replay` and Warning/Alert checks are gone. The timings, call order
+  and flash colour (still `n.kind`) are the same.
+  `grep -n "n.replay\|replayCard" src/ui_notify.cpp` finds only the
+  `entranceFor(n.replay, n.kind)` call.
+- `test/test_presentation/test_presentation.cpp`: 528 new checks:
+  - all 256 codes with replay give `None`;
+  - all 256 codes without replay give `FlashThenSlide` exactly for
+    Warning/Alert and `Slide` otherwise;
+  - explicit checks that a replayed Alert or Warning gives `None` and a live
+    one gives `FlashThenSlide`;
+  - the 10 routine kinds, plus unknown codes `0x18` and `0xff`, give `Slide`
+    when live.
+- `platformio.ini` is unchanged, because the code is header-only.
+
+### Evidence (in `twitch-screen-firmware/`)
+
+`pio` is `/home/worxbend/.platformio/penv/bin/pio`. The system Python moved to
+3.14, so that entry point now fails with `ModuleNotFoundError: No module named
+'platformio'`. The runs used a scratchpad wrapper that runs `/usr/bin/python3 -m
+platformio` with `PYTHONPATH=~/.platformio/penv/lib/python3.13/site-packages`
+(PlatformIO Core 6.2.0). The penv itself was not modified.
+
+- Baseline on 938019a: `pio run -e esp32dev` SUCCESS, RAM 67,276 B, Flash
+  1,154,969 B.
+- Red: with only the tests added, `pio test -e native -f test_presentation`
+  failed to compile (`'entranceFor' was not declared in this scope`,
+  `'Entrance' has not been declared`).
+- Green: `844 checks, 0 failures` (316 before, 528 new).
+- Mutation A: the `if (replay) return Entrance::None;` line was dropped from
+  `entranceFor`. 258 checks failed: 256 "replay never animates, any kind" and
+  "replayed alert/warning skips flash". The change was reverted.
+- Mutation B: Alert was made to give `Slide` (the condition became Warning
+  only). 2 checks failed: "live alert flashes" and "live cards flash only for
+  warning and alert, any code". The change was reverted.
+- `pio test -e native -e native-sanitized`: 10 test cases, 10 succeeded
+  (5 suites x 2 environments).
+- `pio run -e esp32dev`: SUCCESS. RAM 67,276 B (+0). Flash 1,154,973 B (+4 B).
+- `git -C .. diff --check`: clean.
+
+None of this has been observed on hardware.
