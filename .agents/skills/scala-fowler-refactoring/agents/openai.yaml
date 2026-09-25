@@ -1,4 +1,0 @@
-interface:
-  display_name: "Scala Fowler Refactoring"
-  short_description: "Behavior-preserving Scala refactoring for the relay"
-  default_prompt: "Use $scala-fowler-refactoring for the requested twitch-screen-relay Scala task."

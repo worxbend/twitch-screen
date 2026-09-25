@@ -1,4 +1,0 @@
-interface:
-  display_name: "Scala Quality Tooling"
-  short_description: "Mill formatting, tests, and Scala linting policy"
-  default_prompt: "Use $scala-quality-tooling for the requested twitch-screen-relay Scala task."

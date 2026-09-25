@@ -1,4 +1,0 @@
-interface:
-  display_name: "Scala VSS Backend"
-  short_description: "VirtusLab stack and direct-style relay architecture"
-  default_prompt: "Use $scala-vss-backend for the requested twitch-screen-relay Scala task."
