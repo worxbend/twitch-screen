@@ -50,7 +50,7 @@ Want the guided version? Start with [your first simulated stream](../docs/guides
 | Mode | What happens | Twitch credentials |
 |---|---|---|
 | `disabled` | Manual API notifications and device services | None |
-| `simulated` | Synthetic follows, subs, gifts, raids, Bits, chat, and stream changes | None |
+| `simulated` | Synthetic follows, subs, gifts, raids, Bits, chat, totals, and an initial stream-start event | None |
 | `live` | Real Twitch Helix, IRC, and EventSub integration | Client ID/secret, then broadcaster consent |
 
 The native default is `disabled`; the supplied Compose file uses `simulated`. Chat cards default to **hidden** so follows and raids can have their moment. Accepted chat still contributes to counters.
