@@ -31,6 +31,7 @@ struct LinkHooks {
   // An EVENT arrived (live push or replayed backlog; see Notification::replay).
   // §10.5: the app advances its high-water mark only if it actually enqueues
   // this event, and the link reads that mark back through getLastSeq().
+  // False means refused: close immediately so a later seq cannot cross the gap.
   bool (*onNotify)(const Notification &n);
   // False pauses the next EVENT without consuming it or its sequence number.
   bool (*canReceiveNotify)();

@@ -16,11 +16,27 @@
 #endif
 
 namespace {
-// DNS and WiFi callbacks publish atomic state only; sockets and UI stay on loop.
+// DNS/WiFi callbacks publish atomic state only. Socket I/O and UI stay on loop;
+// descriptor disposal alone transfers to the bounded close worker.
 enum class DnsState : uint8_t { Idle, Pending, Ready, Failed };
 std::atomic<DnsState> dnsState{DnsState::Idle};
 uint32_t dnsAddress = 0; // published before Ready with release/acquire ordering
 std::atomic<bool> wifiDisconnected{false};
+std::atomic<int> closingFd{-1};
+TaskHandle_t closeTask = nullptr;
+
+// lwIP close can wait for TCP progress even on O_NONBLOCK sockets. The pinned
+// SDK disables SO_LINGER, so one bounded worker owns descriptor disposal. No
+// new socket may be created until it finishes; there is no unbounded task/FD
+// accumulation during outages. The worker never accesses session or UI state.
+void closeWorker(void *) {
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    const int fd = closingFd.load(std::memory_order_acquire);
+    if (fd >= 0) ::close(fd);
+    closingFd.store(-1, std::memory_order_release);
+  }
+}
 
 void dnsResult(const char *, const ip_addr_t *address, void *) {
   if (address && IP_IS_V4(address)) {
@@ -41,6 +57,11 @@ void startDns(void *) {
 class Esp32Transport : public LinkTransport {
  public:
   void begin() override {
+    if (!closeTask && xTaskCreate(closeWorker, "link-close", 3072, nullptr, 1,
+                                 &closeTask) != pdPASS) {
+      closeTask = nullptr;
+      Serial.println("[link] close worker allocation failed; connections disabled");
+    }
     const char *configured = DEVICE_ID;
     if (configured[0] != '\0') snprintf(deviceId_, sizeof(deviceId_), "%s", configured);
     else snprintf(deviceId_, sizeof(deviceId_), "lcd-%012llx",
@@ -68,6 +89,7 @@ class Esp32Transport : public LinkTransport {
   }
   bool startConnect() override {
     close();
+    if (!closeTask || closingFd.load(std::memory_order_acquire) >= 0) return false;
     // A timed-out DNS request stays alone until its callback finishes. Discard
     // its result before retrying: a late result cannot resurrect an old socket.
     if (dnsState.load(std::memory_order_acquire) == DnsState::Pending) return false;
@@ -119,7 +141,12 @@ class Esp32Transport : public LinkTransport {
         ? Connect::Ready : Connect::Failed;
   }
   void close() override {
-    if (fd_ >= 0) ::close(fd_);
+    if (fd_ >= 0) {
+      // startConnect forbids acquiring another descriptor until this slot is
+      // released. Ownership crosses only at release/acquire atomic operations.
+      closingFd.store(fd_, std::memory_order_release);
+      xTaskNotifyGive(closeTask);
+    }
     fd_ = -1;
     resolving_ = false;
   }

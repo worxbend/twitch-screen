@@ -286,9 +286,13 @@ void handleStats(const tsb::TsbStats &st) {
 // §6.7 — BYE is advisory and always the last frame on the connection. Log it,
 // close, do not answer.
 void handleBye(const tsb::TsbBye &b) {
+  char reason[sizeof(b.reason)];
+  memcpy(reason, b.reason, sizeof(reason));
+  reason[sizeof(reason) - 1] = '\0';
+  replaceDisplayControls(reason);
   logf("[link] BYE code=%u detail=%u retry_after=%us reason=\"%s\"\n",
                 (unsigned)b.code, (unsigned)b.detail,
-                (unsigned)b.retry_after_s, b.reason);
+                (unsigned)b.retry_after_s, reason);
   byeFloorMs  = (uint32_t)b.retry_after_s * 1000UL;
   byeForceMax = (b.code == tsb::BYE_UNSUPPORTED_VERSION ||
                  b.code == tsb::BYE_REPLACED);
@@ -315,6 +319,16 @@ void dispatch(const tsb::InboundFrame &f) {
 // handshake strictness), then release it.
 void deliverFrame() {
   const tsb::TsbHeader h = reader.header();
+  // §7: exact version equality, checked by the session layer rather than by
+  // header validation — that is precisely what lets a BYE stay readable from a
+  // peer whose version we do not speak, so BYE is exempted here.
+  if (h.version != tsb::VERSION && h.type != tsb::T_BYE) {
+    logf("[link] protocol version %u, expected %u\n",
+                  (unsigned)h.version, (unsigned)tsb::VERSION);
+    teardown("version mismatch");
+    return;
+  }
+
   // Retain the full EVENT until a display slot exists. The same frame is
   // reconsidered next loop; it has not been decoded, counted or acknowledged.
   if (state == State::Streaming && h.type == tsb::T_EVENT &&
@@ -333,16 +347,6 @@ void deliverFrame() {
       h, reader.payload(), reader.payloadLength(), f);
   reader.noteDecode(r);   // §4.3 counters
   reader.consumeFrame();  // releases the frame and resets the §4.5 budget
-
-  // §7: exact version equality, checked by the session layer rather than by
-  // header validation — that is precisely what lets a BYE stay readable from a
-  // peer whose version we do not speak, so BYE is exempted here.
-  if (h.version != tsb::VERSION && h.type != tsb::T_BYE) {
-    logf("[link] protocol version %u, expected %u\n",
-                  (unsigned)h.version, (unsigned)tsb::VERSION);
-    teardown("version mismatch");
-    return;
-  }
 
   // §11.2: before WELCOME, tolerance is suspended. The first inbound frame must
   // be WELCOME or BYE; anything else is a teardown, not a skip.

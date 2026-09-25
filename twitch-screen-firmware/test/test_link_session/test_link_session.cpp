@@ -120,6 +120,28 @@ void testBurst() {
   check(shown == 30 && queue.lastSeq() == baseline + 30, "entire burst drains without reconnect or high-water gap");
   check(linkIsUp(), "burst leaves session connected");
 }
+void testPausedQueueTimersAndWrongVersion() {
+  FakeTransport t; reset(t); greet(t);
+  const uint32_t baseline = queue.lastSeq();
+  for (uint32_t seq = baseline + 1; seq <= baseline + 9; ++seq) event(t, seq);
+  pump(t, 40);
+  size_t before = t.outbound.size();
+  for (int i = 0; i < 4; ++i) { t.time += 16000; pump(t); }
+  check(linkIsUp() && queue.size() == 8 && queue.lastSeq() == baseline + 8,
+        "full queue pauses >heartbeat timeout without changing high-water mark");
+  check(t.outbound.size() >= before + 48, "periodic outbound heartbeats continue while input paused");
+  Notification n; queue.take(n); pump(t);
+  check(queue.lastSeq() == baseline + 9, "paused EVENT resumes immediately after display capacity returns");
+
+  FakeTransport wrong; reset(wrong); greet(wrong);
+  for (int i = 0; i < 8; ++i) event(wrong, baseline + i + 1);
+  pump(wrong, 40);
+  std::vector<uint8_t> frame(gv::EVENT_STREAM_START,
+      gv::EVENT_STREAM_START + sizeof(gv::EVENT_STREAM_START));
+  frame[2] = 4; frame[7] = tsb::headerCheck(frame.data());
+  wrong.add(frame.data(), frame.size()); pump(wrong);
+  check(wrong.closed && !linkIsUp(), "queue capacity never delays wrong-version teardown");
+}
 void testHeartbeatCapsAndBye() {
   FakeTransport t; reset(t); greet(t);
   const size_t before = t.outbound.size();
@@ -183,6 +205,7 @@ int main() {
   testHandshakeAndTimeouts(); testWifiEdgeAndBackoff(); testWritesAndAck();
   testBurst(); testRefusalAndInvalidHandshake();
   testHeartbeatCapsAndBye(); testStableRecoveryAndWrap();
+  testPausedQueueTimersAndWrongVersion();
   printf("%d checks, %d failures\n", checks, failures);
   return failures != 0;
 }
