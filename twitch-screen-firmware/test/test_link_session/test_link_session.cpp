@@ -1,0 +1,188 @@
+#include <stdio.h>
+#include <string.h>
+#include <deque>
+#include <vector>
+#include "link_client.h"
+#include "notify_queue.h"
+#include "proto_codec.h"
+#include "vectors.h"
+
+namespace {
+int checks = 0, failures = 0;
+void check(bool pass, const char *what) {
+  ++checks;
+  if (!pass) { ++failures; printf("FAIL: %s\n", what); }
+}
+struct FakeTransport : LinkTransport {
+  uint32_t time = 0;
+  bool wifi = true, edge = false, closed = false, writeBlocked = false;
+  Connect connecting = Connect::Ready;
+  size_t writeChunk = 256;
+  int attempts = 0;
+  std::deque<uint8_t> inbound;
+  std::vector<uint8_t> outbound;
+  void begin() override {}
+  void poll() override {}
+  uint32_t now() const override { return time; }
+  uint32_t jitter(uint32_t) override { return 0; }
+  bool wifiConnected() const override { return wifi; }
+  bool takeWifiDisconnect() override { bool e = edge; edge = false; return e; }
+  bool startConnect() override { ++attempts; closed = false; return true; }
+  Connect connectStatus() override { return connecting; }
+  void close() override { closed = true; inbound.clear(); }
+  int read(uint8_t *data, size_t size) override {
+    size_t got = 0;
+    while (got < size && !inbound.empty()) { data[got++] = inbound.front(); inbound.pop_front(); }
+    return (int)got;
+  }
+  int write(const uint8_t *data, size_t size) override {
+    if (writeBlocked) return 0;
+    const size_t n = size < writeChunk ? size : writeChunk;
+    outbound.insert(outbound.end(), data, data + n);
+    return (int)n;
+  }
+  void log(const char *) override {}
+  const char *deviceId() const override { return "test-device"; }
+  const char *firmwareVersion() const override { return "test"; }
+  void add(const uint8_t *data, size_t n) { inbound.insert(inbound.end(), data, data + n); }
+};
+NotifyQueue<8> queue;
+int welcomes = 0, stats = 0;
+bool refuse = false;
+void welcome(const LinkWelcome &w) { ++welcomes; queue.greet(w.latestSeq, w.sessionId); }
+bool notify(const Notification &n) { return !refuse && queue.offer(n) != NotifyQueue<8>::Offer::Refused; }
+bool capacity() { return queue.size() < 8; }
+void statistic(const StreamStats &) { ++stats; }
+uint32_t lastSeq() { return queue.lastSeq(); }
+const LinkHooks hooks = {welcome, notify, capacity, statistic, lastSeq};
+void reset(FakeTransport &t) {
+  queue = NotifyQueue<8>(); welcomes = stats = 0; refuse = false;
+  linkInit(&hooks, t);
+}
+void pump(FakeTransport &t, unsigned count = 4) {
+  while (count--) { linkLoop(); ++t.time; }
+}
+void greet(FakeTransport &t) {
+  pump(t);
+  // V3 is WELCOME latest_seq=127 and all capabilities.
+  t.add(gv::WELCOME, sizeof(gv::WELCOME)); pump(t);
+  check(linkIsUp(), "valid WELCOME enters streaming");
+}
+void event(FakeTransport &t, uint32_t seq) {
+  std::vector<uint8_t> frame(gv::EVENT_STREAM_START, gv::EVENT_STREAM_START + sizeof(gv::EVENT_STREAM_START));
+  frame[8] = seq & 255; frame[9] = (seq >> 8) & 255;
+  frame[10] = (seq >> 16) & 255; frame[11] = seq >> 24;
+  t.add(frame.data(), frame.size());
+}
+void testHandshakeAndTimeouts() {
+  FakeTransport t; reset(t);
+  t.connecting = LinkTransport::Connect::Pending;
+  pump(t);
+  check(!linkIsUp() && t.outbound.empty(), "pending connect emits no HELLO");
+  t.time = 3001; pump(t);
+  check(t.closed, "connect deadline closes pending transport");
+  t.time += 1000; t.connecting = LinkTransport::Connect::Ready; pump(t);
+  check(!t.outbound.empty() && t.outbound[3] == tsb::T_HELLO, "HELLO follows completed connect");
+  t.time += 5001; pump(t); check(t.closed, "missing WELCOME times out");
+}
+void testWifiEdgeAndBackoff() {
+  FakeTransport t; reset(t); greet(t);
+  t.edge = true; pump(t, 1);
+  check(!linkIsUp() && t.closed, "brief WiFi disconnect tears down even after reassociation");
+  unsigned attempts = t.attempts;
+  t.time += 998; pump(t, 1); check(t.attempts == (int)attempts, "backoff waits for deadline");
+  t.time += 2; greet(t); t.edge = true; pump(t, 1);
+  attempts = t.attempts; t.time += 1001; pump(t, 1);
+  check(t.attempts == (int)attempts, "short streaming session preserves exponential ramp");
+}
+void testWritesAndAck() {
+  FakeTransport t; reset(t); t.writeChunk = 3; greet(t); pump(t, 30);
+  check(t.outbound.size() >= 56, "partial writes retain complete HELLO bytes");
+  const size_t before = t.outbound.size();
+  event(t, queue.lastSeq() + 1); pump(t, 20);
+  check(t.outbound.size() == before, "ACK held until coalescing interval");
+  t.time += 200; pump(t, 10);
+  check(t.outbound.size() == before + 12, "one ACK acknowledges accepted EVENT");
+  t.writeBlocked = true; t.time += 16000; pump(t);
+  t.time += 3001; pump(t);
+  check(t.closed && !linkIsUp(), "stalled output closes at write deadline");
+}
+void testBurst() {
+  FakeTransport t; reset(t); greet(t);
+  const uint32_t baseline = queue.lastSeq();
+  for (uint32_t i = 1; i <= 30; ++i) event(t, baseline + i);
+  pump(t, 100);
+  check(queue.size() == 8 && queue.refused() == 0, "burst pauses at eight queued notifications");
+  Notification n; unsigned shown = 0;
+  while (shown < 30 && queue.take(n)) {
+    ++shown; check(n.seq == baseline + shown, "burst preserves event ordering"); pump(t, 10);
+  }
+  check(shown == 30 && queue.lastSeq() == baseline + 30, "entire burst drains without reconnect or high-water gap");
+  check(linkIsUp(), "burst leaves session connected");
+}
+void testHeartbeatCapsAndBye() {
+  FakeTransport t; reset(t); greet(t);
+  const size_t before = t.outbound.size();
+  uint8_t ping[12]; tsb::encodePing(ping, sizeof(ping), 0x12345678);
+  ping[3] = tsb::T_PING_RELAY; ping[6] = tsb::FLAG_REPLAY;
+  ping[7] = tsb::headerCheck(ping);
+  t.add(ping, sizeof(ping)); pump(t);
+  check(t.outbound.size() == before + 12 &&
+        t.outbound[before + 3] == tsb::T_PONG_DEVICE &&
+        t.outbound[before + 8] == 0x78,
+        "PING with irrelevant REPLAY receives immediate matching PONG");
+  t.time += 45001; pump(t);
+  check(t.closed && !linkIsUp(), "silent peer reaches heartbeat deadline");
+
+  FakeTransport noAck; reset(noAck); pump(noAck);
+  std::vector<uint8_t> welcomeBytes(gv::WELCOME, gv::WELCOME + sizeof(gv::WELCOME));
+  welcomeBytes[28] &= ~tsb::CAP_ACK;
+  noAck.add(welcomeBytes.data(), welcomeBytes.size()); pump(noAck);
+  const size_t sent = noAck.outbound.size();
+  event(noAck, queue.lastSeq() + 1); pump(noAck); noAck.time += 201; pump(noAck);
+  check(noAck.outbound.size() == sent, "no ACK is emitted without negotiated CAP_ACK");
+
+  FakeTransport bye; reset(bye); greet(bye);
+  std::vector<uint8_t> goodbye(gv::BYE_VERSION_MISMATCH,
+      gv::BYE_VERSION_MISMATCH + sizeof(gv::BYE_VERSION_MISMATCH));
+  goodbye[8] = 0xe7; goodbye[9] = 0x03; // unknown code 999
+  goodbye[12] = 60; goodbye[13] = 0; // fixed minimum 60 seconds
+  goodbye[2] = 99; goodbye[7] = tsb::headerCheck(goodbye.data());
+  bye.add(goodbye.data(), goodbye.size()); pump(bye);
+  check(bye.closed && !linkIsUp(), "unknown cross-version BYE always tears down");
+  int attempts = bye.attempts; bye.time += 59990; pump(bye);
+  check(bye.attempts == attempts, "BYE retry floor may exceed ordinary ramp cap");
+  bye.time += 20; pump(bye); check(bye.attempts == attempts + 1, "BYE floor eventually retries");
+}
+void testStableRecoveryAndWrap() {
+  FakeTransport t; reset(t); greet(t);
+  t.edge = true; pump(t); t.time += 1000; greet(t);
+  // Keep transport active with complete frames for a full stable interval.
+  t.time += 30000; t.add(gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); pump(t);
+  t.time += 30001; t.add(gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); pump(t);
+  t.edge = true; pump(t);
+  int attempts = t.attempts; t.time += 1000; pump(t);
+  check(t.attempts == attempts + 1, "stable streaming interval resets retry ramp");
+  FakeTransport wrap; reset(wrap); greet(wrap);
+  wrap.time = 0xfffffff0u;
+  // Supplying a frame refreshes silence immediately before millis rollover.
+  wrap.add(gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); pump(wrap);
+  wrap.edge = true; pump(wrap); attempts = wrap.attempts;
+  wrap.time += 999; pump(wrap);
+  check(wrap.attempts == attempts + 1, "retry deadline is wrap-safe");
+}
+void testRefusalAndInvalidHandshake() {
+  FakeTransport t; reset(t); greet(t); refuse = true;
+  uint32_t seq = queue.lastSeq(); event(t, seq + 1); event(t, seq + 2); pump(t);
+  check(t.closed && queue.lastSeq() == seq, "actual refusal closes before later EVENT can advance mark");
+  FakeTransport bad; reset(bad); pump(bad); bad.add(gv::EVENT_STREAM_START, sizeof(gv::EVENT_STREAM_START)); pump(bad);
+  check(bad.closed && welcomes == 0, "EVENT before WELCOME is fatal");
+}
+}
+int main() {
+  testHandshakeAndTimeouts(); testWifiEdgeAndBackoff(); testWritesAndAck();
+  testBurst(); testRefusalAndInvalidHandshake();
+  testHeartbeatCapsAndBye(); testStableRecoveryAndWrap();
+  printf("%d checks, %d failures\n", checks, failures);
+  return failures != 0;
+}

@@ -79,7 +79,7 @@ class NotifyQueue {
   }
 
   // True when the last greet came from a relay process this device had not seen
-  // before. Nothing in §10.2 depends on it; link_client logs it.
+  // before. Nothing in §10.2 depends on it; main logs the transition.
   bool sessionChanged() const { return sessionChanged_; }
 
   Offer offer(const Notification &n) {

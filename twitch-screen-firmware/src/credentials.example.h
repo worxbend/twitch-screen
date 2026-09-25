@@ -9,4 +9,6 @@
 #define SERVER_HOST "192.168.1.100"
 #define SERVER_PORT 8099
 
-#define DEVICE_ID "roundlcd-01"
+// Empty selects lcd-<chip MAC>, unique per physical device. Set a unique custom
+// name only if needed; duplicate names cause relay REPLACED disconnects.
+#define DEVICE_ID ""

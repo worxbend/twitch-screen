@@ -16,6 +16,8 @@
 //   BL       ->  D15         (15, PWM dimmable; tie to 3V3 for always-on)
 
 #include <Arduino.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
 
 #include "credentials.h"
 #include "notification.h"
@@ -37,6 +39,9 @@ NotifyQueue<QUEUE_CAP> queue;
 // §10.2, applied in the order the specification gives.
 void onWelcome(const LinkWelcome &w) {
   const NotifyQueue<QUEUE_CAP>::Greet g = queue.greet(w.latestSeq, w.sessionId);
+  if (queue.sessionChanged()) {
+    Serial.printf("[app] relay session changed: %08lx\n", (unsigned long)w.sessionId);
+  }
   if (g == NotifyQueue<QUEUE_CAP>::Greet::Rebaselined) {
     Serial.printf("[app] re-baseline: last_seq=%lu session=%08lx\n",
                   (unsigned long)queue.lastSeq(), (unsigned long)w.sessionId);
@@ -46,10 +51,10 @@ void onWelcome(const LinkWelcome &w) {
   }
 }
 
-void onNotify(const Notification &n) {
+bool onNotify(const Notification &n) {
   const NotifyQueue<QUEUE_CAP>::Offer r = queue.offer(n);
 
-  if (r == NotifyQueue<QUEUE_CAP>::Offer::Duplicate) return;
+  if (r == NotifyQueue<QUEUE_CAP>::Offer::Duplicate) return true;
 
   if (r == NotifyQueue<QUEUE_CAP>::Offer::Refused) {
     // §10.5 rule 2: the newest is refused and the high-water mark does not move,
@@ -59,7 +64,7 @@ void onNotify(const Notification &n) {
                   (unsigned long)n.seq, kindLabel(n.kind),
                   (unsigned long)queue.lastSeq(), (unsigned long)queue.refused(),
                   (unsigned long)queue.shown());
-    return;
+    return false;
   }
 
   if (!kindIsKnown(n.wireKind)) {
@@ -70,35 +75,40 @@ void onNotify(const Notification &n) {
     Serial.printf("[app] new #%lu %s%s: %s\n", (unsigned long)n.seq,
                   kindLabel(n.kind), n.replay ? " (replay)" : "", n.actor);
   }
+  return true;
 }
+
+bool canReceiveNotify() { return queue.size() < QUEUE_CAP; }
 
 uint32_t getLastSeq() { return queue.lastSeq(); }
 
 void onStats(const StreamStats &s) { uiIdleSetStats(s); }
 
-const LinkHooks HOOKS = {onWelcome, onNotify, onStats, getLastSeq};
+const LinkHooks HOOKS = {onWelcome, onNotify, canReceiveNotify, onStats, getLastSeq};
 
 }  // namespace
 
 void setup() {
+  Serial.setTxBufferSize(1024);
   Serial.begin(115200);
+  Serial.printf("[app] reset reason=%d\n", (int)esp_reset_reason());
 
   lvPortInit();
   uiIdleBuild();
   uiNotifyInit();
 
-  linkInit(&HOOKS);
-  bool online = wifiEnsureConnected(15000);
-  uiIdleSetOnline(online);
+  lvPortPump(); // render CONNECTING before starting network work
+  linkInit(&HOOKS, linkPlatform());
+  esp_task_wdt_init(10, true);
+  enableLoopWDT();
 }
 
 void loop() {
   lvPortPump();
 
-  bool wifiOk = wifiEnsureConnected();
   linkLoop();
 
-  uiIdleSetOnline(wifiOk && linkIsUp());
+  uiIdleSetOnline(linkIsUp());
 
   Notification n;
   if (!uiNotifyBusy() && queue.take(n)) {

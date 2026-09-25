@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Arduino.h>
+#include "link_transport.h"
 #include "notification.h"
 #include "stats.h"
 
@@ -13,13 +13,9 @@
 // read/write error, BYE or WiFi loss, and every one of them leads to backoff
 // and another attempt (§12.1), never to a permanent stop.
 //
-// Everything on the read path is non-blocking from loop()'s point of view: the
-// codec's FrameReader is a resumable state machine over a static buffer, so a
-// frame split across TCP segments resumes exactly where it stopped (§4.1). Only
-// the (rare) connect attempt blocks, up to ~3 s.
-
-// WELCOME (§6.2). The device keeps its own timers, so ping_interval_s and
-// idle_timeout_s are informational and are only logged on mismatch.
+// DNS, connect, RX and TX are polled with deadlines. A full notification queue
+// pauses EVENT consumption while loop() keeps rendering and servicing output.
+// WELCOME reports relay timers; the device retains its own fixed timers.
 struct LinkWelcome {
   uint32_t latestSeq;     // highest seq the relay ever assigned; 0 = nothing yet
   uint32_t serverTime;    // unix seconds, 0 = unknown
@@ -30,12 +26,14 @@ struct LinkWelcome {
 
 struct LinkHooks {
   // The relay greeted us. Apply the §10.2 baseline / re-baseline rules here:
-  // fresh boot, a changed sessionId, or latestSeq < ours all mean re-baseline.
+  // fresh boot or latestSeq < ours means re-baseline; sessionId is diagnostic.
   void (*onWelcome)(const LinkWelcome &w);
   // An EVENT arrived (live push or replayed backlog; see Notification::replay).
   // §10.5: the app advances its high-water mark only if it actually enqueues
   // this event, and the link reads that mark back through getLastSeq().
-  void (*onNotify)(const Notification &n);
+  bool (*onNotify)(const Notification &n);
+  // False pauses the next EVENT without consuming it or its sequence number.
+  bool (*canReceiveNotify)();
   // A STATS frame arrived (stream telemetry, absolute).
   void (*onStats)(const StreamStats &s);
   // Highest seq the app has successfully ENQUEUED FOR DISPLAY. Sent in HELLO to
@@ -43,12 +41,9 @@ struct LinkHooks {
   uint32_t (*getLastSeq)();
 };
 
-void linkInit(const LinkHooks *hooks);
-// Drives the state machine: IDLE -> CONNECT -> STREAMING. Call every loop
-// iteration; only the connect attempt blocks, up to ~3 s.
+void linkInit(const LinkHooks *hooks, LinkTransport &transport);
+// Drives IDLE -> CONNECTING -> WELCOME -> STREAMING. Call every loop.
 void linkLoop();
 // True once WELCOME has been received, i.e. the session is in STREAMING.
 bool linkIsUp();
 
-// WiFi helper used by the link layer (kept here so main stays thin).
-bool wifiEnsureConnected(uint32_t timeoutMs = 10000);

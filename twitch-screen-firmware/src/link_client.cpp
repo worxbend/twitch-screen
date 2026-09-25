@@ -1,10 +1,8 @@
 #include "link_client.h"
 
-#include <WiFi.h>
-#include <lwip/sockets.h>
-#include <lwip/tcp.h>
-
-#include "credentials.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
 #include "notification_wire.h"
 #include "proto_codec.h"
 
@@ -20,6 +18,8 @@ namespace {
 
 // §12 — every timer value is unchanged from v2; only the encoding changed.
 constexpr uint32_t CONNECT_TIMEOUT_MS = 3000;
+constexpr uint32_t WRITE_TIMEOUT_MS = 3000;
+constexpr uint32_t STABLE_STREAM_MS = 60000;
 constexpr uint32_t WELCOME_TIMEOUT_MS = 5000;
 constexpr uint32_t PING_INTERVAL_MS   = 15000;
 constexpr uint32_t RX_TIMEOUT_MS      = 45000;   // inbound silence of any kind
@@ -47,12 +47,9 @@ constexpr uint32_t RX_BUDGET_PER_LOOP = 1024;
 constexpr uint32_t DEVICE_CAPS =
     tsb::CAP_ACK | tsb::CAP_CHAT | tsb::CAP_GENERIC;
 
-// Diagnostics only, never parsed by the relay (§6.1).
-constexpr const char *FW_VERSION = "1.0.0";
+enum class State : uint8_t { Idle, Connecting, Connect, Streaming };
 
-enum class State : uint8_t { Idle, Connect, Streaming };
-
-WiFiClient sock;
+LinkTransport *io = nullptr;
 State state = State::Idle;
 const LinkHooks *hooks = nullptr;
 
@@ -63,6 +60,17 @@ uint8_t  failures      = 0;
 uint32_t connectedAt   = 0;
 uint32_t lastRxAt      = 0;
 uint32_t lastPingAt    = 0;
+uint32_t streamingAt   = 0;
+uint32_t lastSkipLogAt = 0;
+uint32_t skippedSinceLog = 0;
+
+// A fixed byte FIFO preserves frame order across short/nonblocking writes.
+uint8_t tx[256];
+size_t txSize = 0;
+uint32_t txStartedAt = 0;
+uint8_t rxChunk[128];
+size_t rxOffset = 0, rxSize = 0;
+bool eventPaused = false;
 
 // Set by a BYE so that teardown() can apply §7 / §12.1 without a second path.
 uint32_t byeFloorMs   = 0;
@@ -73,13 +81,24 @@ uint32_t lastAckedSeq  = 0;
 uint32_t lastAckAt     = 0;
 bool     ackPending    = false;
 
-// §14: bytesSent counts 8 + length per frame, which is exactly `n` here.
+void logf(const char *format, ...) {
+  char line[240];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(line, sizeof(line), format, args);
+  va_end(args);
+  io->log(line);
+}
+
+// Enqueue whole frames only. Partial writes remain in this bounded FIFO.
 bool writeFrame(const uint8_t *buf, size_t n) {
-  if (sock.write(buf, n) != n) {
+  if (n > sizeof(tx) - txSize) {
     reader.noteDropped();
     return false;
   }
-  reader.noteSent((uint32_t)n);
+  if (txSize == 0) txStartedAt = io->now();
+  memcpy(tx + txSize, buf, n);
+  txSize += n;
   return true;
 }
 
@@ -95,15 +114,15 @@ void scheduleRetry(uint32_t floorMs, bool forceMax) {
       : (BACKOFF_BASE_MS << (failures > 6 ? 5 : (uint8_t)(failures - 1)));
   if (backoff > BACKOFF_MAX_MS) backoff = BACKOFF_MAX_MS;   // caps the ramp only
   if (backoff < floorMs) backoff = floorMs;   // §6.7: a minimum, never capped
-  backoff += random(0, (long)(backoff / 4 + 1));   // jitter
-  nextAttemptAt = millis() + backoff;
-  Serial.printf("[link] retry in %lu ms (attempt %u)\n",
+  backoff += io->jitter(backoff / 4 + 1);   // jitter
+  nextAttemptAt = io->now() + backoff;
+  logf("[link] retry in %lu ms (attempt %u)\n",
                 (unsigned long)backoff, (unsigned)failures);
 }
 
 void logCounters() {
   const tsb::Counters &c = reader.counters();
-  Serial.printf("[link] counters: rx=%lu frames/%lu B tx=%lu B dropped=%lu "
+  logf("[link] counters: rx=%lu frames/%lu B tx=%lu B dropped=%lu "
                 "resync=%lu discarded=%lu oversize=%lu unknown=%lu wrongdir=%lu "
                 "short=%lu invalid=%lu\n",
                 (unsigned long)c.framesDecoded, (unsigned long)c.bytesReceived,
@@ -119,10 +138,12 @@ void logCounters() {
 
 void teardown(const char *reason) {
   if (state != State::Idle) {
-    Serial.printf("[link] down: %s\n", reason);
+    logf("[link] down: %s\n", reason);
     logCounters();
   }
-  sock.stop();
+  io->close();
+  txSize = rxSize = rxOffset = 0;
+  eventPaused = false;
   state = State::Idle;
   // Drops any half-assembled frame and the §4.5 budget. The §14 lifetime
   // totals survive: they are what diagnoses a link that keeps flapping.
@@ -140,21 +161,21 @@ void teardown(const char *reason) {
 
 void sendHello() {
   tsb::TsbHello h;
-  tsb::buildHello(h, hooks->getLastSeq(), DEVICE_CAPS, DEVICE_ID, FW_VERSION);
+  tsb::buildHello(h, hooks->getLastSeq(), DEVICE_CAPS, io->deviceId(), io->firmwareVersion());
   uint8_t frame[tsb::HEADER_SIZE + tsb::LEN_HELLO];
   const tsb::EncodeResult n = tsb::encodeHello(frame, sizeof(frame), h);
   if (n < 0 || !writeFrame(frame, (size_t)n)) {
     teardown("hello write failed");
     return;
   }
-  Serial.printf("[link] hello sent, last_seq=%lu caps=0x%02lx\n",
+  logf("[link] hello sent, last_seq=%lu caps=0x%02lx\n",
                 (unsigned long)h.last_seq, (unsigned long)DEVICE_CAPS);
 }
 
 void sendPing() {
   uint8_t frame[tsb::HEADER_SIZE + tsb::LEN_TOKEN];
   const tsb::EncodeResult n =
-      tsb::encodePing(frame, sizeof(frame), millis() / 1000);
+      tsb::encodePing(frame, sizeof(frame), io->now() / 1000);
   if (n < 0 || !writeFrame(frame, (size_t)n)) teardown("ping write failed");
 }
 
@@ -170,7 +191,7 @@ void sendPong(uint32_t token) {
 // actually enqueued. The relay never makes delivery conditional on it.
 void maybeSendAck() {
   if (!ackPending || (effectiveCaps & tsb::CAP_ACK) == 0) return;
-  const uint32_t now = millis();
+  const uint32_t now = io->now();
   if (now - lastAckAt < ACK_MIN_INTERVAL_MS) return;
 
   const uint32_t seq = hooks->getLastSeq();
@@ -189,14 +210,17 @@ void maybeSendAck() {
 
 void handleWelcome(const tsb::TsbWelcome &w) {
   state = State::Streaming;
-  failures = 0;                 // the connection proved good; reset the ramp
+  streamingAt = io->now();      // reset the ramp only after a stable interval
   effectiveCaps = w.caps;
   lastAckedSeq = 0;
+
+  logf("[link] relay timers: ping=%us idle=%us\n",
+       (unsigned)w.ping_interval_s, (unsigned)w.idle_timeout_s);
 
   // §6.2: max_frame below 256 is logged and otherwise ignored — we keep using
   // 256, which every v3 peer must accept.
   if (w.max_frame < tsb::MIN_RX_MAX) {
-    Serial.printf("[link] relay max_frame=%u < 256, ignoring\n",
+    logf("[link] relay max_frame=%u < 256, ignoring\n",
                   (unsigned)w.max_frame);
   }
   // §6.2: the device keeps its own timers; WELCOME reports the relay's. They
@@ -204,18 +228,18 @@ void handleWelcome(const tsb::TsbWelcome &w) {
   // (which differ on purpose). A mismatch is a real operational fault —
   // someone edited application.conf and believed devices followed.
   if (w.ping_interval_s != 0 && w.ping_interval_s != EXPECTED_RELAY_PING_S) {
-    Serial.printf("[link] note: relay ping_interval=%us, expected %us\n",
+    logf("[link] note: relay ping_interval=%us, expected %us\n",
                   (unsigned)w.ping_interval_s, (unsigned)EXPECTED_RELAY_PING_S);
   }
   if (w.idle_timeout_s != 0 && w.idle_timeout_s != EXPECTED_RELAY_IDLE_S) {
-    Serial.printf("[link] note: relay idle_timeout=%us, expected %us\n",
+    logf("[link] note: relay idle_timeout=%us, expected %us\n",
                   (unsigned)w.idle_timeout_s, (unsigned)EXPECTED_RELAY_IDLE_S);
   }
   // The invariant that actually matters: the relay must wait longer than our
   // ping interval, or it drops a healthy device.
   if (w.idle_timeout_s != 0 &&
       (uint32_t)w.idle_timeout_s * 1000UL <= PING_INTERVAL_MS) {
-    Serial.printf("[link] WARNING: relay idle_timeout=%us <= device ping "
+    logf("[link] WARNING: relay idle_timeout=%us <= device ping "
                   "interval %lus; the relay will drop this link\n",
                   (unsigned)w.idle_timeout_s,
                   (unsigned long)(PING_INTERVAL_MS / 1000));
@@ -229,7 +253,7 @@ void handleWelcome(const tsb::TsbWelcome &w) {
   lw.replayWindow = w.replay_window;
   hooks->onWelcome(lw);
 
-  Serial.printf("[link] welcomed: latest_seq=%lu session=%08lx caps=0x%02lx\n",
+  logf("[link] welcomed: latest_seq=%lu session=%08lx caps=0x%02lx\n",
                 (unsigned long)w.latest_seq, (unsigned long)w.session_id,
                 (unsigned long)w.caps);
 }
@@ -237,7 +261,10 @@ void handleWelcome(const tsb::TsbWelcome &w) {
 void handleEvent(const tsb::TsbEvent &e, uint8_t frameFlags) {
   Notification n;
   notificationFromEvent(e, frameFlags, n);   // notification_wire.h, host-tested
-  hooks->onNotify(n);
+  if (!hooks->onNotify(n)) {
+    teardown("notification refused; reconnect for replay");
+    return;
+  }
   ackPending = true;   // ACK reports whatever the app actually enqueued (§10.5)
 }
 
@@ -259,13 +286,14 @@ void handleStats(const tsb::TsbStats &st) {
 // §6.7 — BYE is advisory and always the last frame on the connection. Log it,
 // close, do not answer.
 void handleBye(const tsb::TsbBye &b) {
-  Serial.printf("[link] BYE code=%u detail=%u retry_after=%us reason=\"%s\"\n",
+  logf("[link] BYE code=%u detail=%u retry_after=%us reason=\"%s\"\n",
                 (unsigned)b.code, (unsigned)b.detail,
                 (unsigned)b.retry_after_s, b.reason);
   byeFloorMs  = (uint32_t)b.retry_after_s * 1000UL;
-  byeForceMax = (b.code == tsb::BYE_UNSUPPORTED_VERSION);
-  if (byeForceMax) {
-    Serial.println("[link] version refused by relay: this device needs a reflash");
+  byeForceMax = (b.code == tsb::BYE_UNSUPPORTED_VERSION ||
+                 b.code == tsb::BYE_REPLACED);
+  if (b.code == tsb::BYE_UNSUPPORTED_VERSION) {
+    logf("[link] version refused by relay: this device needs a reflash");
   }
   teardown("bye");
 }
@@ -287,10 +315,18 @@ void dispatch(const tsb::InboundFrame &f) {
 // handshake strictness), then release it.
 void deliverFrame() {
   const tsb::TsbHeader h = reader.header();
+  // Retain the full EVENT until a display slot exists. The same frame is
+  // reconsidered next loop; it has not been decoded, counted or acknowledged.
+  if (state == State::Streaming && h.type == tsb::T_EVENT &&
+      !hooks->canReceiveNotify()) {
+    eventPaused = true;
+    return;
+  }
+  eventPaused = false;
 
   // §12: ANY inbound frame of any type resets the idle timer, including one
   // that is about to be skipped under §4.3.
-  lastRxAt = millis();
+  lastRxAt = io->now();
 
   tsb::InboundFrame f;
   const tsb::DecodeResult r = tsb::decodeInboundPayload(
@@ -302,7 +338,7 @@ void deliverFrame() {
   // header validation — that is precisely what lets a BYE stay readable from a
   // peer whose version we do not speak, so BYE is exempted here.
   if (h.version != tsb::VERSION && h.type != tsb::T_BYE) {
-    Serial.printf("[link] protocol version %u, expected %u\n",
+    logf("[link] protocol version %u, expected %u\n",
                   (unsigned)h.version, (unsigned)tsb::VERSION);
     teardown("version mismatch");
     return;
@@ -312,13 +348,13 @@ void deliverFrame() {
   // be WELCOME or BYE; anything else is a teardown, not a skip.
   if (state == State::Connect) {
     if (h.type != tsb::T_WELCOME && h.type != tsb::T_BYE) {
-      Serial.printf("[link] handshake: expected WELCOME, got type 0x%02x\n",
+      logf("[link] handshake: expected WELCOME, got type 0x%02x\n",
                     (unsigned)h.type);
       teardown("bad handshake");
       return;
     }
     if (r != tsb::DecodeResult::Ok) {
-      Serial.printf("[link] handshake: %s\n", tsb::decodeResultName(r));
+      logf("[link] handshake: %s\n", tsb::decodeResultName(r));
       teardown("bad handshake");
       return;
     }
@@ -327,9 +363,14 @@ void deliverFrame() {
   if (r != tsb::DecodeResult::Ok) {
     // §4.3, §4.6: well framed but not usable. Skip the payload, count it, keep
     // the link. A malformed FRAME must not kill the link.
-    Serial.printf("[link] frame skipped: type=0x%02x len=%u %s\n",
-                  (unsigned)h.type, (unsigned)h.length,
-                  tsb::decodeResultName(r));
+    ++skippedSinceLog;
+    if (io->now() - lastSkipLogAt >= 1000) {
+      logf("[link] skipped %lu frame(s); last type=0x%02x %s\n",
+           (unsigned long)skippedSinceLog, (unsigned)h.type,
+           tsb::decodeResultName(r));
+      skippedSinceLog = 0;
+      lastSkipLogAt = io->now();
+    }
     return;
   }
 
@@ -337,133 +378,128 @@ void deliverFrame() {
 }
 
 void readAvailable() {
-  uint8_t chunk[128];
   uint32_t budget = RX_BUDGET_PER_LOOP;
-
   while (state != State::Idle && budget > 0) {
-    const int avail = sock.available();
-    if (avail <= 0) break;
-
-    size_t want = (size_t)avail;
-    if (want > sizeof(chunk)) want = sizeof(chunk);
-    if (want > budget) want = budget;
-
-    // A socket read returns a short count whenever fewer bytes are buffered
-    // than were asked for (§2); the reader accumulates across calls, so a
-    // partial frame simply leaves it waiting.
-    const int n = sock.read(chunk, want);
-    if (n <= 0) break;
-    budget -= (uint32_t)n;
-
-    size_t off = 0;
-    while (off < (size_t)n) {
-      const size_t used = reader.feed(chunk + off, (size_t)n - off);
-      off += used;
-      if (reader.isFatal()) {
-        // §4.5: the budget is blown, so the STREAM — not merely a frame — is
-        // untrustworthy. Close, log, back off. Nothing is sent on a stream we
-        // cannot read.
-        Serial.printf("[link] resync budget blown: %lu candidates, %lu bytes\n",
-                      (unsigned long)reader.counters().rejectedCandidates,
-                      (unsigned long)reader.counters().discardedBytes);
-        teardown("framing violation");
-        return;
-      }
-      if (reader.hasFrame()) {
-        deliverFrame();
-        if (state == State::Idle) return;   // deliverFrame tore the link down
-      } else if (used == 0) {
-        break;   // defensive: no progress is possible without more bytes
-      }
+    if (reader.hasFrame()) {
+      deliverFrame();
+      if (state == State::Idle || eventPaused) return;
     }
+    if (rxOffset == rxSize) {
+      const int n = io->read(rxChunk, sizeof(rxChunk));
+      if (n < 0) { teardown("peer closed/read failed"); return; }
+      if (n == 0) return;
+      rxOffset = 0;
+      rxSize = (size_t)n;
+    }
+    size_t want = rxSize - rxOffset;
+    if (want > budget) want = budget;
+    const size_t used = reader.feed(rxChunk + rxOffset, want);
+    rxOffset += used;
+    budget -= used;
+    if (reader.isFatal()) { teardown("framing violation"); return; }
+    if (used == 0 && !reader.hasFrame()) return;
   }
 }
 
-void attemptConnect() {
-  Serial.printf("[link] connecting %s:%d ...\n", SERVER_HOST, SERVER_PORT);
-
-  sock.stop();
-  sock = WiFiClient();
-  sock.setTimeout(CONNECT_TIMEOUT_MS / 1000);
-
-  if (!sock.connect(SERVER_HOST, SERVER_PORT, CONNECT_TIMEOUT_MS)) {
-    teardown("connect failed");
+void flushOutput() {
+  if (txSize == 0) return;
+  if (io->now() - txStartedAt >= WRITE_TIMEOUT_MS) {
+    teardown("write timeout");
     return;
   }
+  const int written = io->write(tx, txSize);
+  if (written < 0) { teardown("write failed"); return; }
+  if (written == 0) return;
+  reader.noteSent((uint32_t)written);
+  txSize -= (size_t)written;
+  memmove(tx, tx + written, txSize);
+  // Deadline bounds total pending output, not a trickle's inter-write gap.
+}
 
-  int one = 1;
-  sock.setOption(TCP_NODELAY, &one);    // §2, MUST
-  // §2, SHOULD — a second net only. setOption() is IPPROTO_TCP-level, so the
-  // SOL_SOCKET option goes through setSocketOption().
-  sock.setSocketOption(SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+void attemptConnect() {
+  logf("[link] connecting...\n");
+  if (!io->startConnect()) { teardown("connect unavailable"); return; }
+  state = State::Connecting;
+  connectedAt = io->now();
+}
 
-  state = State::Connect;
-  reader.reset(false);   // fresh framing state; §14 lifetime totals survive
-  effectiveCaps = 0;
-  ackPending = false;
-  connectedAt = lastRxAt = lastPingAt = millis();
-  Serial.println("[link] connected");
-
-  // §11.1: HELLO immediately after connect, before reading anything.
-  sendHello();
+void finishConnect() {
+  const LinkTransport::Connect result = io->connectStatus();
+  if (result == LinkTransport::Connect::Failed) {
+    teardown("connect failed");
+  } else if (result == LinkTransport::Connect::Ready) {
+    state = State::Connect;
+    reader.reset(false);
+    effectiveCaps = 0;
+    ackPending = false;
+    connectedAt = lastRxAt = lastPingAt = io->now();
+    logf("[link] connected\n");
+    sendHello();
+  } else if (io->now() - connectedAt >= CONNECT_TIMEOUT_MS) {
+    teardown("connect timeout");
+  }
 }
 
 }  // namespace
 
-void linkInit(const LinkHooks *h) { hooks = h; }
+void linkInit(const LinkHooks *h, LinkTransport &transport) {
+  hooks = h;
+  io = &transport;
+  state = State::Idle;
+  reader.reset(true);
+  nextAttemptAt = 0;
+  failures = 0;
+  byeFloorMs = 0;
+  byeForceMax = false;
+  effectiveCaps = lastAckedSeq = lastAckAt = 0;
+  ackPending = eventPaused = false;
+  txSize = rxOffset = rxSize = 0;
+  skippedSinceLog = lastSkipLogAt = 0;
+  io->begin();
+}
 
 bool linkIsUp() { return state == State::Streaming; }
 
 void linkLoop() {
-  if (!hooks) return;
-
-  // WiFi loss tears the socket down immediately; reconnection follows WiFi.
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!hooks || !io) return;
+  io->poll();
+  const bool wifiLost = io->takeWifiDisconnect();
+  if (wifiLost || !io->wifiConnected()) {
     if (state != State::Idle) teardown("wifi lost");
     return;
   }
-
   if (state == State::Idle) {
-    if ((int32_t)(millis() - nextAttemptAt) >= 0) attemptConnect();
+    if ((int32_t)(io->now() - nextAttemptAt) >= 0) attemptConnect();
     return;
   }
-
-  if (!sock.connected() && !sock.available()) {
-    teardown("peer closed");
-    return;
+  if (state == State::Connecting) {
+    finishConnect();
+    if (state != State::Connect) return;
   }
-
+  flushOutput();
+  if (state == State::Idle) return;
   readAvailable();
-  if (state == State::Idle) return;   // tore down while reading
+  if (state == State::Idle) return;
 
-  const uint32_t now = millis();
+  const uint32_t now = io->now();
   if (state == State::Connect && now - connectedAt > WELCOME_TIMEOUT_MS) {
     teardown("welcome timeout");
     return;
   }
+  // A local full queue can intentionally hide inbound heartbeats. Keep sending
+  // ours; apply the normal silence timeout once EVENT consumption resumes.
+  if (eventPaused) lastRxAt = now;
   if (now - lastRxAt > RX_TIMEOUT_MS) {
     teardown("heartbeat timeout");
     return;
   }
+  if (state == State::Streaming && now - streamingAt >= STABLE_STREAM_MS)
+    failures = 0;
   if (now - lastPingAt > PING_INTERVAL_MS) {
     lastPingAt = now;
     sendPing();
     if (state == State::Idle) return;
   }
   maybeSendAck();
-}
-
-bool wifiEnsureConnected(uint32_t timeoutMs) {
-  if (WiFi.status() == WL_CONNECTED) return true;
-
-  Serial.println("[wifi] reconnecting...");
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) {
-    delay(250);
-  }
-  Serial.printf("[wifi] %s\n", WiFi.status() == WL_CONNECTED ? "connected" : "FAILED");
-  return WiFi.status() == WL_CONNECTED;
+  if (state != State::Idle) flushOutput();
 }
