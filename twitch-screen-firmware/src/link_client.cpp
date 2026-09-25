@@ -25,6 +25,7 @@ constexpr uint32_t PING_INTERVAL_MS   = 15000;
 constexpr uint32_t RX_TIMEOUT_MS      = 45000;   // inbound silence of any kind
 constexpr uint32_t BACKOFF_BASE_MS    = 1000;
 constexpr uint32_t BACKOFF_MAX_MS     = 30000;
+constexpr uint8_t BACKOFF_MAX_SHIFT = 5;
 
 // §12 — the relay's own timers, which WELCOME reports (§6.2). They differ from
 // the device's on purpose (the relay is more patient), so a WELCOME is checked
@@ -49,6 +50,7 @@ constexpr uint32_t DEVICE_CAPS =
 
 enum class State : uint8_t { Idle, Connecting, Connect, Streaming };
 
+struct LinkSession {
 LinkTransport *io = nullptr;
 State state = State::Idle;
 const LinkHooks *hooks = nullptr;
@@ -66,15 +68,13 @@ uint32_t skippedSinceLog = 0;
 
 // A fixed byte FIFO preserves frame order across short/nonblocking writes.
 uint8_t tx[256];
-size_t txSize = 0;
+size_t txSize = 0, txOffset = 0;
 uint32_t txStartedAt = 0;
 uint8_t rxChunk[128];
 size_t rxOffset = 0, rxSize = 0;
 bool eventPaused = false;
-
-// Set by a BYE so that teardown() can apply §7 / §12.1 without a second path.
-uint32_t byeFloorMs   = 0;
-bool     byeForceMax  = false;
+uint32_t eventPausedAt = 0;
+uint32_t pauseLimitMs = 2u * EXPECTED_RELAY_IDLE_S * 1000u;
 
 uint32_t effectiveCaps = 0;   // WELCOME.caps — authoritative for this session
 uint32_t lastAckedSeq  = 0;
@@ -96,8 +96,12 @@ bool writeFrame(const uint8_t *buf, size_t n) {
     reader.noteDropped();
     return false;
   }
-  if (txSize == 0) txStartedAt = io->now();
-  memcpy(tx + txSize, buf, n);
+  if (txSize == 0) { txStartedAt = io->now(); txOffset = 0; }
+  if (txOffset + txSize + n > sizeof(tx)) {
+    memmove(tx, tx + txOffset, txSize);
+    txOffset = 0;
+  }
+  memcpy(tx + txOffset + txSize, buf, n);
   txSize += n;
   return true;
 }
@@ -112,7 +116,7 @@ void scheduleRetry(uint32_t floorMs, bool forceMax) {
   if (failures < 31) ++failures;
   uint32_t backoff = forceMax
       ? BACKOFF_MAX_MS
-      : (BACKOFF_BASE_MS << (failures > 6 ? 5 : (uint8_t)(failures - 1)));
+      : (BACKOFF_BASE_MS << (failures > BACKOFF_MAX_SHIFT + 1 ? BACKOFF_MAX_SHIFT : (uint8_t)(failures - 1)));
   if (backoff > BACKOFF_MAX_MS) backoff = BACKOFF_MAX_MS;   // caps the ramp only
   if (backoff < floorMs) backoff = floorMs;   // §6.7: a minimum, never capped
   backoff += io->jitter(backoff / 4 + 1);   // jitter
@@ -137,13 +141,13 @@ void logCounters() {
                 (unsigned long)c.framesInvalidField);
 }
 
-void teardown(const char *reason) {
+void teardown(const char *reason, uint32_t floorMs = 0, bool forceMax = false) {
   if (state != State::Idle) {
     logf("[link] down: %s\n", reason);
     logCounters();
   }
   io->close();
-  txSize = rxSize = rxOffset = 0;
+  txSize = txOffset = rxSize = rxOffset = 0;
   eventPaused = false;
   state = State::Idle;
   // Drops any half-assembled frame and the §4.5 budget. The §14 lifetime
@@ -153,10 +157,6 @@ void teardown(const char *reason) {
   ackPending = false;
   lastAckedSeq = 0;
 
-  const uint32_t floorMs = byeFloorMs;
-  const bool forceMax = byeForceMax;
-  byeFloorMs = 0;
-  byeForceMax = false;
   scheduleRetry(floorMs, forceMax);
 }
 
@@ -212,7 +212,8 @@ void maybeSendAck() {
 void handleWelcome(const tsb::TsbWelcome &w) {
   state = State::Streaming;
   streamingAt = io->now();      // reset the ramp only after a stable interval
-  effectiveCaps = w.caps;
+  effectiveCaps = w.caps & DEVICE_CAPS;
+  pauseLimitMs = 2u * (w.idle_timeout_s ? w.idle_timeout_s : EXPECTED_RELAY_IDLE_S) * 1000u;
   lastAckedSeq = 0;
 
   logf("[link] relay timers: ping=%us idle=%us\n",
@@ -250,7 +251,7 @@ void handleWelcome(const tsb::TsbWelcome &w) {
   lw.latestSeq    = w.latest_seq;
   lw.serverTime   = w.server_time;
   lw.sessionId    = w.session_id;
-  lw.caps         = w.caps;
+  lw.caps         = effectiveCaps;
   lw.replayWindow = w.replay_window;
   hooks->onWelcome(lw);
 
@@ -294,18 +295,21 @@ void handleBye(const tsb::TsbBye &b) {
   logf("[link] BYE code=%u detail=%u retry_after=%us reason=\"%s\"\n",
                 (unsigned)b.code, (unsigned)b.detail,
                 (unsigned)b.retry_after_s, reason);
-  byeFloorMs  = (uint32_t)b.retry_after_s * 1000UL;
-  byeForceMax = (b.code == tsb::BYE_UNSUPPORTED_VERSION ||
+  const uint32_t floorMs = (uint32_t)b.retry_after_s * 1000UL;
+  const bool forceMax = (b.code == tsb::BYE_UNSUPPORTED_VERSION ||
                  b.code == tsb::BYE_REPLACED);
   if (b.code == tsb::BYE_UNSUPPORTED_VERSION) {
     logf("[link] version refused by relay: this device needs a reflash");
   }
-  teardown("bye");
+  teardown("bye", floorMs, forceMax);
 }
 
 void dispatch(const tsb::InboundFrame &f) {
   switch (f.header.type) {
-    case tsb::T_WELCOME:    handleWelcome(f.as.welcome); break;
+    case tsb::T_WELCOME:
+      if (state == State::Streaming) teardown("duplicate welcome");
+      else handleWelcome(f.as.welcome);
+      break;
     case tsb::T_EVENT:      handleEvent(f.as.event, f.header.flags); break;
     case tsb::T_STATS:      handleStats(f.as.stats); break;
     case tsb::T_PING_RELAY: sendPong(f.as.token.value); break;
@@ -318,68 +322,58 @@ void dispatch(const tsb::InboundFrame &f) {
 // One complete frame is sitting in the reader. Decode it, apply the session
 // layer rules the codec deliberately leaves to the caller (§7 version, §11.2
 // handshake strictness), then release it.
-void deliverFrame() {
-  const tsb::TsbHeader h = reader.header();
-  // §7: exact version equality, checked by the session layer rather than by
-  // header validation — that is precisely what lets a BYE stay readable from a
-  // peer whose version we do not speak, so BYE is exempted here.
-  if (h.version != tsb::VERSION && h.type != tsb::T_BYE) {
-    logf("[link] protocol version %u, expected %u\n",
-                  (unsigned)h.version, (unsigned)tsb::VERSION);
-    teardown("version mismatch");
-    return;
-  }
+bool checkVersion(const tsb::TsbHeader &h) {
+  if (h.version == tsb::VERSION || h.type == tsb::T_BYE) return true;
+  logf("[link] protocol version %u, expected %u\n",
+       (unsigned)h.version, (unsigned)tsb::VERSION);
+  teardown("version mismatch");
+  return false;
+}
 
-  // Retain the full EVENT until a display slot exists. The same frame is
-  // reconsidered next loop; it has not been decoded, counted or acknowledged.
+bool maybePauseEvent(const tsb::TsbHeader &h) {
   if (state == State::Streaming && h.type == tsb::T_EVENT &&
       !hooks->canReceiveNotify()) {
+    if (!eventPaused) eventPausedAt = io->now();
     eventPaused = true;
-    return;
+    return true;
   }
   eventPaused = false;
+  return false;
+}
 
-  // §12: ANY inbound frame of any type resets the idle timer, including one
-  // that is about to be skipped under §4.3.
+bool enforceHandshakeStrictness(const tsb::TsbHeader &h, tsb::DecodeResult result) {
+  if (state != State::Connect) return true;
+  if ((h.type == tsb::T_WELCOME || h.type == tsb::T_BYE) &&
+      result == tsb::DecodeResult::Ok) return true;
+  logf("[link] handshake: type=0x%02x %s\n", (unsigned)h.type,
+       tsb::decodeResultName(result));
+  teardown("bad handshake");
+  return false;
+}
+
+void noteSkippedFrame(const tsb::TsbHeader &h, tsb::DecodeResult result) {
+  ++skippedSinceLog;
+  if (io->now() - lastSkipLogAt < 1000) return;
+  logf("[link] skipped %lu frame(s); last type=0x%02x %s\n",
+       (unsigned long)skippedSinceLog, (unsigned)h.type,
+       tsb::decodeResultName(result));
+  skippedSinceLog = 0;
+  lastSkipLogAt = io->now();
+}
+
+void deliverFrame() {
+  const tsb::TsbHeader h = reader.header();
+  if (!checkVersion(h) || maybePauseEvent(h)) return;
+  // ANY complete frame, including skipped payloads, proves inbound liveness.
   lastRxAt = io->now();
-
-  tsb::InboundFrame f;
-  const tsb::DecodeResult r = tsb::decodeInboundPayload(
-      h, reader.payload(), reader.payloadLength(), f);
-  reader.noteDecode(r);   // §4.3 counters
-  reader.consumeFrame();  // releases the frame and resets the §4.5 budget
-
-  // §11.2: before WELCOME, tolerance is suspended. The first inbound frame must
-  // be WELCOME or BYE; anything else is a teardown, not a skip.
-  if (state == State::Connect) {
-    if (h.type != tsb::T_WELCOME && h.type != tsb::T_BYE) {
-      logf("[link] handshake: expected WELCOME, got type 0x%02x\n",
-                    (unsigned)h.type);
-      teardown("bad handshake");
-      return;
-    }
-    if (r != tsb::DecodeResult::Ok) {
-      logf("[link] handshake: %s\n", tsb::decodeResultName(r));
-      teardown("bad handshake");
-      return;
-    }
-  }
-
-  if (r != tsb::DecodeResult::Ok) {
-    // §4.3, §4.6: well framed but not usable. Skip the payload, count it, keep
-    // the link. A malformed FRAME must not kill the link.
-    ++skippedSinceLog;
-    if (io->now() - lastSkipLogAt >= 1000) {
-      logf("[link] skipped %lu frame(s); last type=0x%02x %s\n",
-           (unsigned long)skippedSinceLog, (unsigned)h.type,
-           tsb::decodeResultName(r));
-      skippedSinceLog = 0;
-      lastSkipLogAt = io->now();
-    }
-    return;
-  }
-
-  dispatch(f);
+  tsb::InboundFrame frame;
+  const tsb::DecodeResult result = tsb::decodeInboundPayload(
+      h, reader.payload(), reader.payloadLength(), frame);
+  reader.noteDecode(result);
+  reader.consumeFrame();
+  if (!enforceHandshakeStrictness(h, result)) return;
+  if (result != tsb::DecodeResult::Ok) { noteSkippedFrame(h, result); return; }
+  dispatch(frame);
 }
 
 void readAvailable() {
@@ -412,16 +406,17 @@ void flushOutput() {
     teardown("write timeout");
     return;
   }
-  const int written = io->write(tx, txSize);
+  const int written = io->write(tx + txOffset, txSize);
   if (written < 0) { teardown("write failed"); return; }
   if (written == 0) return;
   reader.noteSent((uint32_t)written);
   txSize -= (size_t)written;
-  memmove(tx, tx + written, txSize);
+  txOffset += (size_t)written;
   // Deadline bounds total pending output, not a trickle's inter-write gap.
 }
 
 void attemptConnect() {
+  if (!io->readyForConnect()) return;
   logf("[link] connecting...\n");
   if (!io->startConnect()) { teardown("connect unavailable"); return; }
   state = State::Connecting;
@@ -445,27 +440,16 @@ void finishConnect() {
   }
 }
 
-}  // namespace
-
-void linkInit(const LinkHooks *h, LinkTransport &transport) {
+void init(const LinkHooks *h, LinkTransport &transport) {
+  *this = LinkSession{};
   hooks = h;
   io = &transport;
-  state = State::Idle;
-  reader.reset(true);
-  nextAttemptAt = 0;
-  failures = 0;
-  byeFloorMs = 0;
-  byeForceMax = false;
-  effectiveCaps = lastAckedSeq = lastAckAt = 0;
-  ackPending = eventPaused = false;
-  txSize = rxOffset = rxSize = 0;
-  skippedSinceLog = lastSkipLogAt = 0;
   io->begin();
 }
 
-bool linkIsUp() { return state == State::Streaming; }
+bool isUp() const { return state == State::Streaming; }
 
-void linkLoop() {
+void loop() {
   if (!hooks || !io) return;
   io->poll();
   const bool wifiLost = io->takeWifiDisconnect();
@@ -491,10 +475,13 @@ void linkLoop() {
     teardown("welcome timeout");
     return;
   }
-  // A local full queue can intentionally hide inbound heartbeats. Keep sending
-  // ours; apply the normal silence timeout once EVENT consumption resumes.
-  if (eventPaused) lastRxAt = now;
-  if (now - lastRxAt > RX_TIMEOUT_MS) {
+  // Backpressure can hide peer heartbeats, but cannot keep a dead peer online
+  // forever. The original pause timestamp survives repeated loop iterations.
+  if (eventPaused && now - eventPausedAt >= pauseLimitMs) {
+    teardown("notification pause timeout");
+    return;
+  }
+  if (!eventPaused && now - lastRxAt > RX_TIMEOUT_MS) {
     teardown("heartbeat timeout");
     return;
   }
@@ -508,3 +495,11 @@ void linkLoop() {
   maybeSendAck();
   if (state != State::Idle) flushOutput();
 }
+
+};
+LinkSession session;
+}  // namespace
+
+void linkInit(const LinkHooks *hooks, LinkTransport &transport) { session.init(hooks, transport); }
+bool linkIsUp() { return session.isUp(); }
+void linkLoop() { session.loop(); }

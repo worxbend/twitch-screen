@@ -15,7 +15,7 @@ void check(bool pass, const char *what) {
 }
 struct FakeTransport : LinkTransport {
   uint32_t time = 0;
-  bool wifi = true, edge = false, closed = false, writeBlocked = false;
+  bool wifi = true, edge = false, closed = false, writeBlocked = false, available = true;
   Connect connecting = Connect::Ready;
   size_t writeChunk = 256;
   int attempts = 0;
@@ -27,6 +27,7 @@ struct FakeTransport : LinkTransport {
   uint32_t jitter(uint32_t) override { return 0; }
   bool wifiConnected() const override { return wifi; }
   bool takeWifiDisconnect() override { bool e = edge; edge = false; return e; }
+  bool readyForConnect() const override { return available; }
   bool startConnect() override { ++attempts; closed = false; return true; }
   Connect connectStatus() override { return connecting; }
   void close() override { closed = true; inbound.clear(); }
@@ -48,8 +49,9 @@ struct FakeTransport : LinkTransport {
 };
 NotifyQueue<8> queue;
 int welcomes = 0, stats = 0;
+uint32_t welcomedCaps = 0;
 bool refuse = false;
-void welcome(const LinkWelcome &w) { ++welcomes; queue.greet(w.latestSeq, w.sessionId); }
+void welcome(const LinkWelcome &w) { ++welcomes; welcomedCaps = w.caps; queue.greet(w.latestSeq, w.sessionId); }
 bool notify(const Notification &n) { return !refuse && queue.offer(n) != NotifyQueue<8>::Offer::Refused; }
 bool capacity() { return queue.size() < 8; }
 void statistic(const StreamStats &) { ++stats; }
@@ -125,7 +127,14 @@ void testProlongedOutage() {
 }
 void testWritesAndAck() {
   FakeTransport t; reset(t); t.writeChunk = 3; greet(t); pump(t, 30);
-  check(t.outbound.size() >= 56, "partial writes retain complete HELLO bytes");
+  uint8_t expected[tsb::HEADER_SIZE + tsb::LEN_HELLO];
+  tsb::TsbHello hello;
+  tsb::buildHello(hello, 0, tsb::CAP_ACK | tsb::CAP_CHAT | tsb::CAP_GENERIC,
+                  t.deviceId(), t.firmwareVersion());
+  tsb::encodeHello(expected, sizeof(expected), hello);
+  check(t.outbound.size() == sizeof(expected) &&
+        memcmp(t.outbound.data(), expected, sizeof(expected)) == 0,
+        "partial writes retain every byte of exactly one complete HELLO");
   const size_t before = t.outbound.size();
   event(t, queue.lastSeq() + 1); pump(t, 20);
   check(t.outbound.size() == before, "ACK held until coalescing interval");
@@ -170,6 +179,30 @@ void testPausedQueueTimersAndWrongVersion() {
   wrong.add(frame.data(), frame.size()); pump(wrong);
   check(wrong.closed && !linkIsUp(), "queue capacity never delays wrong-version teardown");
 }
+void testSessionBoundaries() {
+  FakeTransport t; reset(t); greet(t);
+  check(welcomedCaps == (tsb::CAP_ACK | tsb::CAP_CHAT | tsb::CAP_GENERIC),
+        "WELCOME cannot enable unadvertised capabilities");
+  event(t, queue.lastSeq() + 1); pump(t);
+  const uint32_t baseline = queue.lastSeq();
+  t.add(gv::WELCOME, sizeof(gv::WELCOME)); pump(t);
+  check(!linkIsUp() && welcomes == 1 && queue.lastSeq() == baseline,
+        "duplicate WELCOME closes without rewinding application baseline");
+
+  FakeTransport paused; reset(paused); greet(paused);
+  for (unsigned i = 1; i <= 9; ++i) event(paused, queue.lastSeq() + i);
+  pump(paused, 40);
+  paused.time += 180000; pump(paused, 1);
+  check(paused.closed && !linkIsUp(), "full-queue pause expires after twice relay idle timeout");
+
+  FakeTransport busy; reset(busy); busy.available = false;
+  busy.time = 60000; pump(busy, 100);
+  check(busy.attempts == 0, "busy close worker defers without burning retry attempts");
+  busy.available = true; greet(busy); busy.edge = true; pump(busy, 1);
+  busy.time += 1000; pump(busy, 1);
+  check(busy.attempts == 2, "first real failure still retries at initial backoff");
+}
+
 void testHeartbeatCapsAndBye() {
   FakeTransport t; reset(t); greet(t);
   const size_t before = t.outbound.size();
@@ -268,7 +301,7 @@ int main() {
   testHandshakeAndTimeouts(); testWifiEdgeAndBackoff(); testProlongedOutage(); testWritesAndAck();
   testBurst(); testRefusalAndInvalidHandshake();
   testHeartbeatCapsAndBye(); testReplacedAndVersionByeJumpToCap(); testStableRecoveryAndWrap();
-  testPausedQueueTimersAndWrongVersion();
+  testPausedQueueTimersAndWrongVersion(); testSessionBoundaries();
   printf("%d checks, %d failures\n", checks, failures);
   return failures != 0;
 }

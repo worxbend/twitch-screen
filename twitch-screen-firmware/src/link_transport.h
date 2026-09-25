@@ -15,6 +15,8 @@ class LinkTransport {
   virtual uint32_t jitter(uint32_t limit) = 0;
   virtual bool wifiConnected() const = 0;
   virtual bool takeWifiDisconnect() = 0;
+  // Local disposal/resource work is not a failed network attempt.
+  virtual bool readyForConnect() const { return true; }
   virtual bool startConnect() = 0;
   virtual Connect connectStatus() = 0;
   virtual void close() = 0;
