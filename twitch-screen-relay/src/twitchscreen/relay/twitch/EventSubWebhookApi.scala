@@ -37,6 +37,7 @@ private[twitch] final class EventSubWebhookApi(
   import EventSubWebhookApi.*
 
   private val logger = LoggerFactory.getLogger(getClass)
+  private val deduplication = WebhookDeduplication()
 
   private val callbackServerEndpoint: ServerEndpoint[Any, Identity] =
     EventSubWebhookApi.callbackEndpoint.handle(handleCallback)
@@ -54,7 +55,10 @@ private[twitch] final class EventSubWebhookApi(
       _ <- verifyFreshness(timestamp)
       _ <- verifySignature(messageId, timestamp, signature, body)
       envelope <- parse(body)
-      response <- dispatch(messageType, envelope)
+      fresh <-
+        if messageType == "notification" || messageType == "revocation" then deduplication.claim(messageId, clock.instant())
+        else Right(true)
+      response <- if fresh then dispatch(messageType, envelope) else Right("")
     yield response
 
   /** Twitch replays are valid signatures on stale bodies; ten minutes is the window Twitch documents. */
@@ -116,6 +120,7 @@ private[twitch] final class EventSubWebhookApi(
       case "stream.offline" => tracker.wentOffline().toList
       case "channel.follow" => payload.userName.map(RelayEvent.Followed.apply).toList
       case "channel.update" =>
+        tracker.channelInfo(payload.title.getOrElse(""), payload.categoryName.getOrElse(""))
         List(
           RelayEvent.ChannelUpdated(
             payload.broadcasterUserName.getOrElse(config.channel),

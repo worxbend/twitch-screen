@@ -2,60 +2,83 @@ package twitchscreen.relay.twitch
 
 import java.time.{Clock, Duration as JDuration, Instant}
 import java.util.concurrent.atomic.AtomicReference
+import scala.annotation.tailrec
 import scala.concurrent.duration.{FiniteDuration, SECONDS}
 import twitchscreen.relay.bus.RelayEvent
 
-/** What the tracker believes about the channel. A separate case per state, so "live without a start time" cannot be represented — which is
-  * what lets `StreamEnded` carry a duration that is always either real or absent by construction.
-  */
 private[twitch] enum ChannelLiveness:
-  /** Nothing observed yet. Distinct from `Offline`, because a relay that boots while the channel is dark must not announce an ending. */
   case Unobserved
   case Live(since: Instant)
   case Offline
 
-/** The one place that decides whether the channel just changed state.
-  *
-  * Both EventSub (push, fast) and the Helix poll (pull, certain) observe the same thing, and either may notice first. Routing both through
-  * this tracker means a stream going live produces exactly one `StreamStarted` no matter which of them saw it, without either having to
-  * know the other exists.
-  *
-  * It also owns the two numbers §6.4.1 puts in `EVENT.value`: `STREAM_START.value` is the stream's start in unix seconds and
-  * `STREAM_END.value` is its duration in seconds. Neither is recoverable from the moment the relay happened to notice, so the start instant
-  * is remembered here — Helix's own `started_at` when it is known, and the moment of first sighting when it is not.
-  */
-private[twitch] final class ChannelStateTracker(channel: String, clock: Clock):
-  private val state = AtomicReference[ChannelLiveness](ChannelLiveness.Unobserved)
+private final case class ChannelObservation(
+    liveness: ChannelLiveness = ChannelLiveness.Unobserved,
+    title: String = "",
+    game: String = "",
+    lastPush: Option[Instant] = None,
+    absentPolls: Int = 0
+)
 
-  /** Last known (title, game). EventSub's `stream.online` carries neither, and it usually beats the Helix poll that does, so §6.4.1's
-    * `STREAM_START.text` (the stream title) is filled from the last `channel.update` or poll instead of going out empty.
-    */
-  private val lastInfo = AtomicReference[(String, String)](("", ""))
+/** Push transitions take precedence for a grace period; a later offline poll requires two consecutive absences. Initial live observations
+  * intentionally initialize statistics and announce the stream, preserving the established startup behavior.
+  */
+private[twitch] final class ChannelStateTracker(channel: String, clock: Clock, pushGrace: JDuration = JDuration.ofSeconds(60)):
+  private val state = AtomicReference(ChannelObservation())
 
   def channelInfo(title: String, game: String): Unit =
-    lastInfo.set((Option(title).getOrElse(""), Option(game).getOrElse("")))
+    state.updateAndGet(_.copy(title = Option(title).getOrElse(""), game = Option(game).getOrElse("")))
+    ()
 
-  /** `startedAt` is Twitch's own start time where the observer has one; without it the relay's first sighting is the best anchor it has. */
   def wentLive(title: String, game: String, startedAt: Option[Instant] = None): Option[RelayEvent] =
-    val since = startedAt.getOrElse(clock.instant())
-    val (knownTitle, knownGame) = lastInfo.get
-    state.getAndSet(ChannelLiveness.Live(since)) match
-      case ChannelLiveness.Live(_) => None
-      case _ =>
-        Some(
-          RelayEvent.StreamStarted(
-            channel,
-            if title.isBlank then knownTitle else title,
-            if game.isBlank then knownGame else game,
-            Some(since)
+    observeLive(title, game, startedAt, push = true)
+
+  def observedLive(title: String, game: String, startedAt: Option[Instant]): Option[RelayEvent] =
+    observeLive(title, game, startedAt, push = false)
+
+  def wentOffline(): Option[RelayEvent] = change: before =>
+    offline(before.copy(lastPush = Some(clock.instant()), absentPolls = 0))
+
+  def observedOffline(): Option[RelayEvent] = change: before =>
+    val absent = before.copy(absentPolls = math.min(2, before.absentPolls + 1))
+    before.liveness match
+      case ChannelLiveness.Live(_) if recentPush(before) || absent.absentPolls < 2 => absent -> None
+      case _                                                                       => offline(absent)
+
+  private def observeLive(title: String, game: String, startedAt: Option[Instant], push: Boolean): Option[RelayEvent] = change: before =>
+    if !push && before.liveness == ChannelLiveness.Offline && recentPush(before) then before -> None
+    else
+      val since = startedAt.getOrElse(before.liveness match
+        case ChannelLiveness.Live(existing) => existing
+        case _                              => clock.instant())
+      val next = before.copy(
+        liveness = ChannelLiveness.Live(since),
+        lastPush = if push then Some(clock.instant()) else before.lastPush,
+        absentPolls = 0
+      )
+      val event = before.liveness match
+        case ChannelLiveness.Live(_) => None
+        case _ =>
+          Some(
+            RelayEvent.StreamStarted(
+              channel,
+              Option(title).filterNot(_.isBlank).getOrElse(before.title),
+              Option(game).filterNot(_.isBlank).getOrElse(before.game),
+              Some(since)
+            )
           )
-        )
+      next -> event
 
-  /** Startup is not a transition: a relay that boots while the channel is offline should not announce it ended. */
-  def wentOffline(): Option[RelayEvent] =
-    state.getAndSet(ChannelLiveness.Offline) match
-      case ChannelLiveness.Live(since) => Some(RelayEvent.StreamEnded(channel, elapsedSince(since)))
-      case _                           => None
+  private def recentPush(observation: ChannelObservation): Boolean =
+    observation.lastPush.exists(sent => clock.instant().isBefore(sent.plus(pushGrace)))
 
-  private def elapsedSince(since: Instant): FiniteDuration =
-    FiniteDuration(math.max(0L, JDuration.between(since, clock.instant()).toSeconds), SECONDS)
+  private def offline(before: ChannelObservation): (ChannelObservation, Option[RelayEvent]) =
+    val event = before.liveness match
+      case ChannelLiveness.Live(since) =>
+        Some(RelayEvent.StreamEnded(channel, FiniteDuration(math.max(0L, JDuration.between(since, clock.instant()).toSeconds), SECONDS)))
+      case _ => None
+    before.copy(liveness = ChannelLiveness.Offline) -> event
+
+  @tailrec private def change(transition: ChannelObservation => (ChannelObservation, Option[RelayEvent])): Option[RelayEvent] =
+    val before = state.get()
+    val (after, event) = transition(before)
+    if state.compareAndSet(before, after) then event else change(transition)

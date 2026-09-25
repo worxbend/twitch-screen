@@ -37,7 +37,7 @@ private[twitch] object HelixPoller:
         catch
           case NonFatal(error) =>
             logger.warn("Helix poll failed", error)
-            bus.publish(RelayEvent.RelayFailure("twitch-poll", String.valueOf(error.getMessage)))
+            bus.publish(RelayEvent.RelayFailure("twitch-poll", Option(error.getMessage).getOrElse(error.getClass.getSimpleName)))
         sleep(config.pollInterval)
 
   private def poll(
@@ -64,10 +64,14 @@ private[twitch] object HelixPoller:
           // run is not it, and would move the stream's start time on every relay restart.
           tracker.channelInfo(stream.getTitle, stream.getGameName)
           tracker
-            .wentLive(String.valueOf(stream.getTitle), String.valueOf(stream.getGameName), Option(stream.getStartedAtInstant))
+            .observedLive(
+              Option(stream.getTitle).getOrElse(""),
+              Option(stream.getGameName).getOrElse(""),
+              Option(stream.getStartedAtInstant)
+            )
             .foreach(bus.publish)
           bus.publish(RelayEvent.ViewersObserved(Count.clamp(intOr(stream.getViewerCount)), uptimeOf(stream.getStartedAtInstant, clock)))
-        case None => tracker.wentOffline().foreach(bus.publish)
+        case None => tracker.observedOffline().foreach(bus.publish)
 
   private def pollFollowers(helix: TwitchHelix, userToken: String, broadcasterId: String, bus: EventBus): Unit =
     attempt("twitch-followers", bus):
@@ -87,7 +91,7 @@ private[twitch] object HelixPoller:
     catch
       case NonFatal(error) =>
         logger.warn(s"$source failed: ${error.getMessage}")
-        bus.publish(RelayEvent.RelayFailure(source, String.valueOf(error.getMessage)))
+        bus.publish(RelayEvent.RelayFailure(source, Option(error.getMessage).getOrElse(error.getClass.getSimpleName)))
         None
 
   private def uptimeOf(startedAt: java.time.Instant, clock: Clock): FiniteDuration =

@@ -56,3 +56,29 @@ class ChannelStateTrackerSuite extends munit.FunSuite:
     assertEquals(subject.wentOffline(), None)
 
   extension [T](value: T) private def discard: Unit = ()
+
+  test("a lagging absent poll does not end a newly pushed live stream"):
+    val subject = tracker()
+    subject.wentLive("title", "game").discard
+    assertEquals(subject.observedOffline(), None)
+    assertEquals(subject.observedLive("title", "game", Some(now)), None)
+
+  test("two absent polls after the push grace period announce one ending"):
+    class Movable extends Clock:
+      var current = now
+      override def instant(): Instant = current
+      override def getZone = ZoneOffset.UTC
+      override def withZone(zone: java.time.ZoneId): Clock = this
+    val movable = Movable()
+    val subject = ChannelStateTracker("somechannel", movable)
+    subject.wentLive("title", "game").discard
+    movable.current = now.plusSeconds(90)
+    assertEquals(subject.observedOffline(), None)
+    assertEquals(subject.observedOffline(), Some(RelayEvent.StreamEnded("somechannel", 90.seconds)))
+    assertEquals(subject.observedOffline(), None)
+
+  test("a stale live poll cannot undo a pushed stream ending"):
+    val subject = tracker()
+    subject.wentLive("title", "game").discard
+    subject.wentOffline().discard
+    assertEquals(subject.observedLive("title", "game", Some(now)), None)

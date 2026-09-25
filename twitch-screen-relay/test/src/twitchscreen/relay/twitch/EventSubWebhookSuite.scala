@@ -17,6 +17,7 @@ import twitchscreen.relay.config.*
   * here is computed independently of the implementation.
   */
 class EventSubWebhookSuite extends munit.FunSuite:
+  private val ids = java.util.concurrent.atomic.AtomicInteger()
   private val secret = "shared-secret"
   private val now = Instant.ofEpochSecond(1790309000L)
   private val clock = Clock.fixed(now, ZoneOffset.UTC)
@@ -39,10 +40,15 @@ class EventSubWebhookSuite extends munit.FunSuite:
     mac.init(SecretKeySpec(secret.getBytes(UTF_8), "HmacSHA256"))
     "sha256=" + mac.doFinal((messageId + timestamp + body).getBytes(UTF_8)).map(byte => f"$byte%02x").mkString
 
-  private def post(messageType: String, body: String, timestamp: String = now.toString, signature: Option[String] = None)(using
+  private def post(
+      messageType: String,
+      body: String,
+      timestamp: String = now.toString,
+      signature: Option[String] = None,
+      messageId: String = s"msg-${ids.incrementAndGet()}"
+  )(using
       backend: SyncBackend
   ) =
-    val messageId = "msg-1"
     basicRequest
       .post(url)
       .header("Twitch-Eventsub-Message-Id", messageId)
@@ -128,3 +134,21 @@ class EventSubWebhookSuite extends munit.FunSuite:
     withWebhook: (backend, _) =>
       given SyncBackend = backend
       assertEquals(post("notification", """{"subscription":{"type":"channel.hype_train.begin"}}""").code, StatusCode.Ok)
+
+  test("signed redelivery is acknowledged without publishing again"):
+    withWebhook: (backend, events) =>
+      given SyncBackend = backend
+      val body = """{"subscription":{"type":"channel.follow"},"event":{"user_name":"once"}}"""
+      assertEquals(post("notification", body, messageId = "duplicate").code, StatusCode.Ok)
+      assertEquals(post("notification", body, messageId = "duplicate").code, StatusCode.Ok)
+      assertEquals(events.receive().event, RelayEvent.Followed("once"))
+      assert(events.tryReceive().isEmpty)
+
+  test("channel update supplies metadata to the later online event"):
+    withWebhook: (backend, events) =>
+      given SyncBackend = backend
+      val update = """{"subscription":{"type":"channel.update"},"event":{"title":"Build night","category_name":"Science"}}"""
+      assertEquals(post("notification", update).code, StatusCode.Ok)
+      assert(events.receive().event.isInstanceOf[RelayEvent.ChannelUpdated])
+      assertEquals(post("notification", """{"subscription":{"type":"stream.online"},"event":{}}""").code, StatusCode.Ok)
+      assertEquals(events.receive().event, RelayEvent.StreamStarted("somechannel", "Build night", "Science", Some(now)))
