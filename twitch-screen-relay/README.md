@@ -16,6 +16,8 @@ Built with **Scala 3**, **Ox**, synchronous **Tapir/Netty**, **jsoniter-scala**,
 
 ## 🚀 First run: no Twitch account required
 
+Have a Linux/macOS-style shell, Git, curl, OpenSSL, and **JDK 25 on `PATH`** ready. Mill's JVM launcher needs an installed Java runtime before it can download the pinned toolchain on platforms that cannot use its native launcher. See [native relay setup](../docs/guides/relay-setup.md#native-development-) for prerequisites and configuration.
+
 From this directory:
 
 ```sh
