@@ -1,5 +1,6 @@
 package twitchscreen.relay.device
 
+import twitchscreen.relay.collection.appendBounded
 import twitchscreen.relay.protocol.*
 
 /** Actor-confined replay storage; chat cannot evict durable notifications. */
@@ -18,4 +19,4 @@ private[device] final class ReplayBuffers(durableCapacity: Int, chatCapacity: In
 private final class ReplayRing(capacity: Int):
   private var retained = Vector.empty[EventRecord]
   def records: Vector[EventRecord] = retained
-  def append(record: EventRecord): Unit = retained = (retained :+ record).takeRight(capacity)
+  def append(record: EventRecord): Unit = retained = retained.appendBounded(record, capacity)

@@ -393,3 +393,55 @@ NEW `test/src/twitchscreen/relay/observability/RelayMetricsSuite.scala`, 3 tests
 - `./mill --no-daemon test`: PASS (exit 0), 47 suites / 515 tests, 0 failed. This unit adds 1 suite and 3 tests. The last full run recorded above was 46 / 503, so the other 9 tests came from units recorded in between; this unit does not account for them. The log has no `[warn]` or `[error]` lines under `-Werror`.
 - `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS.
 - `git diff --check`: PASS. `git status` lists only `RelayEvent.scala`, `RelayMetrics.scala`, the new `RelayMetricsSuite.scala` and this record.
+
+## refactor(relay): share one bounded-append helper across ring buffers
+
+Findings: **K-096** (Low) Bounded-append ring implemented 3x (`relay (3 sites)`; fix: "Shared bounded ring helper."). The retained gap was that `(xs :+ x).takeRight(cap)` was written out four times: LogBuffer, ReplayBuffers, AlertStore and ActivityLog. `tasks/review-kimi-root.md:48` had kept them on the grounds that a "storage abstraction" would be heavier. The finding asks only for a pure helper, which does not touch any site's state handling.
+
+### Change
+
+- NEW `src/twitchscreen/relay/collection/BoundedAppend.scala` (package `twitchscreen.relay.collection`): one top-level Scala 3 extension, `private[relay] def appendBounded(item: A, capacity: Int): Vector[A] = (items :+ item).takeRight(capacity)` on `Vector[A]`. Its Scaladoc says it keeps the newest `capacity` items and drops the oldest first. It also says the helper is pure (callers keep their own AtomicReference/CAS or actor confinement) and that a non-positive capacity gives an empty vector, as `takeRight` does, because callers validate capacity at config load (`ConfigLimits.buffer`). There is no `require`, so behaviour is exactly as before. `private[relay]` on the top-level extension compiles without warnings under `-Werror`.
+- Call sites. Each gains `import twitchscreen.relay.collection.appendBounded`, and only the append expression changes:
+  - `observability/LogBuffer.scala:34`: `records.updateAndGet(_.appendBounded(bounded, capacity.get())).discard`
+  - `device/ReplayBuffers.scala:22`: `retained = retained.appendBounded(record, capacity)`
+  - `alerts/AlertStore.scala:23`: `State(alert.id, current.alerts.appendBounded(alert, capacity))`
+  - `activity/ActivityLog.scala:25`: `entries.updateAndGet(_.appendBounded(entry, capacity)).discard`
+- AtomicReference, CAS (`AlertStore.transition`) and actor confinement (`ReplayRing`) are unchanged at every site.
+- Not shared, on purpose:
+  - `LogBuffer.resize` (`_.takeRight(newCapacity)`, now line 25) is a truncation with no append, so an append helper does not fit it. The brief said to share it only "if that fits".
+  - `PendingAuthorizations.scala:20` sorts and caps a map, which is a different operation.
+- `grep -rn ':+ .*).takeRight' src` now finds only the helper's own definition. The only other `takeRight` uses in `src` are `LogBuffer.scala:25` (resize) and `PendingAuthorizations.scala:20`.
+
+### Tests (test first)
+
+NEW `test/src/twitchscreen/relay/collection/BoundedAppendSuite.scala`, 4 tests:
+1. "K-096: capacity 1 keeps only the newest item": `Vector.empty.appendBounded(1, 1) == Vector(1)`, `Vector(1).appendBounded(2, 1) == Vector(2)`.
+2. "K-096: below capacity nothing is dropped and order is kept": `Vector(1, 2).appendBounded(3, 5) == Vector(1, 2, 3)`.
+3. "K-096: at capacity the oldest item is dropped first": `Vector(1, 2, 3).appendBounded(4, 3) == Vector(2, 3, 4)`, and folding 1..10 at capacity 3 gives `Vector(8, 9, 10)`.
+4. "K-096: over capacity, as after a shrink, trims down to capacity": `Vector(1, 2, 3, 4).appendBounded(5, 2) == Vector(4, 5)`.
+- Red: before the helper existed, `./mill --no-daemon test.testOnly twitchscreen.relay.collection.BoundedAppendSuite` failed with compile errors (6 errors, "value appendBounded is not a member of Vector[Int]").
+- Green: once the helper was added and before the call sites were refactored, the same command passed, 4/4. The existing suites were not edited.
+
+### Mutation checks (the helper was restored from a copy after each one; `cmp` confirmed it matched)
+
+Each check ran the targeted command from Validation step 2.
+- m1: `takeRight` changed to `take`, which keeps the oldest items. FAIL, 5 failed:
+  - BoundedAppendSuite: 3 of 4 (capacity 1, at capacity, over capacity).
+  - ActivityLogSuite "the buffer keeps only as many entries as it was sized for".
+  - DeviceLinkSuite "RLY-16: a greeting at the minimum accepted outbound capacity arrives whole".
+  - AlertStoreSuite (`test/src/twitchscreen/relay/alerts/AlertSuite.scala:117`) still passed. Its eviction test asserts only the size (2), not which alerts are left, so `take` also satisfies it.
+- m2: the bound removed (`items :+ item`). Under `-Werror` this does not compile: "unused explicit parameter in extension method appendBounded". A variant that still references the parameter (`if capacity == Int.MinValue then Vector.empty else items :+ item`) gave FAIL, 7 failed:
+  - BoundedAppendSuite: 3 of 4.
+  - ActivityLogSuite "the buffer keeps only as many entries as it was sized for".
+  - AlertStoreSuite "the store keeps only as many alerts as it was sized for".
+  - DeviceLinkSuite "chat is replayed out of a ring of its own, so a busy chat cannot evict a follow".
+  - DeviceLinkSuite "RLY-16: a greeting at the minimum accepted outbound capacity arrives whole".
+- DiagnosticsSuite did not fail under either mutation. No existing suite checks LogBuffer's append eviction, so for LogBuffer the new BoundedAppendSuite is the only guard.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly twitchscreen.relay.collection.BoundedAppendSuite`: red (compile error) first, then PASS, 4/4.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.observability.*' 'twitchscreen.relay.alerts.*' 'twitchscreen.relay.activity.*' 'twitchscreen.relay.device.*' 'twitchscreen.relay.collection.*'`: PASS (exit 0), 21 suites / 148 tests, 0 failed. This includes DiagnosticsSuite 5/5, AlertStoreSuite 9/9, AlertMonitorSuite 2/2, ActivityLogSuite 6/6, DeviceLinkSuite 43/43 and BoundedAppendSuite 4/4.
+- `./mill --no-daemon test`: PASS (exit 0), 48 suites / 519 tests, 0 failed. The previous full run was 47 / 515, so this unit adds 1 suite and 4 tests. The log has no `[warn]` or `[error]` lines under `-Werror`.
+- `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS. The reformat changed nothing.
+- `git diff --check`: PASS. `git status` lists only `ActivityLog.scala`, `AlertStore.scala`, `ReplayBuffers.scala` and `LogBuffer.scala`, the new `collection/BoundedAppend.scala` and `collection/BoundedAppendSuite.scala`, and this record.

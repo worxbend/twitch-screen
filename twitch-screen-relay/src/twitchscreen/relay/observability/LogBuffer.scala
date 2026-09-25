@@ -5,6 +5,7 @@ import ch.qos.logback.core.UnsynchronizedAppenderBase
 import java.time.Instant
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import ox.discard
+import twitchscreen.relay.collection.appendBounded
 
 /** The last N log lines, kept in memory so `GET /api/v1/logs` can answer "what is it doing right now?" over SSH-less links — the relay's
   * usual home is a headless Raspberry Pi.
@@ -30,7 +31,7 @@ private[relay] object LogBuffer:
       thread = DiagnosticText(entry.thread, 128),
       cause = entry.cause.map(DiagnosticText(_, 1024))
     )
-    records.updateAndGet(current => (current :+ bounded).takeRight(capacity.get())).discard
+    records.updateAndGet(_.appendBounded(bounded, capacity.get())).discard
 
   /** Most recent first. */
   def recent(limit: Int, minimumLevel: LogLevel): List[LogRecord] =

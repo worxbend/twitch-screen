@@ -4,6 +4,7 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 import org.slf4j.LoggerFactory
 import ox.{Ox, discard}
 import twitchscreen.relay.bus.{BusEvent, EventBus, EventCategory, RelayEvent}
+import twitchscreen.relay.collection.appendBounded
 import twitchscreen.relay.config.ActivityConfig
 import twitchscreen.relay.observability.DiagnosticText
 
@@ -21,7 +22,7 @@ private[relay] final class ActivityLog(capacity: Int):
       case RelayEvent.NotificationPublished(notification) if notification.kind == twitchscreen.relay.protocol.NotificationKind.Chat  => ()
       case _ =>
         val entry = ActivityEntry(lastId.incrementAndGet(), message.at, message.event.category, DiagnosticText(message.event.summary))
-        entries.updateAndGet(current => (current :+ entry).takeRight(capacity)).discard
+        entries.updateAndGet(_.appendBounded(entry, capacity)).discard
 
   /** Most recent first. */
   def recent(limit: Int, category: Option[EventCategory]): List[ActivityEntry] =

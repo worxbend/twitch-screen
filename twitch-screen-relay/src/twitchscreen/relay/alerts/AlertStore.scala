@@ -3,6 +3,7 @@ package twitchscreen.relay.alerts
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
 import scala.annotation.tailrec
+import twitchscreen.relay.collection.appendBounded
 import twitchscreen.relay.observability.DiagnosticText
 
 /** Bounded alert history. Acknowledgement silences an alert; only resolution closes its condition. Every mutation commits one immutable
@@ -19,7 +20,7 @@ private[relay] final class AlertStore(capacity: Int):
         case Some(existing) => (replace(current, existing.copy(message = safeMessage)), None)
         case None =>
           val alert = Alert(current.lastId + 1, rule.name, rule.severity, safeMessage, at, AlertStatus.Active)
-          (State(alert.id, (current.alerts :+ alert).takeRight(capacity)), Some(alert))
+          (State(alert.id, current.alerts.appendBounded(alert, capacity)), Some(alert))
 
   def resolve(ruleName: String, at: Instant): Option[Alert] =
     transition: current =>
