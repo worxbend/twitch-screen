@@ -31,6 +31,11 @@ jobs:
             ~/.cache/mill
           key: relay-${{ runner.os }}-${{ hashFiles('twitch-screen-relay/build.mill', 'twitch-screen-relay/mill') }}
       - run: ./mill compile
+      - name: Audit resolved runtime dependencies
+        working-directory: .
+        run: |
+          python3 -m unittest discover -s tools/tests -v
+          python3 tools/audit_relay_dependencies.py
       - run: ./mill test
       - run: ./mill mill.scalalib.scalafmt/checkFormatAll
 

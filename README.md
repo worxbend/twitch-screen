@@ -95,8 +95,10 @@ in example files.
 
 ## Automated verification
 
-[GitHub Actions](.github/workflows/ci.yml) runs relay compilation, tests and
-formatting, firmware native/sanitizer tests and ESP32 compilation, protocol
+[GitHub Actions](.github/workflows/ci.yml) runs relay compilation, dependency auditing,
+tests and formatting, firmware native/sanitizer tests and ESP32 compilation, protocol
 vector drift checks, CAD script syntax checks and container build/smoke tests.
 Physical display behavior, live Twitch credentials and printed fit require
-separate validation. [Remediation evidence](tasks/todo.md) tracks review work.
+separate validation. [Finding dispositions](tasks/review-status.md) and
+[validation evidence](tasks/review-judge.md) track review work. The dependency
+audit's [temporary legacy exceptions](tasks/review-dependencies.md) expire on 2026-10-25.

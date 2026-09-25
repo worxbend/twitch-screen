@@ -295,6 +295,11 @@ unclassified endpoints refuse startup. Protected operations advertise both authe
 The build enables `-Werror` with `-Wunused:all -Wvalue-discard -Wnonunit-statement`. Version numbers live in
 `build.mill`; the relay's own version lives in `RelayVersion.scala`.
 
+From the repository root, `python3 tools/audit_relay_dependencies.py` scans the resolved
+runtime dependencies against OSV and fails on new advisories or incomplete scans. CI runs it too.
+The two exact legacy exceptions expire on 2026-10-25; see the
+[dependency assessment](../tasks/review-dependencies.md) for affected paths and follow-up.
+
 ## What has and has not been exercised
 
 Verified here: the protocol bytes against the firmware's specification, the device link over real sockets, the

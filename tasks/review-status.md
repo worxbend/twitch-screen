@@ -47,7 +47,7 @@ combined validation are recorded in [review-judge.md](review-judge.md).
 | RLY-38 | Addressed | [review-repository](review-repository.md) |
 | RLY-39 | Deferred optional | Optional lint/coverage adoption has no required migration. [review-repository](review-repository.md) |
 | RLY-40 | Addressed | [review-repository](review-repository.md) |
-| RLY-41 | Audit remediation in progress | Resolved-dependency advisories are being remediated and assessed. [review-repository](review-repository.md) |
+| RLY-41 | Mitigated; legacy follow-up | Netty/Jawn patched; automated 182-coordinate audit. Two exact legacy exceptions expire 2026-10-25. [Dependency assessment](review-dependencies.md) |
 | RLY-42 | Retained behavior | Initial live announcement initializes stats and is explicitly tested. [review-security](review-security.md) |
 | RLY-43 | Addressed | [review-security](review-security.md) |
 | RLY-44 | Addressed | [review-repository](review-repository.md) |

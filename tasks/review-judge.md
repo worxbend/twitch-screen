@@ -16,7 +16,7 @@ required findings must be resolved before the final push.
 | Firmware reviewer on tracker | Concurrent transitions could publish END then START while the state was Offline. | Security owner serializes state transition and publication; concurrency regression added. |
 | Firmware reviewer on subscriptions | Success of one subscription could clear another failure, and reconnect did not recreate dropped registrations. | Security owner implementing per-kind reconciliation and focused recovery tests. |
 | Firmware reviewer on credentials | Header-invalid static bearer values could pass startup validation. | Security owner adding header-safe validation and regression. |
-| Root on dependencies | The resolved Maven audit found Netty/Jawn advisories and two unpatched legacy dependencies. | Runtime owner implementing aligned patched versions, repeatable audit and explicit legacy exposure assessment. |
+| Root on dependencies | The resolved Maven audit found Netty/Jawn advisories and two unpatched legacy dependencies. | Netty/Jawn patched; root independently reviewed scanner and exception boundaries, ran seven offline tests and the live 182-coordinate audit. Two exact legacy exceptions expire 2026-10-25. |
 
 ## Verdicts
 
@@ -28,7 +28,11 @@ required findings must be resolved before the final push.
   scoped metrics. Required real-shutdown finding was corrected. Final combined
   tests and container verification remain the integration gate.
 - Relay auth/Twitch: firmware agent's final verdict pending review corrections.
-- Dependency follow-up: root final verdict pending implementation.
+- Dependency follow-up: root approves the focused version fixes and audit implementation.
+  Strict coordinate parsing, complete result pairing, pagination bounds and exact
+  expiring exceptions were reviewed and independently tested. The legacy
+  packages remain affected; [assessment and follow-up](review-dependencies.md)
+  define the narrow exposure assumptions.
 
 ## Integrated evidence
 
@@ -42,7 +46,9 @@ required findings must be resolved before the final push.
   695-sample wall checks pass. Packaging verifies all previews and an 81-file
   archive. Discrete extraction sampling does not prove continuous clearance.
 - CI workflow passes actionlint; skill validators and discovery links pass.
-- Final relay suite, dependency audit, image smoke and remote CI pending.
+- Dependency audit passes with 182 coordinates, two explicit legacy exceptions
+  and zero unexcepted matches. Seven offline scanner tests and updated actionlint pass.
+- Final relay suite, final image smoke and remote CI pending.
 
 See [review-status.md](review-status.md) for every finding's disposition.
 No physical display, WiFi outage, watchdog reset, real Twitch subscription or
