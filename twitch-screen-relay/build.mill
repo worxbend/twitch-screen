@@ -14,12 +14,13 @@ object Versions {
   val tapir = "1.13.31"
   val netty = "4.2.18.Final"
   val jsoniter = "2.41.0"
+  val jawn = "1.7.0"
   val pureconfig = "0.17.10"
   val macwire = "2.6.7"
   val twitch4j = "1.27.0"
   val otel = "1.66.0"
 
-  /** The OpenTelemetry instrumentation artifacts are only ever published as `-alpha`; this is their latest release. */
+  /** These instrumentation modules retain the currently tested alpha pin; SDK and instrumentation version lines differ. */
   val otelInstrumentation = "2.9.0-alpha"
 
   val logback = "1.6.4"
@@ -55,6 +56,8 @@ object `package` extends ScalaModule {
     mvn"com.softwaremill.sttp.tapir::tapir-opentelemetry-tracing:${Versions.tapir}",
     // JSON for HTTP responses, Twitch OAuth and EventSub bodies. The device protocol is binary TSB/3.
     mvn"com.github.plokhotnyuk.jsoniter-scala::jsoniter-scala-macros:${Versions.jsoniter}",
+    // Patched parser used transitively by Circe/OpenAPI.
+    mvn"org.typelevel::jawn-parser:${Versions.jawn}",
     // Typed HOCON configuration.
     mvn"com.github.pureconfig::pureconfig-core:${Versions.pureconfig}",
     // Twitch. The aggregate brings helix (REST), chat (IRC), eventsub-common, eventsub-websocket and pubsub, plus
