@@ -128,10 +128,10 @@ It only establishes that the HTTP server can respond. Docker's health check uses
 | `version`, `startedAt`, `uptimeSeconds` | Running version and process lifetime |
 | `twitch` | `mode`, `health`, `channel`, `detail` |
 | `deviceLink` | Connected devices, accepted connections, `connectionsRefused` (connections closed at the 64-session limit, pending handshakes included; also exported as the `relay.device.connections.refused` metric; a rising value means too many devices, or a connection leak or flood), published notifications, latest sequence, replay count, and `sequenceExhausted` (true once the `u32` sequence space is spent; restart the relay) |
-| `subscribers` | Internal event-bus subscriber statistics, including losses |
+| `subscribers` | Internal event-bus subscriber statistics: per subscriber `name`, `enqueued`, `delivered` and `dropped` |
 | `activityEntries`, `activeAlerts`, `bufferedLogRecords` | Current in-memory diagnostic counts |
 
-Twitch health may be `Disabled`, `Connecting`, `Connected`, `Degraded`, or `Disconnected`. Read the detail with it; HTTP can be healthy while the broadcaster grant is missing. The status route reads a nonblocking hub snapshot and does not convert every degraded condition into a failing HTTP status. Subscriber `delivered` counts events accepted into its queue, not completed handler calls. Repeated failures update an open alert’s message without reopening or unacknowledging it.
+Twitch health may be `Disabled`, `Connecting`, `Connected`, `Degraded`, or `Disconnected`. Read the detail with it; HTTP can be healthy while the broadcaster grant is missing. The status route reads a nonblocking hub snapshot and does not convert every degraded condition into a failing HTTP status. For each subscriber, `enqueued` counts events accepted into its queue, `delivered` counts handler calls that have finished (a failed call counts too), and `dropped` counts events lost to a full queue. `enqueued - delivered` is the current backlog, including an event whose handler is still running. Repeated failures update an open alert’s message without reopening or unacknowledging it.
 
 ## Inspect and reconnect a device 📡
 

@@ -189,3 +189,12 @@ class ManagementRoutesSuite extends munit.FunSuite:
         val section = yaml.linesIterator.dropWhile(_ != s"  /api/v1/$path:").drop(1).takeWhile(!_.startsWith("  /")).mkString("\n")
         assert(section.nonEmpty, s"missing public $path")
         assert(!section.contains("security:"), section)
+
+  test("K-153: the OpenAPI document describes what each bus subscriber counter means"):
+    withServer(): port =>
+      val yaml = send(port, "GET", "/docs/docs.yaml").body()
+      List(
+        "events accepted into the subscriber queue",
+        "events whose handler call has finished",
+        "events rejected because the subscriber queue was full"
+      ).foreach(text => assert(yaml.contains(text), s"docs.yaml lacks '$text'"))

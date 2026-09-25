@@ -62,6 +62,6 @@ class BotFilterSuite extends munit.FunSuite:
       val bus = EventBus(clock, queueCapacity = 8)
       bus.subscribe("test").discard
       filter.publish(bus, event)
-      bus.subscriberStats.map(stats => stats.delivered + stats.dropped).sum
+      bus.subscriberStats.map(stats => stats.enqueued + stats.dropped).sum
 
   extension [T](value: T) private def discard: Unit = ()

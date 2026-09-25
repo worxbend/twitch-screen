@@ -95,3 +95,39 @@ The first full-suite runs were flaky: 2 of 4 failed the K-057 test from a43a815.
 - `./mill --no-daemon test.testOnly 'twitchscreen.relay.alerts.*'`: PASS, 4 suites / 22 tests.
 - `./mill --no-daemon test` ×4 consecutive: PASS each time, exit 0, 39 suites / 429 tests, 0 failed.
 - `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS. `grep -rn 'MonitorState.check' .`: no output. `git diff --check`: PASS.
+
+## fix(relay): make EventBus subscriber delivered count handler completions; test overflow WARN
+
+Findings: **K-073** (Low) EventBus subscriber overflow is silent; **K-153** (Nit) SubscriberStats.delivered overstates delivery. The overflow WARN (logged at power-of-two drop counts) was already on main but no test covered it. `delivered` still counted queue acceptance, and only the Scaladoc and docs had been changed to say so. This unit uses option 2 from the review: `delivered` keeps its name but now counts finished handler calls, and a new `enqueued` counter takes over the old meaning.
+
+### Change
+
+- `bus/EventBus.scala`: `SubscriberStats(name, enqueued, delivered, dropped)`. Each counter has a Tapir `@description`, so its meaning appears in the OpenAPI schema at `/docs`. The Scaladoc states the invariants: `enqueued + dropped` = offered, `delivered <= enqueued`, and `enqueued - delivered` = backlog.
+- `Subscription`: `deliveredCount` is renamed to `enqueuedCount` and is still incremented on a successful `trySendOrClosed`. The new `deliveredCount` is incremented only by `private[bus] markDelivered()`. The overflow WARN and its power-of-two gate are unchanged.
+- `consume` calls `markDelivered()` after the handler's try/catch, so a failed call is counted once it has finished. `foldTimed` calls it after each step only when `input.isDefined`, so timer ticks are not counted. Both now use `register(name)` directly. A raw `subscribe` channel keeps `delivered = 0`. Every production subscriber (activity, metrics, device-notifications, stats, alerts) goes through `consume` or `foldTimed`.
+- `docs/reference/http-api.md`: the `subscribers` row lists `name`, `enqueued`, `delivered` and `dropped`. The paragraph defines all three counters and the backlog. A grep of `docs/` and README found no other subscriber `delivered` wording.
+- `BotFilterSuite` helper (raw `subscribe`): sums `enqueued + dropped` instead of `delivered + dropped`, so its meaning is unchanged.
+
+### Tests (written first; `./mill --no-daemon test.compile` failed with "value enqueued is not a member of SubscriberStats" before the fix)
+
+- `EventBusSuite` "a subscriber that stops reading…": now asserts `(enqueued, delivered, dropped) == (2, 0, 3)` and `enqueued + dropped == 5`.
+- `EventBusSuite` "K-153: delivered counts finished handler calls, not queue acceptance". Setup: a capacity-2 bus and a `consume` handler that blocks on a release channel. Publish 1 event and wait until the handler has entered, then publish 4 more. The counters are `(3, 0, 2)`. Release 3 times and poll within 3 s until delivered = 3. The counters are then `(3, 3, 2)`.
+- `EventBusSuite` "foldTimed counts a delivery per finished event step, not per tick, including a failed step". Setup: 1 h tick, events "first", "bad" (the step throws) and "last". Result: `(3, 3, 0)`.
+- `EventBusSuite` "K-073: queue overflow is logged at WARN when the dropped count reaches 1, 2 and 4, not 3". A logback `ListAppender` is attached to `twitchscreen.relay.bus.Subscription` and detached and stopped in `finally`. After 5 events into a stalled capacity-2 subscriber, the WARNs are exactly the messages for 1 and 2 dropped. A 6th event adds "4 events dropped".
+- `EventBusSuite` "SubscriberStats counters carry OpenAPI descriptions": checks the Tapir `SProduct` field descriptions.
+- `ManagementRoutesSuite` "K-153: the OpenAPI document describes what each bus subscriber counter means": the served `/docs/docs.yaml` contains all three descriptions.
+
+### Revert checks (production file restored after each; `cmp` against a backup confirmed it identical, and `git diff src/` shows only the intended change)
+
+1. `delivered` incremented in `offer` and `markDelivered()` made a no-op: 2 failed / 11 in EventBusSuite, at `EventBusSuite.scala:39` (the stalled test expects delivered 0) and `:53` (the K-153 test expects `(3, 0, 2)`).
+2. `logger.warn` replaced by `logger.debug` (a bare `then ()` does not compile under the strict warning flags): the K-073 test fails at `EventBusSuite.scala:97`. Result: 1 failed / 11.
+3. Power-of-two gate replaced by `if true`: the K-073 test fails at `EventBusSuite.scala:97` (an extra WARN at 3). Result: 1 failed / 11.
+4. The `delivered` `@description` removed: the schema test fails at `EventBusSuite.scala:109` and the docs.yaml test fails at `ManagementRoutesSuite.scala:200` ("docs.yaml lacks 'events whose handler call has finished'").
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.bus.*'` ×3: PASS each time, EventBusSuite 11 / 11.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.twitch.*' 'twitchscreen.relay.http.*' 'twitchscreen.relay.alerts.*'`: PASS, 18 suites / 170 tests.
+- `./mill --no-daemon test`: 39 suites / 444 tests. 11 of 12 runs passed. One run had an intermittent failure in `SequenceExhaustionSuite` "a stream lifecycle transition on an exhausted hub still delivers STATS…" (`:134`, the Offline STATS frame did not arrive within the device read budget under full-suite load). That suite passed 5 / 5 when run alone. An export of the untouched HEAD passed 6 / 6 full runs. The test does not read any subscriber counter, and this change only adds one atomic increment per handled event. It is recorded here as an existing timing-sensitive test and was not changed in this unit.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS.
+- `git diff --check`: PASS.
