@@ -289,3 +289,50 @@ Validation (run from twitch-screen-relay):
 Residual:
 - Live exhaustion needs about 4.29e9 EVENTs, so it is proven only through the `startingAt` seam, not on a live relay.
 - Recovery is by restart only, as §10.1 specifies. No persisted counter exists or was added.
+
+## RLY-25 / RLY-16 — wire-unit config validation
+
+Change:
+- `config/Config.scala`, `DeviceLinkConfig.validate()`:
+  - `idle-timeout` and `ping-interval` must be whole seconds (`toNanos % 1e9 == 0`), because WELCOME carries both as u16 seconds (§6.2). The 1..65535 s range checks stay.
+  - Ping is checked before idle, so 1500ms/1900ms names `ping-interval`.
+  - `ping < idle` is now compared in wire seconds (`toSeconds`). The comment cites §12, "MUST enforce at startup".
+  - `handshake-timeout` only has to be positive. It is not a wire value, so sub-second values stay allowed.
+- The literal `18` is gone. `DeviceLinkConfig.ChatReplaySize = 16` is now the single source of truth. `GreetingFrames = ChatReplaySize + 2` covers WELCOME, the chat ring and STATS (§11.1). The capacity message names the breakdown.
+- `device/DeviceHub.scala`: `DeviceHubState.ChatReplaySize = DeviceLinkConfig.ChatReplaySize`.
+- `NotificationsConfig`: `default-ttl` must be a multiple of 100 ms within 100..6553500 ms (u16 deciseconds, where 0 means the device default).
+- `resources/application.conf` is unchanged (5s / 90s / 20s / 128 >= 64+18 / 8s) and still loads.
+
+Tests:
+- `ConfigSuite` gains 7 tests:
+  - ping values 0, -1s and 500ms are rejected with `ping-interval`.
+  - 1500ms/1900ms is rejected with `ping-interval`, 2s/2500ms with `idle-timeout`, and an idle of 0 or -1s with `idle-timeout`.
+  - a handshake of 0 or -1s is rejected, and 300ms is accepted.
+  - default-ttl values 50ms, 0, 150ms and 6553600ms are rejected; 100ms, 8s and 6553500ms are accepted.
+  - capacity replay+17 is rejected with `outbound-queue-capacity`, replay+18 is accepted, and a guard asserts `GreetingFrames == 18 == ChatReplaySize + 2`.
+  - zero or negative simulation, bus, stats, alerts and activity values are rejected.
+  - through the reader, 1500ms/1900ms gives a `Left` that mentions ping-interval.
+- `DeviceLinkSuite` gains "RLY-16: a greeting at the minimum accepted outbound capacity arrives whole":
+  - Setup: replay 4, capacity 4+GreetingFrames, a baseline follow plus 5 follows and 20 chats, and last_seq=1.
+  - It receives 22 frames: WELCOME, 20 REPLAY EVENTs with seqs 3..6 then 11..26 in strictly ascending order, and a trailing STATS.
+- The existing fixtures are unchanged (TestRelay 5/4, ApiSuite 5/4, Backpressure 2/1, handshake 300/600ms, `NotificationsConfig(30.seconds)`). The only edit to them is the "eighteen frames" comment, which now reads GreetingFrames.
+
+Red to green:
+- The new tests first failed to compile because `GreetingFrames` did not exist.
+- On the first implementation, 2 failed: the idle check ran before the ping check, so the message named the wrong key. Reordering the checks made all 26 ConfigSuite tests pass.
+
+Mutation check:
+- `GreetingFrames = ChatReplaySize + 1`: the new DeviceLinkSuite test fails at line 150, because the trailing STATS is dropped at capacity 21 and a PING arrives after about 4 s. The other 38 tests pass.
+- The file was restored from a backup, and `sha256sum -c` confirmed it byte-identical.
+
+Validation (run from twitch-screen-relay):
+- `./mill --no-daemon test.testOnly twitchscreen.relay.config.ConfigSuite` → 26/26, 0 failed.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.device.DeviceLinkSuite twitchscreen.relay.device.DeviceBackpressureSuite` → 39 + 6, 0 failed.
+- `./mill --no-daemon compile` (`-Werror`) → SUCCESS.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` → SUCCESS; `git diff --check` clean.
+- `./mill --no-daemon test` → 30 suites, 355 tests (was 347), 0 failed. The LifecycleOrderingSuite flake did not appear.
+
+Residuals:
+- idle > 15 s (§12) is not enforced. It is a device-side warning under §6.2, and the test fixtures rely on short timers.
+- handshake-timeout can still be sub-second by design.
+- NotificationApi's private `MaxTtlMillis` is not yet shared with `NotificationsConfig` (optional).

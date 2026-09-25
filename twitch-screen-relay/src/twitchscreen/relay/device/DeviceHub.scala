@@ -378,7 +378,7 @@ private[device] final class DeviceHubState(
 
 private[device] object DeviceHubState:
   /** §5, §10.3: a ring of its own, so that a busy chat cannot evict a follow, a raid or a sub from the durable one. */
-  val ChatReplaySize: Int = 16
+  val ChatReplaySize: Int = DeviceLinkConfig.ChatReplaySize
 
   /** §6.1's `CAP_GENERIC`: the kinds `0x00`…`0x03` a device may decline to render. */
   val GenericKinds: Set[NotificationKind] =

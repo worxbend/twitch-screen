@@ -31,18 +31,29 @@ final case class DeviceLinkConfig(
     require(protocolVersion == 3, "device-link.protocol-version must be 3; this relay speaks TSB/3 and nothing else")
     require(replayBufferSize > 0 && replayBufferSize <= 65535, "device-link.replay-buffer-size must be 1..65535")
     require(
-      outboundQueueCapacity >= replayBufferSize + 18,
-      "device-link.outbound-queue-capacity must hold replay-buffer-size + 18 greeting frames"
+      outboundQueueCapacity >= replayBufferSize + DeviceLinkConfig.GreetingFrames,
+      s"device-link.outbound-queue-capacity must hold replay-buffer-size + ${DeviceLinkConfig.GreetingFrames} greeting frames " +
+        s"(WELCOME, ${DeviceLinkConfig.ChatReplaySize} chat replays, STATS)"
     )
     require(acceptBacklog > 0, "device-link.accept-backlog must be positive")
+    // Not a wire value: it only bounds how long the relay waits for HELLO, so sub-second is fine.
     require(handshakeTimeout.toNanos > 0, "device-link.handshake-timeout must be positive")
-    require(idleTimeout.toSeconds >= 1 && idleTimeout.toSeconds <= 65535, "device-link.idle-timeout must be 1..65535 seconds")
+    // §6.2: WELCOME carries both as u16 seconds, so anything the device cannot be told exactly is refused.
     require(pingInterval.toSeconds >= 1 && pingInterval.toSeconds <= 65535, "device-link.ping-interval must be 1..65535 seconds")
+    require(wholeSeconds(pingInterval), "device-link.ping-interval must be a whole number of seconds (WELCOME carries u16 seconds)")
+    require(idleTimeout.toSeconds >= 1 && idleTimeout.toSeconds <= 65535, "device-link.idle-timeout must be 1..65535 seconds")
+    require(wholeSeconds(idleTimeout), "device-link.idle-timeout must be a whole number of seconds (WELCOME carries u16 seconds)")
     // §5: counted in bytes, header included, and every v3 peer must be able to accept 256 of them. A smaller
     // value here would have the relay refuse frames its own encoder is entitled to produce.
     require(maxFrameLength == 256, "device-link.max-frame-length must be exactly 256 bytes")
-    // The firmware gives up after `idleTimeout` of silence, so the server must ping well inside that window.
-    require(pingInterval < idleTimeout, "device-link.ping-interval must be shorter than device-link.idle-timeout")
+    // The firmware gives up after `idleTimeout` of silence, so the server must ping well inside that window. §12 says
+    // this MUST be enforced at startup, and it is compared in the wire's seconds: that is what the device is told.
+    require(
+      pingInterval.toSeconds < idleTimeout.toSeconds,
+      "device-link.ping-interval must be shorter than device-link.idle-timeout"
+    )
+
+  private def wholeSeconds(duration: FiniteDuration): Boolean = duration.toNanos % 1_000_000_000L == 0
 
 /** EventSub delivery settings; only the fields of the selected `transport` are read. */
 final case class EventSubConfig(transport: EventSubTransport, callbackUrl: String, secret: Sensitive) derives ConfigReader
@@ -125,7 +136,11 @@ final case class NotificationsConfig(
     chat: ChatNotifications,
     ignoredDisplayNames: List[String] = NotificationsConfig.DefaultIgnoredDisplayNames
 ):
-  require(defaultTtl.toMillis > 0 && defaultTtl.toMillis <= 6553500, "notifications.default-ttl must be 1..6553500 milliseconds")
+  require(
+    defaultTtl.toNanos % 100_000_000L == 0 && defaultTtl.toMillis >= 100 && defaultTtl.toMillis <= 6553500,
+    "notifications.default-ttl must be a multiple of 100 milliseconds in 100..6553500 ms " +
+      "(EVENT carries u16 deciseconds; 0 would mean the device's per-kind default)"
+  )
 
 object NotificationsConfig:
   given ConfigReader[NotificationsConfig] = ValidatedConfigReader(ConfigReader.derived[NotificationsConfig])
@@ -206,6 +221,14 @@ object Config:
     )
 
 object DeviceLinkConfig:
+  /** §5, §10.3: chat is replayed out of a ring of its own, so that a busy chat cannot evict a follow, a raid or a sub from the durable one.
+    * The single source of truth for that ring's size; the device hub reads it from here.
+    */
+  private[relay] val ChatReplaySize: Int = 16
+
+  /** §11.1: the frames a greeting burst adds on top of the durable replay — one WELCOME, the whole chat ring and one trailing STATS. */
+  private[relay] val GreetingFrames: Int = ChatReplaySize + 2
+
   given ConfigReader[DeviceLinkConfig] = ValidatedConfigReader(ConfigReader.derived[DeviceLinkConfig])
 
 object SimulationConfig:

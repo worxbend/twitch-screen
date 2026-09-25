@@ -1,6 +1,6 @@
 package twitchscreen.relay.config
 
-import com.typesafe.config.ConfigFactory
+import com.typesafe.config.{ConfigFactory, ConfigValueFactory}
 import pureconfig.ConfigSource
 import ox.discard
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
@@ -66,21 +66,87 @@ class ConfigSuite extends munit.FunSuite:
     val failure = intercept[IllegalArgumentException](deviceLinkConfig(pingInterval = 30.seconds))
     assert(failure.getMessage.contains("ping-interval"), failure.getMessage)
 
+  test("RLY-25: a ping interval that is zero, negative or under a second is rejected, naming the key"):
+    List(0.seconds, (-1).second, 500.millis).foreach: ping =>
+      val failure = intercept[IllegalArgumentException](deviceLinkConfig(pingInterval = ping))
+      assert(failure.getMessage.contains("ping-interval"), s"$ping: ${failure.getMessage}")
+
+  test("RLY-25: ping and idle are compared in the whole seconds WELCOME carries, not in nanoseconds"):
+    // 1500 ms < 1900 ms, but both go on the wire as 1 s: the device would be told ping == idle.
+    val fractionalPing = intercept[IllegalArgumentException](deviceLinkConfig(pingInterval = 1500.millis, idleTimeout = 1900.millis))
+    assert(fractionalPing.getMessage.contains("ping-interval"), fractionalPing.getMessage)
+    val fractionalIdle = intercept[IllegalArgumentException](deviceLinkConfig(pingInterval = 2.seconds, idleTimeout = 2500.millis))
+    assert(fractionalIdle.getMessage.contains("idle-timeout"), fractionalIdle.getMessage)
+    List(0.seconds, (-1).second).foreach: idle =>
+      val failure = intercept[IllegalArgumentException](deviceLinkConfig(pingInterval = 1.second, idleTimeout = idle))
+      assert(failure.getMessage.contains("idle-timeout"), s"$idle: ${failure.getMessage}")
+
+  test("RLY-25: a handshake timeout must be positive, but is not a wire value and may be sub-second"):
+    List(0.seconds, (-1).second).foreach: handshake =>
+      val failure = intercept[IllegalArgumentException](deviceLinkConfig(handshakeTimeout = handshake))
+      assert(failure.getMessage.contains("handshake-timeout"), s"$handshake: ${failure.getMessage}")
+    assertEquals(deviceLinkConfig(handshakeTimeout = 300.millis).handshakeTimeout, 300.millis)
+
+  test("RLY-25: the default TTL must be a whole number of the deciseconds EVENT carries, within u16"):
+    List(50.millis, 0.millis, 150.millis, 6553600.millis).foreach: ttl =>
+      val failure = intercept[IllegalArgumentException](NotificationsConfig(ttl, ChatNotifications.Show))
+      assert(failure.getMessage.contains("default-ttl"), s"$ttl: ${failure.getMessage}")
+    List(100.millis, 8.seconds, 6553500.millis).foreach: ttl =>
+      assertEquals(NotificationsConfig(ttl, ChatNotifications.Show).defaultTtl, ttl)
+
+  test("RLY-16: the outbound queue must hold the durable replay plus the named greeting frames, and no fewer"):
+    assertEquals(DeviceLinkConfig.GreetingFrames, 18)
+    assertEquals(DeviceLinkConfig.GreetingFrames, DeviceLinkConfig.ChatReplaySize + 2)
+    val failure = intercept[IllegalArgumentException](
+      deviceLinkConfig(replayBufferSize = 8, outboundQueueCapacity = 8 + DeviceLinkConfig.GreetingFrames - 1)
+    )
+    assert(failure.getMessage.contains("outbound-queue-capacity"), failure.getMessage)
+    assertEquals(
+      deviceLinkConfig(replayBufferSize = 8, outboundQueueCapacity = 8 + DeviceLinkConfig.GreetingFrames).outboundQueueCapacity,
+      8 + DeviceLinkConfig.GreetingFrames
+    )
+
+  test("zero or negative simulation, bus, stats, alert and activity values are rejected"):
+    val alerts = AlertsConfig(1.second, 10, None, None, None, 0, 1.minute)
+    List[() => Any](
+      () => SimulationConfig(0.seconds, 1.second),
+      () => SimulationConfig(1.second, (-1).second),
+      () => BusConfig(0),
+      () => BusConfig(-1),
+      () => StatsConfig(0.seconds, 1.second),
+      () => alerts.copy(evaluationInterval = 0.seconds),
+      () => alerts.copy(bufferSize = 0),
+      () => alerts.copy(noDevicesConnectedFor = Some(0.seconds)),
+      () => ActivityConfig(0)
+    ).foreach(build => intercept[IllegalArgumentException](build()).discard)
+
+  test("RLY-25: a ping interval equal to the idle timeout on the wire fails the reader, not just the constructor"):
+    val source = configured
+      .withValue("device-link.ping-interval", ConfigValueFactory.fromAnyRef("1500ms"))
+      .withValue("device-link.idle-timeout", ConfigValueFactory.fromAnyRef("1900ms"))
+    val result = ConfigSource.fromConfig(source).load[Config]
+    assert(result.isLeft)
+    assert(result.swap.toOption.exists(_.toString.contains("ping-interval")), result.toString)
+
   private def deviceLinkConfig(
       pingInterval: FiniteDuration = 4.seconds,
       maxFrameLength: Int = 256,
-      protocolVersion: Int = 3
+      protocolVersion: Int = 3,
+      handshakeTimeout: FiniteDuration = 5.seconds,
+      idleTimeout: FiniteDuration = 10.seconds,
+      outboundQueueCapacity: Int = 26,
+      replayBufferSize: Int = 8
   ): DeviceLinkConfig =
     DeviceLinkConfig(
       host = Hostname("0.0.0.0").toOption.get,
       port = Port(8099).toOption.get,
       protocolVersion = protocolVersion,
       acceptBacklog = 8,
-      handshakeTimeout = 5.seconds,
-      idleTimeout = 10.seconds,
+      handshakeTimeout = handshakeTimeout,
+      idleTimeout = idleTimeout,
       pingInterval = pingInterval,
-      outboundQueueCapacity = 26,
-      replayBufferSize = 8,
+      outboundQueueCapacity = outboundQueueCapacity,
+      replayBufferSize = replayBufferSize,
       maxFrameLength = maxFrameLength
     )
 

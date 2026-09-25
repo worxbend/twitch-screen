@@ -2,7 +2,7 @@ package twitchscreen.relay.device
 
 import ox.{discard, forkDiscard, supervised}
 import scala.concurrent.duration.DurationInt
-import twitchscreen.relay.config.ChatNotifications
+import twitchscreen.relay.config.{ChatNotifications, DeviceLinkConfig}
 import twitchscreen.relay.protocol.*
 
 /** Exercises TSB/3 end to end over real sockets: handshake, capability negotiation, push, replay, heartbeat, refusal and teardown.
@@ -119,7 +119,7 @@ class DeviceLinkSuite extends munit.FunSuite:
   test("chat is replayed out of a ring of its own, so a busy chat cannot evict a follow"):
     supervised:
       // A durable ring of four against thirty chat lines: with one shared ring the follow would have been evicted
-      // twenty-six times over. The outbound queue is widened because the greeting burst is eighteen frames and
+      // twenty-six times over. The outbound queue is widened because the greeting burst is DeviceLinkConfig.GreetingFrames frames and
       // §10.4's drop-on-full is a different property, pinned by its own test.
       val (hub, port) = TestRelay.start(TestRelay.config.copy(replayBufferSize = 4, outboundQueueCapacity = 64))
       hub.publish(follow("first")).discard // seq 1, the baseline the device reports
@@ -133,6 +133,26 @@ class DeviceLinkSuite extends munit.FunSuite:
         assertEquals(replayed.count(_.kind == NotificationKind.Chat), DeviceHubState.ChatReplaySize)
         assertEquals(replayed.map(_.seq.value), replayed.map(_.seq.value).sorted, "both rings merged into one ascending order")
         assertEquals(frames.last.header.typeCode.known, Some(MessageType.Stats), "the burst still ends with exactly one STATS")
+
+  test("RLY-16: a greeting at the minimum accepted outbound capacity arrives whole"):
+    supervised:
+      val replay = 4
+      val (hub, port) =
+        TestRelay.start(TestRelay.config.copy(replayBufferSize = replay, outboundQueueCapacity = replay + DeviceLinkConfig.GreetingFrames))
+      hub.publish(follow("baseline")).discard // seq 1, the baseline the device reports
+      (1 to 5).foreach(index => hub.publish(follow(s"follower$index")).discard) // seqs 2…6, the durable ring keeps the last four
+      (1 to 20).foreach(index => hub.publish(chat(s"chatter$index", "hi")).discard) // seqs 7…26, the chat ring keeps the last sixteen
+      withDevice(port): device =>
+        device.hello("roundlcd-01", lastSeq = 1)
+        val frames = device.receiveMany(1 + replay + DeviceHubState.ChatReplaySize + 1)
+        assertEquals(frames.size, 1 + replay + DeviceHubState.ChatReplaySize + 1, "a dropped EVENT would have closed the link")
+        assertEquals(frames.head.header.typeCode.known, Some(MessageType.Welcome))
+        assertEquals(frames.last.header.typeCode.known, Some(MessageType.Stats), "the trailing STATS was not dropped")
+        val replayed = frames.filter(_.header.typeCode.known.contains(MessageType.Event))
+        assertEquals(replayed.size, replay + DeviceHubState.ChatReplaySize)
+        assert(replayed.forall(_.header.flags.isReplay), "every replayed EVENT must carry flags.REPLAY")
+        val seqs = events(replayed).map(_.seq.value)
+        assertEquals(seqs, (3L to 6L).toList ++ (11L to 26L).toList, "both rings merged into one strictly ascending order")
 
   test("chat reaches a device that wants it and is withheld from one that does not"):
     supervised:
