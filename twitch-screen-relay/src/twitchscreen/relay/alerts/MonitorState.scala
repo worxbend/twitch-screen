@@ -25,13 +25,13 @@ private[alerts] object Presence:
 /** What the alert rules are evaluated against. Pure, so every rule can be tested without a clock or a socket. */
 private[alerts] final case class MonitorState(twitch: Presence, stream: Presence, devices: Presence, failuresAt: Vector[Instant]):
   def apply(message: BusEvent): MonitorState = message.event match
-    case RelayEvent.TwitchLinkUp(_)        => copy(twitch = twitch.sighted)
-    case RelayEvent.TwitchLinkDown(_)      => copy(twitch = twitch.missing(message.at))
-    case RelayEvent.StreamStarted(_, _, _) => copy(stream = stream.sighted)
-    case RelayEvent.StreamEnded(_)         => copy(stream = stream.missing(message.at))
-    case RelayEvent.ViewersObserved(_, _)  => copy(stream = stream.sighted)
-    case RelayEvent.RelayFailure(_, _)     => copy(failuresAt = failuresAt :+ message.at)
-    case _                                 => this
+    case RelayEvent.TwitchLinkUp(_)           => copy(twitch = twitch.sighted)
+    case RelayEvent.TwitchLinkDown(_)         => copy(twitch = twitch.missing(message.at))
+    case RelayEvent.StreamStarted(_, _, _, _) => copy(stream = stream.sighted)
+    case RelayEvent.StreamEnded(_, _)         => copy(stream = stream.missing(message.at))
+    case RelayEvent.ViewersObserved(_, _)     => copy(stream = stream.sighted)
+    case RelayEvent.RelayFailure(_, _)        => copy(failuresAt = failuresAt :+ message.at)
+    case _                                    => this
 
   /** Device presence is read from the hub at evaluation time rather than tracked from events, which cannot go stale. */
   def withDevices(connected: Int, now: Instant): MonitorState =

@@ -80,9 +80,23 @@ private[relay] object ByeCode:
       case HandshakeTimeout   => 12
       case Unknown(raw)       => raw
 
-  def fromWire(raw: Int): ByeCode =
-    val known = values.collect { case simple if !simple.isInstanceOf[Unknown] => simple }
-    known.find(_.value == raw).getOrElse(Unknown(raw & 0xffff))
+  /** Listed by hand: `Unknown(raw)` carries a parameter, so this enum has no synthesised `values`. */
+  private val defined: List[ByeCode] = List(
+    UnsupportedVersion,
+    BadHandshake,
+    InvalidDeviceId,
+    InvalidSequence,
+    FramingViolation,
+    FrameTooLarge,
+    DuplicateHello,
+    ServerShutdown,
+    Replaced,
+    RateLimit,
+    InvalidParameter,
+    HandshakeTimeout
+  )
+
+  def fromWire(raw: Int): ByeCode = defined.find(_.value == raw).getOrElse(Unknown(raw & 0xffff))
 
 /** The code-specific detail of a `BYE`: the version the relay speaks, the type code it actually received, the payload offset of an invalid
   * field, or zero when the code has nothing to add.

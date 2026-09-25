@@ -23,7 +23,7 @@ class ApiSuite extends munit.FunSuite:
   private val deviceLinkConfig = DeviceLinkConfig(
     host = Hostname("127.0.0.1").toOption.get,
     port = Port(8099).toOption.get,
-    protocolVersion = 2,
+    protocolVersion = 3,
     acceptBacklog = 8,
     handshakeTimeout = 2.seconds,
     idleTimeout = 5.seconds,
@@ -39,7 +39,7 @@ class ApiSuite extends munit.FunSuite:
   private def withApi(body: (SyncBackend, DeviceHub, AlertStore) => Unit): Unit =
     supervised:
       val bus = EventBus(clock, queueCapacity = 32)
-      val hub = DeviceHub.start(deviceLinkConfig, clock, bus)
+      val hub = DeviceHub.start(deviceLinkConfig, ChatNotifications.Hide, clock, bus)
       val alerts = AlertStore(10)
       val apis = List(
         HealthApi(),

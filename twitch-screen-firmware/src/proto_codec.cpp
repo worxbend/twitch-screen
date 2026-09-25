@@ -5,12 +5,17 @@
 // that the caller never has to remember them:
 //   EVENT.seq == 0        -> DecodeResult::InvalidField, frame skipped (§6.4)
 //   EVENT.tier > 4        -> 0, "no tier" (§6.4)
-//   EVENT.currency bad    -> zeroed, i.e. not monetary (§6.4)
 //   EVENT.ttl_ds > 6000   -> clamped to 6000 (§6.4, SHOULD)
 //   STATS.live != 0       -> 1 (§6.5)
 //   every string field    -> last byte of OUR copy forced to NUL (§9.1)
-// EVENT.exp > 4 is left alone deliberately: §6.4 says render the bare integer
-// and log, which is the renderer's call, not the codec's.
+//
+// EVENT.reserved1 (+12..+15) and EVENT.reserved2 (+23) are NOT normalised and
+// NOT validated. §6.4 and §8.1 say senders MUST write zero and receivers MUST
+// IGNORE the content; ignoring it means not acting on it, not erasing it. These
+// five bytes are the space held open for a future monetary amount, so a decoder
+// that blanked them would hand a v4 frame to the renderer with the new field
+// already destroyed — exactly the forward compatibility §8.1 exists to buy.
+// They are therefore copied through byte for byte and never looked at again.
 //
 #include "proto_codec.h"
 
@@ -155,16 +160,6 @@ bool packWireString(char *field, size_t width, const char *src) {
   return true;
 }
 
-bool currencyIsValid(const char *c) {
-  if (c == 0) return false;
-  if (c[0] == 0 && c[1] == 0 && c[2] == 0 && c[3] == 0) return true;  // not monetary
-  if (c[3] != 0) return false;
-  for (int i = 0; i < 3; ++i) {
-    if (c[i] < 'A' || c[i] > 'Z') return false;
-  }
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // Payload decoders. Each one bounds-checks the whole record up front; every
 // field read below is therefore inside a buffer already proven long enough.
@@ -206,21 +201,22 @@ DecodeResult decodeEvent(const uint8_t *p, size_t length, TsbEvent &out) {
   out.seq    = seq;
   out.ts     = rdU32(p + 4);
   out.value  = rdU32(p + 8);
-  copyWireString(out.currency, p + 12, sizeof(out.currency));
+  // §8.1: carried verbatim. Not parsed, not validated, not rewritten.
+  out.reserved1[0] = p[12];
+  out.reserved1[1] = p[13];
+  out.reserved1[2] = p[14];
+  out.reserved1[3] = p[15];
   out.months = rdU16(p + 16);
   out.ttl_ds = rdU16(p + 18);
   out.kind   = p[20];
   out.tier   = p[21];
   out.eflags = p[22];
-  out.exp    = p[23];
+  out.reserved2 = p[23];   // §8.1: carried verbatim, likewise.
   copyWireString(out.actor, p + 24, sizeof(out.actor));
   copyWireString(out.text,  p + 72, sizeof(out.text));
 
   if (out.tier > TIER_MAX)     out.tier = TIER_NONE;
   if (out.ttl_ds > TTL_DS_MAX) out.ttl_ds = TTL_DS_MAX;
-  if (!currencyIsValid(out.currency)) {
-    memset(out.currency, 0, sizeof(out.currency));
-  }
   return DecodeResult::Ok;
 }
 

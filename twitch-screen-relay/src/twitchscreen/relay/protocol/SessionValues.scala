@@ -70,8 +70,14 @@ private[relay] object SessionId:
 private[relay] opaque type ReplayWindow = Int
 
 private[relay] object ReplayWindow:
-  /** §5: 64 durable events, plus a separate ring of 16 chat events. */
-  val Durable: ReplayWindow = 64
+  /** §5's default: 64 durable events, plus a separate ring of 16 chat events. */
+  val Durable: ReplayWindow = ReplayWindow.of(64)
+
+  /** §6.2: what the relay advertises must be what it actually retains, so this is built from `device-link.replay-buffer-size` rather than
+    * from the constant. A device that is told 64 and served 8 has no way to notice, and `last_seq` arithmetic is the only thing standing
+    * between it and a silently lost card.
+    */
+  def of(size: Int): ReplayWindow = math.max(0, math.min(size, 0xffff))
 
   def fromWire(raw: Int): ReplayWindow = raw & 0xffff
 

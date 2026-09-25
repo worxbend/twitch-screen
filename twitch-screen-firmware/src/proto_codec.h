@@ -72,10 +72,10 @@ static const uint32_t CAP_CHAT      = 0x00000002u;
 static const uint32_t CAP_GENERIC   = 0x00000004u;
 static const uint32_t CAP_UTF8_TEXT = 0x00000008u;
 
-// §6.4 eflags bits.
+// §6.4 eflags bits. Bit 2 (0x04) and bits 5-7 (0xe0) are reserved: senders MUST
+// set them to 0 and receivers MUST ignore them, so they have no name here.
 static const uint8_t EF_TEXT_TRUNCATED      = 0x01;
 static const uint8_t EF_ACTOR_TRUNCATED     = 0x02;
-static const uint8_t EF_AMOUNT_CLAMPED      = 0x04;
 static const uint8_t EF_ANONYMOUS           = 0x08;
 static const uint8_t EF_CHAT_COLOUR_PRESENT = 0x10;
 
@@ -92,8 +92,10 @@ enum EventKind : uint8_t {
   K_GIFT         = 0x14,
   K_RAID         = 0x15,
   K_CHAT         = 0x16,
-  K_BITS         = 0x17,
-  K_DONATION     = 0x18
+  K_BITS         = 0x17
+  // 0x18 is permanently reserved (§6.4.1, §8): a v3 relay MUST NOT send it, and
+  // a v3 device that somehow sees it applies the unknown-kind rule of §6.4.2
+  // like any other unrecognised code. It is deliberately not named.
 };
 
 // §6.4 tier. 0 means NOT APPLICABLE, not Prime: a failed tier read must never
@@ -159,17 +161,24 @@ struct TsbWelcome {          // == WELCOME payload, 24 bytes
   uint32_t caps;             // +20
 };
 
+// §6.4. `reserved1` (+12..+15) and `reserved2` (+23) are RESERVED, not fields:
+// a sender MUST write zeros and a receiver MUST IGNORE their content entirely.
+// They are held open (§8.1) for a future monetary amount, so this decoder copies
+// them through byte for byte and neither validates nor rewrites them. Blanking
+// bytes that a later version is entitled to use would defeat the whole point of
+// holding them open: a v4 EVENT would arrive at a v3 device with its new field
+// already erased.
 struct TsbEvent {            // == EVENT payload, 168 bytes
   uint32_t seq;              // +0
   uint32_t ts;               // +4
   uint32_t value;            // +8
-  char     currency[4];      // +12
+  uint8_t  reserved1[4];     // +12  §8.1 — carried verbatim, never interpreted
   uint16_t months;           // +16
   uint16_t ttl_ds;           // +18
   uint8_t  kind;             // +20
   uint8_t  tier;             // +21
   uint8_t  eflags;           // +22
-  uint8_t  exp;              // +23
+  uint8_t  reserved2;        // +23  §8.1 — carried verbatim, never interpreted
   char     actor[48];        // +24
   char     text[96];         // +72
 };
@@ -208,11 +217,16 @@ static_assert(offsetof(TsbWelcome, max_frame) == 12, "TsbWelcome.max_frame offse
 static_assert(offsetof(TsbWelcome, caps)      == 20, "TsbWelcome.caps offset");
 
 static_assert(sizeof(TsbEvent) == 168, "TsbEvent wire size");
-static_assert(offsetof(TsbEvent, currency) == 12, "TsbEvent.currency offset");
-static_assert(offsetof(TsbEvent, months)   == 16, "TsbEvent.months offset");
-static_assert(offsetof(TsbEvent, kind)     == 20, "TsbEvent.kind offset");
-static_assert(offsetof(TsbEvent, actor)    == 24, "TsbEvent.actor offset");
-static_assert(offsetof(TsbEvent, text)     == 72, "TsbEvent.text offset");
+static_assert(offsetof(TsbEvent, value)     ==  8, "TsbEvent.value offset");
+static_assert(offsetof(TsbEvent, reserved1) == 12, "TsbEvent.reserved1 offset");
+static_assert(offsetof(TsbEvent, months)    == 16, "TsbEvent.months offset");
+static_assert(offsetof(TsbEvent, ttl_ds)    == 18, "TsbEvent.ttl_ds offset");
+static_assert(offsetof(TsbEvent, kind)      == 20, "TsbEvent.kind offset");
+static_assert(offsetof(TsbEvent, tier)      == 21, "TsbEvent.tier offset");
+static_assert(offsetof(TsbEvent, eflags)    == 22, "TsbEvent.eflags offset");
+static_assert(offsetof(TsbEvent, reserved2) == 23, "TsbEvent.reserved2 offset");
+static_assert(offsetof(TsbEvent, actor)     == 24, "TsbEvent.actor offset");
+static_assert(offsetof(TsbEvent, text)      == 72, "TsbEvent.text offset");
 
 static_assert(sizeof(TsbStats) == 32, "TsbStats wire size");
 static_assert(offsetof(TsbStats, stream_started_at) == 24, "TsbStats.stream_started_at offset");
@@ -283,10 +297,6 @@ void copyWireString(char *dst, const uint8_t *src, size_t width);
 // The field is always fully NUL-padded. Returns true when truncation happened,
 // so the caller can set TEXT_TRUNCATED / ACTOR_TRUNCATED.
 bool packWireString(char *field, size_t width, const char *src);
-
-// §6.4 currency: three uppercase A-Z bytes then NUL, or four zero bytes.
-// Anything else means "not monetary" and the amount renders as a bare integer.
-bool currencyIsValid(const char *currency4);
 
 // ---------------------------------------------------------------------------
 // Decoders. Each takes the PAYLOAD pointer and the payload length as delivered
@@ -362,6 +372,8 @@ struct Counters {
   // Lifetime totals.
   uint32_t framesDecoded;
   uint32_t bytesReceived;         // 8 + length per delivered frame
+  uint32_t bytesSent;             // 8 + length per frame written (noteSent)
+  uint32_t framesDropped;         // outbound frames that could not be written
   uint32_t resyncEvents;
   uint32_t discardedBytesTotal;
   uint32_t framesOversizeSkipped;
@@ -431,6 +443,11 @@ class FrameReader {
 
   // Folds a §4.3 outcome into the counters. Safe to call with Ok.
   void noteDecode(DecodeResult r);
+
+  // §14 outbound side. The reader owns the one Counters block so a single
+  // struct describes the link; the writer reports into it.
+  void noteSent(uint32_t frameBytes) { counters_.bytesSent += frameBytes; }
+  void noteDropped() { ++counters_.framesDropped; }
 
   const Counters &counters() const { return counters_; }
 

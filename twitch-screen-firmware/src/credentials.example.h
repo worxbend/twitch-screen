@@ -5,7 +5,7 @@
 #define WIFI_SSID "your-ssid"
 #define WIFI_PASSWORD "your-password"
 
-// Notification server, protocol v2 (persistent TCP, docs/PROTOCOL.md).
+// Notification server, protocol TSB/3 (persistent TCP binary, docs/PROTOCOL.md).
 #define SERVER_HOST "192.168.1.100"
 #define SERVER_PORT 8099
 

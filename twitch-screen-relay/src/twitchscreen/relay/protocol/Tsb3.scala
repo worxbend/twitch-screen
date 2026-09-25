@@ -26,12 +26,78 @@ private[relay] object Tsb3:
   val FwVersionWidth: Int = 16
   val ActorWidth: Int = 48
   val TextWidth: Int = 96
-  val CurrencyWidth: Int = 4
   val ReasonWidth: Int = 24
 
   // §4.5 resync budget, per connection, reset on every frame that was decoded or deliberately skipped.
   val MaxRejectedCandidates: Int = 16
   val MaxDiscardedBytes: Int = 4096
+
+  /** Payload field offsets, §6, relative to the first payload byte. They are named once, here, because the encoder and the decoder must
+    * agree and because the firmware is written from the same tables by someone who cannot ask. A field of width *W* starts at an offset
+    * that is a multiple of *W*, so every scalar lands naturally aligned behind the 8-byte header.
+    */
+  object Hello:
+    val LastSeq: Int = 0
+    val Caps: Int = 4
+    val RxMax: Int = 8
+    val Reserved0: Int = 10
+    val DeviceId: Int = 12
+    val FwVersion: Int = 44
+
+  object Welcome:
+    val LatestSeq: Int = 0
+    val ServerTime: Int = 4
+    val SessionId: Int = 8
+    val MaxFrame: Int = 12
+    val PingInterval: Int = 14
+    val IdleTimeout: Int = 16
+    val ReplayWindow: Int = 18
+    val Caps: Int = 20
+
+  object Event:
+    val Seq: Int = 0
+    val Ts: Int = 4
+    val Value: Int = 8
+
+    /** §8.1. Four bytes held open for a future monetary amount. Senders write zero; receivers ignore the content entirely, because blanking
+      * bytes a later version is entitled to use defeats the forward compatibility they exist to provide.
+      */
+    val Reserved1: Int = 12
+    val Months: Int = 16
+    val TtlDs: Int = 18
+    val Kind: Int = 20
+    val Tier: Int = 21
+    val EFlags: Int = 22
+
+    /** §8.1. Held open as the decimal exponent of a future monetary amount. Written zero, ignored on receipt. */
+    val Reserved2: Int = 23
+    val Actor: Int = 24
+    val Text: Int = 72
+
+  object Stats:
+    val Viewers: Int = 0
+    val MsgTotal: Int = 4
+    val UptimeS: Int = 8
+    val Followers: Int = 12
+    val Subs: Int = 16
+    val ServerTime: Int = 20
+    val StreamStartedAt: Int = 24
+    val ChatRate: Int = 28
+    val Live: Int = 30
+    val SFlags: Int = 31
+
+  object Heartbeat:
+    val Token: Int = 0
+
+  object Ack:
+    val Seq: Int = 0
+
+  object Bye:
+    val Code: Int = 0
+    val Detail: Int = 2
+    val RetryAfter: Int = 4
+    val Reserved0: Int = 6
+    val Reason: Int = 8
 
   /** §3.1: `hchk = 0xFF XOR ((1*b0 + 2*b1 + … + 7*b6) mod 256)`.
     *

@@ -8,7 +8,9 @@
 // Layout for the 240x240 round panel (radius 120, center 120,120).
 // Usable half-width at offset y from center: sqrt(120^2 - y^2) minus ~8 px
 // of bezel/gauge margin. Everything below is placed to respect that curve:
-//   y=70 -> ~89 px, y=86 -> ~75 px, y=90 -> ~71 px.
+//   y=62 -> ~94 px, y=80 -> ~81 px, y=90 -> ~71 px.
+// The edge gauge is an arc of outer radius 117 and width 3, so nothing may
+// reach past r = 114; the bottom chip row is placed at r_max = 109.
 
 namespace {
 
@@ -29,6 +31,13 @@ lv_obj_t *liveDot = nullptr;
 lv_obj_t *uptimeLabel = nullptr;
 lv_obj_t *viewersValue = nullptr;
 lv_obj_t *chipChat = nullptr;
+lv_obj_t *chipFoll = nullptr;
+lv_obj_t *chipSubs = nullptr;
+// §6.5's "the last value stays on screen until the next stream begins": the same
+// three totals, on the offline screen, because that is where they have to survive.
+lv_obj_t *offChipChat = nullptr;
+lv_obj_t *offChipFoll = nullptr;
+lv_obj_t *offChipSubs = nullptr;
 lv_obj_t *connectGroup = nullptr;
 lv_obj_t *connLabel = nullptr;
 
@@ -38,6 +47,14 @@ lv_image_dsc_t glitch48, glitch84;
 
 bool curLive = false;
 int32_t shownViewers = -1;
+
+// §6.5 local uptime ticking. uptime_s is a snapshot taken at server_time and
+// STATS only arrives every 5 s, so the label would step in 5 s jumps. Anchor
+// the value against millis() on receipt and re-anchor on every STATS, which
+// makes it tick once a second without ever drifting away from the relay.
+uint32_t uptimeBase = 0;
+uint32_t uptimeAnchorMs = 0;
+bool uptimeValid = false;
 
 void initDsc(lv_image_dsc_t *d, const uint16_t *data, int size) {
   memset(d, 0, sizeof(*d));
@@ -52,13 +69,18 @@ void initDsc(lv_image_dsc_t *d, const uint16_t *data, int size) {
   d->data = (const uint8_t *)data;
 }
 
-lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font, lv_color_t color,
-                    lv_align_t align, int y) {
+lv_obj_t *makeLabelAt(lv_obj_t *parent, const lv_font_t *font, lv_color_t color,
+                      lv_align_t align, int x, int y) {
   lv_obj_t *l = lv_label_create(parent);
   lv_obj_set_style_text_font(l, font, 0);
   lv_obj_set_style_text_color(l, color, 0);
-  lv_obj_align(l, align, 0, y);
+  lv_obj_align(l, align, x, y);
   return l;
+}
+
+lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font, lv_color_t color,
+                    lv_align_t align, int y) {
+  return makeLabelAt(parent, font, color, align, 0, y);
 }
 
 void clearDecor(lv_obj_t *o) {
@@ -114,6 +136,34 @@ void formatUptime(char *buf, size_t n, uint32_t sec) {
            (unsigned long)(sec / 60 % 60), (unsigned long)(sec % 60));
 }
 
+void renderUptime() {
+  if (!uptimeValid) return;
+  const uint32_t sec = uptimeBase + (millis() - uptimeAnchorMs) / 1000;
+  char buf[16];
+  formatUptime(buf, sizeof(buf), sec);
+  lv_label_set_text(uptimeLabel, buf);
+}
+
+void uptimeTickCb(lv_timer_t *) {
+  if (!curLive) return;
+  renderUptime();
+}
+
+// Bottom stat row: the three numbers that matter while live, plus the two the
+// relay has always sent and the v2 screen threw away (STATS +12 followers,
+// +16 subs). Values at y=62, captions at y=80, x = -50 / 0 / +50 — the far
+// corner of the outermost caption sits at r = 109, inside the edge gauge.
+lv_obj_t *makeChip(lv_obj_t *parent, int x, const char *caption) {
+  lv_obj_t *value = makeLabelAt(parent, &lv_font_montserrat_14, COL_TEXT,
+                                LV_ALIGN_CENTER, x, 62);
+  lv_label_set_text(value, "0");
+  lv_obj_t *cap = makeLabelAt(parent, &lv_font_montserrat_14, COL_DIM,
+                              LV_ALIGN_CENTER, x, 80);
+  lv_obj_set_style_text_letter_space(cap, 1, 0);
+  lv_label_set_text(cap, caption);
+  return value;
+}
+
 void buildLive(lv_obj_t *scr) {
   liveGroup = lv_obj_create(scr);
   lv_obj_set_size(liveGroup, 240, 240);
@@ -160,9 +210,11 @@ void buildLive(lv_obj_t *scr) {
   lv_obj_set_x(liveTxt, 22);
   lv_label_set_text(liveTxt, "LIVE");
 
+  // Time since stream start — one of the three numbers the screen exists for.
   uptimeLabel = makeLabel(liveGroup, &lv_font_montserrat_14, COL_DIM,
                           LV_ALIGN_CENTER, -70);
   lv_label_set_text(uptimeLabel, "0:00:00");
+  lv_timer_create(uptimeTickCb, 1000, nullptr);
 
   lv_obj_t *logo = lv_image_create(liveGroup);
   lv_image_set_src(logo, &glitch48);
@@ -177,13 +229,9 @@ void buildLive(lv_obj_t *scr) {
   lv_obj_set_style_text_letter_space(caption, 2, 0);
   lv_label_set_text(caption, "VIEWERS");
 
-  // Sole bottom stat: total chat messages, centered on the vertical axis.
-  chipChat = makeLabel(liveGroup, &lv_font_montserrat_20, COL_TEXT,
-                       LV_ALIGN_CENTER, 70);
-  lv_obj_t *chatCap = makeLabel(liveGroup, &lv_font_montserrat_14, COL_DIM,
-                                LV_ALIGN_CENTER, 89);
-  lv_obj_set_style_text_letter_space(chatCap, 1, 0);
-  lv_label_set_text(chatCap, "MSG");
+  chipFoll = makeChip(liveGroup, -50, "FLW");
+  chipChat = makeChip(liveGroup, 0, "MSG");
+  chipSubs = makeChip(liveGroup, 50, "SUB");
 }
 
 void buildOffline(lv_obj_t *scr) {
@@ -194,19 +242,27 @@ void buildOffline(lv_obj_t *scr) {
   lv_obj_set_style_pad_all(offlineGroup, 0, 0);
   clearDecor(offlineGroup);
 
+  // Everything moves up to make room for the stat row at the same y as the live
+  // screen's (values 62, captions 80), so the two screens do not shuffle the
+  // numbers around when a stream ends. The 84 px logo centred at -52 spans
+  // -94..-10, clear of OFFLINE at 8 and of the round bezel at r = 114.
   lv_obj_t *logo = lv_image_create(offlineGroup);
   lv_image_set_src(logo, &glitch84);
   lv_obj_set_style_opa(logo, 70, 0);
-  lv_obj_align(logo, LV_ALIGN_CENTER, 0, -20);
+  lv_obj_align(logo, LV_ALIGN_CENTER, 0, -52);
 
   lv_obj_t *off = makeLabel(offlineGroup, &lv_font_montserrat_28, COL_DIM,
-                            LV_ALIGN_CENTER, 40);
+                            LV_ALIGN_CENTER, 8);
   lv_obj_set_style_text_letter_space(off, 2, 0);
   lv_label_set_text(off, "OFFLINE");
 
   lv_obj_t *sub = makeLabel(offlineGroup, &lv_font_montserrat_14, COL_DIM,
-                            LV_ALIGN_CENTER, 66);
+                            LV_ALIGN_CENTER, 34);
   lv_label_set_text(sub, "waiting to go live");
+
+  offChipFoll = makeChip(offlineGroup, -50, "FLW");
+  offChipChat = makeChip(offlineGroup, 0, "MSG");
+  offChipSubs = makeChip(offlineGroup, 50, "SUB");
 
   lv_obj_add_flag(offlineGroup, LV_OBJ_FLAG_HIDDEN);
 }
@@ -303,21 +359,48 @@ void uiIdleBuild() {
 }
 
 void uiIdleSetStats(const StreamStats &s) {
-  if (s.live != curLive) {
-    curLive = s.live;
+  const bool live = s.live != 0;   // §6.5: any non-zero value means live
+  if (live != curLive) {
+    curLive = live;
     applyVisibility();
   }
-  if (!s.live) return;
 
+  // §6.5: msg_total resets when a stream STARTS and deliberately not when one
+  // ends — "the last value stays on screen until the next stream begins" — and the
+  // relay keeps sending all three totals in every offline STATS (vector V5 pins
+  // msg_total = 2135 with live = 0). Applying them only while live threw the
+  // final message count of the stream that just ended straight on the floor, and
+  // the viewer never learned it. Both screens carry the row; only the live one
+  // carries viewers, uptime and the chat-rate ring, which are the figures that
+  // genuinely have no meaning offline.
   char buf[16];
-  formatUptime(buf, sizeof(buf), s.uptimeSec);
-  lv_label_set_text(uptimeLabel, buf);
+  formatK(buf, sizeof(buf), s.msgTotal);
+  lv_label_set_text(chipChat, buf);
+  lv_label_set_text(offChipChat, buf);
+  formatK(buf, sizeof(buf), s.followers);
+  lv_label_set_text(chipFoll, buf);
+  lv_label_set_text(offChipFoll, buf);
+  formatK(buf, sizeof(buf), s.subs);
+  lv_label_set_text(chipSubs, buf);
+  lv_label_set_text(offChipSubs, buf);
+
+  if (!live) {
+    uptimeValid = false;
+    return;
+  }
+
+  // §6.5: stream_started_at is carried alongside uptime_s precisely so a device
+  // can prefer the absolute anchor. Use it when the relay knows both clocks,
+  // and fall back to the relative snapshot when either is unknown.
+  uptimeBase = (s.streamStartedAt != 0 && s.serverTime >= s.streamStartedAt)
+                   ? (s.serverTime - s.streamStartedAt)
+                   : s.uptimeSec;
+  uptimeAnchorMs = millis();
+  uptimeValid = true;
+  renderUptime();
 
   setViewers(s.viewers);
   lv_arc_set_value(edgeArc, (int32_t)(s.chatRate > 100 ? 100 : s.chatRate));
-
-  formatK(buf, sizeof(buf), s.msgTotal);
-  lv_label_set_text(chipChat, buf);
 }
 
 void uiIdleSetOnline(bool online) {

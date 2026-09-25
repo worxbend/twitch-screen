@@ -60,25 +60,26 @@ far, and defines the desired final product.
 ## Architecture
 
 ```
-Twitch EventSub/IRC ──> backend server ──TCP v2 push──> ESP32 link_client
-                              │                            │
-                     stats frames (5 s)            LVGL UI (240×240)
-                     notify frames (instant)       ├─ idle dashboard
-                                                   ├─ connecting widget
-                                                   └─ event overlay
+Twitch EventSub/IRC ──> twitch-screen-relay ──TSB/3 binary push (TCP :8099)──> ESP32 link_client
+                                   │                                              │
+                          STATS frames (5 s)                              LVGL UI (240×240)
+                          EVENT frames (instant)                          ├─ idle dashboard
+                                                                          ├─ connecting widget
+                                                                          └─ event overlay
 ```
 
-- **`docs/PROTOCOL.md`** — wire protocol v2: NDJSON frames over TCP
-  (`hello`/`welcome`/`stats`/`notify`/`ping`/`pong`), heartbeat 15 s /
-  timeout 45 s, replay of missed seqs, backoff policy.
+- **`docs/PROTOCOL.md`** — wire protocol TSB/3 (supersedes NDJSON v2):
+  binary frames over TCP :8099 with an 8-byte little-endian header (magic
+  `a7 53`), types `HELLO`/`WELCOME`/`EVENT`/`STATS`/`PING`/`PONG`/`ACK`/`BYE`,
+  heartbeat, replay of missed seqs, backoff policy.
 - **Firmware** (`src/`): `lv_port` (TFT_eSPI + LVGL 9 glue), `link_client`
   (never-die TCP state machine), `ui_idle` (Twitch Orbit dashboard +
   connecting widget, three-state visibility), `ui_notify` (event overlay),
   `notification.h`/`stats.h` (models), `assets/twitch_glitch.h`
   (generated RGB565 logo).
-- **Server** (`server/twitch_server.py`): stdlib-only Twitch simulator —
-  stats random walk every 5 s, weighted random events, 64-event replay
-  buffer, HTTP `POST :8098/trigger` for demos.
+- **Server**: `twitch-screen-relay` (Scala 3) is the only TSB/3 server.
+  `demo-server/twitch_server.py` speaks v2 and is obsolete (see
+  PROTOCOL.md §19).
 - **Assets** (`assets/`, `tools/make_glitch.py`): Glitch SVG source +
   reproducible RGB565/PNG generator.
 - **Secrets:** `src/credentials.h` (git-ignored), template in
@@ -103,7 +104,7 @@ Twitch EventSub/IRC ──> backend server ──TCP v2 push──> ESP32 link_c
 ## Roadmap — not yet done
 
 - [ ] Real backend: Twitch EventSub (follows/subs/raids/bits) + IRC chat
-      highlights → protocol v2 frames (Python or Node)
+      highlights → TSB/3 frames (twitch-screen-relay)
 - [ ] NTP-synced clock; real stream uptime from API
 - [ ] EventSub-driven `live` transitions (stream.online/.offline)
 - [ ] NVS persistence of `last_seq` (survive power loss without re-baseline)

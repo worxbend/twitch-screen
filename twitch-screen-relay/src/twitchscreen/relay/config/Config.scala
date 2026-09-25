@@ -7,7 +7,7 @@ import scala.concurrent.duration.FiniteDuration
 /** Where the management/monitoring HTTP API listens. */
 final case class HttpConfig(host: Hostname, port: Port) derives ConfigReader
 
-/** The TCP listener the firmware connects to, and the parameters of protocol v2 (see `twitch-screen-firmware/docs/PROTOCOL.md`). */
+/** The TCP listener the firmware connects to, and the parameters of TSB/3 (see `twitch-screen-firmware/docs/PROTOCOL.md`). */
 final case class DeviceLinkConfig(
     host: Hostname,
     port: Port,
@@ -23,9 +23,15 @@ final case class DeviceLinkConfig(
   validate()
 
   private def validate(): Unit =
+    // §7: the check is exact equality, and this build has exactly one encoder. A configuration claiming another
+    // version would have the relay stamp a BYE with a version it cannot actually speak, which is the one frame
+    // that has to be right when the two sides disagree.
+    require(protocolVersion == 3, "device-link.protocol-version must be 3; this relay speaks TSB/3 and nothing else")
     require(replayBufferSize > 0, "device-link.replay-buffer-size must be positive")
     require(outboundQueueCapacity > 0, "device-link.outbound-queue-capacity must be positive")
-    require(maxFrameLength > 0, "device-link.max-frame-length must be positive")
+    // §5: counted in bytes, header included, and every v3 peer must be able to accept 256 of them. A smaller
+    // value here would have the relay refuse frames its own encoder is entitled to produce.
+    require(maxFrameLength >= 256, "device-link.max-frame-length must be at least 256 bytes")
     // The firmware gives up after `idleTimeout` of silence, so the server must ping well inside that window.
     require(pingInterval < idleTimeout, "device-link.ping-interval must be shorter than device-link.idle-timeout")
 
@@ -58,8 +64,32 @@ final case class TwitchConfig(
         require(eventSub.callbackUrl.trim.nonEmpty, "twitch.event-sub.callback-url is required for the webhook transport")
         require(eventSub.secret.isSet, "twitch.event-sub.secret is required for the webhook transport")
 
-/** How Twitch events are turned into what the screen shows. */
-final case class NotificationsConfig(defaultTtl: FiniteDuration, chat: ChatNotifications) derives ConfigReader
+/** How Twitch events are turned into what the screen shows.
+  *
+  * `ignoredDisplayNames` is §13.1's bot list. It is named for what it actually matches — the lowercased, trimmed **display name** — because
+  * the relay carries no Twitch login and cannot match on one. §13.1 states the weakness plainly: a bot that changes its display name stops
+  * being matched until this list is updated, and a human who sets their display name to `Nightbot` is silently suppressed.
+  */
+final case class NotificationsConfig(
+    defaultTtl: FiniteDuration,
+    chat: ChatNotifications,
+    ignoredDisplayNames: List[String] = NotificationsConfig.DefaultIgnoredDisplayNames
+) derives ConfigReader
+
+object NotificationsConfig:
+  /** §13.1: the list is overridable by environment variable, and HOCON's `${?VAR}` yields a STRING, so accept either a HOCON list or a
+    * comma-separated string (split on `,`, trimmed, empties dropped). In lexical scope of the derived reader, so it applies here only.
+    */
+  private given ConfigReader[List[String]] =
+    ConfigReader[Vector[String]]
+      .map(_.toList)
+      .orElse(ConfigReader[String].map(_.split(',').iterator.map(_.trim).filter(_.nonEmpty).toList))
+
+  /** §13.1's default list. Each of these ships with its display name equal to its login apart from capitalisation, which is the whole basis
+    * on which display-name matching works for them — a property of those particular accounts, not of Twitch.
+    */
+  val DefaultIgnoredDisplayNames: List[String] =
+    List("streamelements", "nightbot", "moobot", "streamlabs", "fossabot", "sery_bot")
 
 /** Per-subscriber queue depth on the internal event bus. A subscriber that falls this far behind starts losing events. */
 final case class BusConfig(subscriberQueueCapacity: Int) derives ConfigReader:

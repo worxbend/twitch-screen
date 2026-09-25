@@ -21,6 +21,7 @@ class EventSubWebhookSuite extends munit.FunSuite:
   private val now = Instant.ofEpochSecond(1790309000L)
   private val clock = Clock.fixed(now, ZoneOffset.UTC)
   private val url = uri"http://localhost:8080/api/v1/twitch/eventsub"
+  private val notifications = NotificationsConfig(30.seconds, ChatNotifications.Hide)
 
   private val config = TwitchConfig(
     mode = TwitchMode.Live,
@@ -56,7 +57,7 @@ class EventSubWebhookSuite extends munit.FunSuite:
   private def withWebhook(body: (SyncBackend, Source[BusEvent]) => Unit): Unit =
     supervised:
       val bus = EventBus(clock, queueCapacity = 16)
-      val api = EventSubWebhookApi.create(config, bus, ChannelStateTracker(config.channel), clock)
+      val api = EventSubWebhookApi.create(config, bus, ChannelStateTracker(config.channel, clock), BotFilter.from(notifications), clock)
       body(TapirSyncStubInterpreter().whenServerEndpointsRunLogic(api.endpoints).backend(), bus.subscribe("test"))
 
   test("a correctly signed verification request is answered with the challenge"):
@@ -89,12 +90,28 @@ class EventSubWebhookSuite extends munit.FunSuite:
       assertEquals(post("notification", body).code, StatusCode.Ok)
       assertEquals(events.receive().event, RelayEvent.Followed("pixelpainter"))
 
-  test("a signed stream.online notification reaches the bus"):
+  test("a signed stream.online notification reaches the bus, carrying Twitch's own start time"):
     withWebhook: (backend, events) =>
       given SyncBackend = backend
-      val body = """{"subscription":{"type":"stream.online"},"event":{"title":"Soldering","category_name":"Science & Technology"}}"""
+      // §6.4.1 puts the stream's start in STREAM_START.value, and the moment a webhook happened to arrive is not
+      // it: a redelivery would otherwise move the stream's start time.
+      val body =
+        """{"subscription":{"type":"stream.online"},"event":{"title":"Soldering","category_name":"Science & Technology","started_at":"2026-09-25T09:02:20Z"}}"""
       assertEquals(post("notification", body).code, StatusCode.Ok)
-      assertEquals(events.receive().event, RelayEvent.StreamStarted("somechannel", "Soldering", "Science & Technology"))
+      assertEquals(
+        events.receive().event,
+        RelayEvent.StreamStarted("somechannel", "Soldering", "Science & Technology", Some(Instant.parse("2026-09-25T09:02:20Z")))
+      )
+
+  test("a bot-authored follow never reaches the bus, whichever EventSub transport delivered it"):
+    withWebhook: (backend, events) =>
+      given SyncBackend = backend
+      // §13.1 filters at the source on BOTH transports, not only on the one wired to twitch4j.
+      val bot = """{"subscription":{"type":"channel.follow"},"event":{"user_name":"Nightbot"}}"""
+      val human = """{"subscription":{"type":"channel.follow"},"event":{"user_name":"pixelpainter"}}"""
+      assertEquals(post("notification", bot).code, StatusCode.Ok)
+      assertEquals(post("notification", human).code, StatusCode.Ok)
+      assertEquals(events.receive().event, RelayEvent.Followed("pixelpainter"))
 
   test("a revoked subscription is reported as the Twitch link going down"):
     withWebhook: (backend, events) =>

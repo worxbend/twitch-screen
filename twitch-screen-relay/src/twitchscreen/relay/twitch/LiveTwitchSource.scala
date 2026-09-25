@@ -24,15 +24,16 @@ import twitchscreen.relay.config.{EventSubTransport, TwitchConfig}
 private[twitch] object LiveTwitchSource:
   private val logger = LoggerFactory.getLogger(getClass)
 
-  def start(config: TwitchConfig, bus: EventBus, clock: Clock)(using Ox): TwitchSource =
+  def start(config: TwitchConfig, bus: EventBus, filter: BotFilter, clock: Clock)(using Ox): TwitchSource =
     val health = AtomicReference(TwitchHealth.Connecting)
     val detail = AtomicReference("connecting")
     val client = useInScope(build(config))(_.close())
-    val tracker = ChannelStateTracker(config.channel)
-    val webhook = EventSubWebhookApi.create(config, bus, tracker, clock)
+    val tracker = ChannelStateTracker(config.channel, clock)
+    val webhook = EventSubWebhookApi.create(config, bus, tracker, filter, clock)
 
-    TwitchEventHandlers.registerChat(client.getEventManager, bus)
-    TwitchEventHandlers.registerEventSub(client.getEventManager, bus, tracker)
+    logger.info(s"Ignoring events from ${filter.ignoredDisplayNames.toList.sorted.mkString(", ")} (matched on the display name)")
+    TwitchEventHandlers.registerChat(client.getEventManager, bus, filter)
+    TwitchEventHandlers.registerEventSub(client.getEventManager, bus, tracker, filter)
 
     resolveBroadcasterId(client, config) match
       case Left(failure) =>

@@ -1,5 +1,7 @@
 package twitchscreen.relay.protocol
 
+import scala.concurrent.duration.FiniteDuration
+
 /** Why bytes arriving from a device could not be turned into a message.
   *
   * Every one of these is a value, never an exception: a malformed frame is ordinary input on a socket exposed to a device that may be
@@ -17,18 +19,21 @@ private[relay] enum ProtocolError:
   case EndOfStream
   case TruncatedFrame(expected: Int, received: Int)
 
+  /** §12: the budget for one **complete** frame ran out. Distinct from a socket read timeout, which a peer dribbling one byte per timeout
+    * window can restart forever without ever completing a frame.
+    */
+  case FrameTimeout(after: FiniteDuration)
+
   // TSB/3 payload problems (§4.3): well-framed but unusable, so skipped and counted.
   case UnknownType(code: Int)
   case WrongDirection(code: Int)
   case ShortPayload(typeName: String, expected: Int, received: Int)
   case InvalidField(field: String, offset: Int)
 
-  // Session-level refusals (§7, §6.1), and the NDJSON v2 codec that has not been unwired yet.
+  // Session-level refusals (§7, §6.1, §11.2): fatal to the session even though the frame itself was well formed.
   case UnsupportedVersion(received: Int, expected: Int)
   case InvalidDeviceId(detail: String)
   case InvalidSequence(detail: String)
-  case FrameTooLong(limit: Int)
-  case Malformed(detail: String)
 
 /** What a receiver does about a [[ProtocolError]] (§4.3 versus §4.4/§4.5). */
 private[relay] enum ErrorDisposition:
@@ -44,10 +49,11 @@ private[relay] object ProtocolError:
       case BadMagic(byte0, byte1)          => f"bad frame magic 0x$byte0%02x 0x$byte1%02x, expected 0xa7 0x53"
       case HeaderCheckFailed(exp, got)     => f"header check 0x$got%02x, expected 0x$exp%02x"
       case IllegalTypeCode                 => "frame type 0x00 is illegal"
-      case LengthOutOfRange(length, limit) => s"payload length $length above the $limit byte limit"
+      case LengthOutOfRange(length, limit) => s"payload length $length above the $limit byte limit, skipped"
       case FramingViolation(bytes, cands)  => s"framing violation: $bytes bytes discarded, $cands candidate headers rejected"
       case EndOfStream                     => "stream closed"
       case TruncatedFrame(exp, got)        => s"stream closed $got bytes into a $exp byte frame"
+      case FrameTimeout(after)             => s"no complete frame within $after"
       case UnknownType(code)               => f"unknown message type 0x$code%02x"
       case WrongDirection(code)            => f"message type 0x$code%02x travels the other way"
       case ShortPayload(name, exp, got)    => s"$name payload of $got bytes, expected at least $exp"
@@ -55,12 +61,12 @@ private[relay] object ProtocolError:
       case UnsupportedVersion(got, exp)    => s"unsupported protocol version $got, this relay speaks $exp"
       case InvalidDeviceId(detail)         => s"invalid device id: $detail"
       case InvalidSequence(detail)         => s"invalid sequence number: $detail"
-      case FrameTooLong(limit)             => s"frame longer than $limit bytes"
-      case Malformed(detail)               => s"malformed frame: $detail"
 
     def disposition: ErrorDisposition = error match
-      case _: (UnknownType | WrongDirection | ShortPayload | InvalidField) => ErrorDisposition.SkipFrame
-      case _                                                              => ErrorDisposition.CloseLink
+      // §4.3's six payload-level problems, every one of which the link survives. `LengthOutOfRange` belongs here and not with the
+      // framing violations: §4.3 lists it under "skip the frame, keep the link", and the reader now performs that skip itself.
+      case _: (UnknownType | WrongDirection | ShortPayload | InvalidField | LengthOutOfRange) => ErrorDisposition.SkipFrame
+      case _                                                                                  => ErrorDisposition.CloseLink
 
     /** The `BYE` the relay owes the device when this error ends the session (§6.7). Errors that are skipped rather than fatal have none,
       * and neither does a stream that has already closed under the relay's feet.
@@ -73,8 +79,5 @@ private[relay] object ProtocolError:
       case BadMagic(_, _)                  => Some((ByeCode.FramingViolation, ByeDetail.Zero))
       case HeaderCheckFailed(_, _)         => Some((ByeCode.FramingViolation, ByeDetail.Zero))
       case IllegalTypeCode                 => Some((ByeCode.FramingViolation, ByeDetail.Zero))
-      case LengthOutOfRange(_, _)          => Some((ByeCode.FrameTooLarge, ByeDetail.of(Tsb3.MaxFrame)))
-      case FrameTooLong(limit)             => Some((ByeCode.FrameTooLarge, ByeDetail.of(limit)))
       case InvalidField(_, offset)         => Some((ByeCode.InvalidParameter, ByeDetail.of(offset)))
-      case Malformed(_)                    => Some((ByeCode.BadHandshake, ByeDetail.Zero))
       case _                               => None

@@ -39,7 +39,7 @@ Point the firmware's `SERVER_HOST`/`SERVER_PORT` at the machine running this and
   │ EventSub   │──┘                   │              │
   └────────────┘                      ▼              │
                                  ┌─────────┐   ┌───────────┐
-  HTTP POST /notifications ─────▶│EventBus │──▶│ DeviceHub │──▶ NDJSON over TCP :8099
+  HTTP POST /notifications ─────▶│EventBus │──▶│ DeviceHub │──▶ TSB/3 binary over TCP :8099
                                  └─────────┘   └───────────┘
                                       │
                     ┌─────────────────┼──────────────────┬───────────────┐
@@ -72,10 +72,17 @@ busy would be dropping the events that matter to preserve the ones that do not.
 
 ## The device protocol
 
-Protocol v2, specified in [`../twitch-screen-firmware/docs/PROTOCOL.md`](../twitch-screen-firmware/docs/PROTOCOL.md):
-newline-delimited JSON over one long-lived TCP connection, server push, with `seq`-based replay on reconnect. The
-exact bytes of every frame are pinned by `FrameCodecSuite`, and `DeviceLinkSuite` exercises the handshake, push,
-replay, heartbeat and teardown over real sockets.
+TSB/3, specified in [`../twitch-screen-firmware/docs/PROTOCOL.md`](../twitch-screen-firmware/docs/PROTOCOL.md): a
+binary protocol over one long-lived TCP connection, server push, with `seq`-based replay on reconnect. Every frame is
+an 8-byte header — magic `a7 53`, version, type, little-endian length, flags, header check — followed by a
+fixed-offset, fixed-width payload of at most 248 bytes. It replaces the NDJSON v2 wire entirely; the two cannot
+interoperate, and the cutover is a flag day.
+
+Nothing is tolerant twice over: a malformed *frame* is skipped and counted, a malformed *stream* is resynchronised
+one byte at a time until the budget runs out and then closed with a `BYE` saying why. The exact bytes of all twenty
+golden vectors of §18 are pinned by `Tsb3GoldenVectorSuite`, in both directions; `FrameReaderSuite` and
+`Tsb3DecoderSuite` cover framing and payload handling; and `DeviceLinkSuite` exercises the handshake, push, replay,
+heartbeat, refusal and teardown over real sockets.
 
 The relay is deliberately more patient than the firmware: the device gives up after 45 s of silence, the relay after
 90 s, so the device decides when to reconnect rather than racing the server.
@@ -120,8 +127,9 @@ variable override, so the container needs no config file. The most useful ones:
 | `RELAY_TWITCH_CLIENT_ID` / `_SECRET` | — | Twitch application credentials |
 | `RELAY_TWITCH_USER_TOKEN` | — | Broadcaster token; without it, follower and subscriber totals are skipped |
 | `RELAY_TWITCH_EVENTSUB_TRANSPORT` | `websocket` | `websocket` or `webhook` |
-| `RELAY_NOTIFICATION_TTL` | `30 seconds` | How long the firmware holds a notification on screen |
+| `RELAY_NOTIFICATION_TTL` | `8 seconds` | How long the firmware holds a card posted to `/api/v1/notifications` without its own `ttlMs`. Twitch events take their display time per kind from §6.4.1 and are not configurable |
 | `RELAY_CHAT_NOTIFICATIONS` | `hide` | `show` puts every chat message on the screen |
+| `RELAY_IGNORED_DISPLAY_NAMES` | `streamelements,nightbot,moobot,streamlabs,fossabot,sery_bot` | Comma-separated display names whose events are dropped at the source (§13.1); replaces the default list |
 | `RELAY_STATS_INTERVAL` | `5 seconds` | Cadence of the idle dashboard push |
 
 Misconfiguration fails at startup rather than at the first API call: `twitch.mode = live` without a client id is
@@ -178,7 +186,7 @@ src/twitchscreen/relay/
   Dependencies.scala     the whole assembly, in dependency order
   Apis.scala             every group of endpoints, collected by MacWire's wireList
   config/                the typed configuration tree and its primitives
-  protocol/              protocol v2: wire frames, domain types, NDJSON codec
+  protocol/              TSB/3: frame header, encoder, decoder, frame reader, domain types
   bus/                   RelayEvent and the fan-out
   device/                the TCP listener, sessions, the hub, and their HTTP API
   twitch/                the three event sources, twitch4j bridging, EventSub

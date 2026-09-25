@@ -20,8 +20,16 @@ final case class Device_OUT(
     framesSent: Long,
     framesDropped: Long,
     framesReceived: Long,
+    framesSkipped: Long,
+    framesUnknownType: Long,
+    framesWrongDirection: Long,
+    framesShortPayload: Long,
+    framesInvalidField: Long,
+    framesOversizeSkipped: Long,
+    resyncEvents: Long,
     bytesSent: Long,
     bytesReceived: Long,
+    ackedSeq: Long,
     lastSeenAt: Instant
 ) derives Schema
 
@@ -39,8 +47,16 @@ object Device_OUT:
       framesSent = link.traffic.framesSent,
       framesDropped = link.traffic.framesDropped,
       framesReceived = link.traffic.framesReceived,
+      framesSkipped = link.traffic.framesSkipped,
+      framesUnknownType = link.traffic.framesUnknownType,
+      framesWrongDirection = link.traffic.framesWrongDirection,
+      framesShortPayload = link.traffic.framesShortPayload,
+      framesInvalidField = link.traffic.framesInvalidField,
+      framesOversizeSkipped = link.traffic.framesOversizeSkipped,
+      resyncEvents = link.traffic.resyncEvents,
       bytesSent = link.traffic.bytesSent,
       bytesReceived = link.traffic.bytesReceived,
+      ackedSeq = link.traffic.ackedSeq,
       lastSeenAt = link.traffic.lastSeenAt
     )
 

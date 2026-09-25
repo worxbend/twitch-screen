@@ -22,7 +22,7 @@ private[relay] trait TwitchSource extends ServerEndpoints:
 
 private[relay] object TwitchSource:
   /** Starts the configured source. Everything it forks or opens stops when the enclosing scope ends. */
-  def start(config: TwitchConfig, bus: EventBus, clock: Clock)(using Ox): TwitchSource = config.mode match
+  def start(config: TwitchConfig, bus: EventBus, filter: BotFilter, clock: Clock)(using Ox): TwitchSource = config.mode match
     case TwitchMode.Disabled  => DisabledTwitchSource(config)
-    case TwitchMode.Simulated => SimulatedTwitchSource.start(config, bus)
-    case TwitchMode.Live      => LiveTwitchSource.start(config, bus, clock)
+    case TwitchMode.Simulated => SimulatedTwitchSource.start(config, bus, filter, clock)
+    case TwitchMode.Live      => LiveTwitchSource.start(config, bus, filter, clock)

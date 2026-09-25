@@ -19,7 +19,6 @@ enum NotificationKind(val wire: String, val code: Int):
   case Message extends NotificationKind("message", 0x01)
   case Warning extends NotificationKind("warning", 0x02)
   case Alert extends NotificationKind("alert", 0x03)
-  case Donation extends NotificationKind("donation", 0x18)
   case StreamStart extends NotificationKind("stream_start", 0x10)
   case StreamEnd extends NotificationKind("stream_end", 0x11)
 

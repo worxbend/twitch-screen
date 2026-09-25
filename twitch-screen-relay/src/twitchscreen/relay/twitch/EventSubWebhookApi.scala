@@ -26,8 +26,13 @@ import twitchscreen.relay.http.{Fail, Http, ServerEndpoints}
   * body) *is* the authentication, and a body that fails it never reaches the bus. Replays are rejected on the timestamp, as Twitch's own
   * guidance requires.
   */
-private[twitch] final class EventSubWebhookApi(config: TwitchConfig, bus: EventBus, tracker: ChannelStateTracker, clock: Clock)
-    extends ServerEndpoints:
+private[twitch] final class EventSubWebhookApi(
+    config: TwitchConfig,
+    bus: EventBus,
+    tracker: ChannelStateTracker,
+    filter: BotFilter,
+    clock: Clock
+) extends ServerEndpoints:
   import EventSubWebhookApi.*
 
   private val logger = LoggerFactory.getLogger(getClass)
@@ -86,7 +91,9 @@ private[twitch] final class EventSubWebhookApi(config: TwitchConfig, bus: EventB
           logger.info(s"Twitch verified the EventSub callback for ${envelope.subscription.kind}")
 
     case "notification" =>
-      toRelayEvents(envelope).foreach(bus.publish)
+      // Through the filter, not straight to the bus: §13.1 requires bot-authored events to be dropped at the
+      // source on *both* EventSub transports, not only on the one that happens to be wired to twitch4j.
+      toRelayEvents(envelope).foreach(filter.publish(bus, _))
       Right("")
 
     case "revocation" =>
@@ -101,9 +108,10 @@ private[twitch] final class EventSubWebhookApi(config: TwitchConfig, bus: EventB
 
   /** Mirrors [[TwitchEventHandlers.registerEventSub]]: the same four subscriptions, arriving by a different road. */
   private def toRelayEvents(envelope: EventSubEnvelope): List[RelayEvent] =
-    val payload = envelope.event.getOrElse(EventSubPayload(None, None, None, None, None, None, None, None, None, None))
+    val payload = envelope.event.getOrElse(EventSubPayload(None, None, None, None, None, None, None, None, None, None, None))
     envelope.subscription.kind match
-      case "stream.online"  => tracker.wentLive(payload.title.getOrElse(""), payload.categoryName.getOrElse("")).toList
+      case "stream.online" =>
+        tracker.wentLive(payload.title.getOrElse(""), payload.categoryName.getOrElse(""), payload.startedAt.flatMap(parseInstant)).toList
       case "stream.offline" => tracker.wentOffline().toList
       case "channel.follow" => payload.userName.map(RelayEvent.Followed.apply).toList
       case "channel.update" =>
@@ -120,6 +128,9 @@ private[twitch] final class EventSubWebhookApi(config: TwitchConfig, bus: EventB
 
 private[twitch] object EventSubWebhookApi:
   private val logger = LoggerFactory.getLogger(getClass)
+
+  /** Twitch sends RFC 3339; an unparseable value degrades to "not reported" rather than failing a notification. */
+  private def parseInstant(raw: String): Option[Instant] = Instant.parse(raw).catching[DateTimeParseException].toOption
   private val ReplayWindow = java.time.Duration.ofMinutes(10)
 
   val callbackEndpoint: PublicEndpoint[(String, String, String, String, String), Fail, String, Any] =
@@ -136,8 +147,8 @@ private[twitch] object EventSubWebhookApi:
         "Called by Twitch, not by operators. Authenticated by the HMAC signature over the message id, timestamp and body."
       )
 
-  def create(config: TwitchConfig, bus: EventBus, tracker: ChannelStateTracker, clock: Clock): EventSubWebhookApi =
-    EventSubWebhookApi(config, bus, tracker, clock)
+  def create(config: TwitchConfig, bus: EventBus, tracker: ChannelStateTracker, filter: BotFilter, clock: Clock): EventSubWebhookApi =
+    EventSubWebhookApi(config, bus, tracker, filter, clock)
 
   /** Asks Twitch to start calling us. Unlike the WebSocket transport these subscriptions outlive the process, so Twitch may already hold
     * them; a duplicate is reported by Helix and logged rather than failing startup.

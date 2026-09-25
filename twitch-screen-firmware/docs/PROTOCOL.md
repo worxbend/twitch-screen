@@ -63,7 +63,7 @@ document decides, once, for the following reasons.
   channel update and follow. §13.2 documents exactly what is lost on the webhook transport.
 * **Exact version equality, with a machine-readable refusal.** v2's real failure was
   silence, not strictness: a mismatched device reconnect-looped forever with no diagnosis
-  on either side. `BYE` (§8.7) fixes that for thirty-two bytes, once, at teardown.
+  on either side. `BYE` (§6.7) fixes that for thirty-two bytes, once, at teardown.
 
 ---
 
@@ -132,7 +132,7 @@ Every frame is exactly `8 + length` bytes.
 | 0 | 1 | `u8` | `magic0` | MUST be `0xa7` |
 | 1 | 1 | `u8` | `magic1` | MUST be `0x53` |
 | 2 | 1 | `u8` | `version` | protocol version of this frame; `0x03` for TSB/3 |
-| 3 | 1 | `u8` | `type` | message type code (§5); `0x00` is illegal |
+| 3 | 1 | `u8` | `type` | message type code (§6); `0x00` is illegal |
 | 4 | 2 | `u16` | `length` | payload length in **bytes**, excluding this header; `0 … 248` |
 | 6 | 1 | `u8` | `flags` | bit field, below |
 | 7 | 1 | `u8` | `hchk` | header check, below |
@@ -223,13 +223,13 @@ that was skipped was nonetheless correctly framed.
 | Condition | Counter |
 |---|---|
 | `type` is not implemented by this receiver, including a type added by a newer peer | `framesUnknownType` |
-| `type` belongs to the receiver's own outbound range (§5) — a confused peer, not a corrupt stream | `framesWrongDirection` |
+| `type` belongs to the receiver's own outbound range (§6) — a confused peer, not a corrupt stream | `framesWrongDirection` |
 | `length` is smaller than the base length of a known `type` (§6) | `framesShortPayload` |
 | `length == 0` for a type whose base length is non-zero | `framesShortPayload` |
 | the payload decodes but a field is out of range in a way §6 marks as fatal-to-the-frame | `framesInvalidField` |
 | `length` exceeds this receiver's payload buffer (never happens between two v3 peers, §7) | `framesOversizeSkipped` |
 
-The one exception is the handshake (§11.4): before `WELCOME` has been exchanged, a frame
+The one exception is the handshake (§11.2): before `WELCOME` has been exchanged, a frame
 that is not the expected one is fatal to the session.
 
 ### 4.4 Framing violations — resynchronise, then give up
@@ -381,8 +381,26 @@ device's bit can only narrow, never widen. Neither switch affects `STATS.msg_tot
 | 20 | 4 | `u32` | `caps` | the **effective intersection** of the two capability sets; authoritative |
 
 `ping_interval_s` and `idle_timeout_s` are informational: the device keeps its own timers
-(§12) and SHOULD log a mismatch. This is what kills the class of incident where an operator
-changes `application.conf` and believes devices followed.
+(§12) and SHOULD log both advertised values on every connection. This is what kills the class
+of incident where an operator changes `application.conf` and believes devices followed.
+
+**The comparison is against the relay's own §12 values, never against the device's**, and an
+earlier draft of this document, read the other way, produced two false log lines on every
+single connection. §12's table *mandates* that the two sides differ — device 15 s / 45 s
+against relay 20 s / 90 s — so a device that compares `ping_interval_s` with its own 15 s and
+`idle_timeout_s` with its own 45 s reports the specification as a fault, forever, which is
+precisely the noise that buries the one line that matters. Two rules, and they are different
+things:
+
+* **Note, at information level:** `ping_interval_s != 20` or `idle_timeout_s != 90`, i.e. the
+  relay is not running §12's own numbers. That is the incident this field exists for —
+  somebody edited `application.conf` and believed devices followed.
+* **Warn:** `idle_timeout_s * 1000 <=` the device's **ping interval**. That is the one setting
+  that actually breaks a healthy link: the relay's idle timer is reset by any inbound frame,
+  so a relay patient enough to outlast the device's ping interval never drops a working
+  device, and one that is not drops it every time.
+
+A warning that fires on every healthy connection is how the one that matters gets missed.
 
 ### 6.3 `PING` / `PONG` — `0x02`, `0x03` (device → relay), `0x23`, `0x24` (relay → device), 4 bytes
 
@@ -454,6 +472,24 @@ applies the unknown-kind rule of §6.4.2 like any other unknown code.
 
 Ranges: `0x00`–`0x0f` generic severities, `0x10`–`0x3f` stream and audience events,
 `0x40`–`0xff` reserved for future versions.
+
+**`ttl_ds` per kind — what a v3 relay actually sends.** `ttl_ds = 0` is legal and means "use
+the receiver's per-kind default", and a relay that sends one uniform value for every kind is
+also legal — and wrong. It gives a follow the same share of a 240×240 display as a stream
+transition, and if that uniform value is large it turns the reconnect burst of §10.3 into a
+slideshow that keeps the idle dashboard off the screen for minutes. No relay described by the
+vectors of §18 behaves that way. A v3 relay MUST send the values below, which are exactly what
+V6–V15 pin, frame by frame:
+
+| `ttl_ds` | seconds | kinds |
+|---|---|---|
+| 60 | 6.0 | `FOLLOW` (V7), `CHAT` (V12, V13) |
+| 80 | 8.0 | `SUB` (V8), `GIFT` (V9), `BITS` (V11), and the generic kinds `0x00`–`0x03` (V14) |
+| 100 | 10.0 | `RAID` (V10), `STREAM_START` (V6), `STREAM_END` (V15) |
+
+A card posted to `POST /api/v1/notifications` carries whatever `ttl` the caller asked for; a
+post that names none takes the relay's configured card default, which is a separate knob from
+this table and exists for exactly that one path.
 
 `FOLLOW.value` is fixed at 0 rather than carrying a follower total, because a total of 0
 would be indistinguishable from "not reported"; follower counts live in `STATS` (§6.5).
@@ -661,7 +697,7 @@ produce:
 4. set the matching `eflags` bit (`TEXT_TRUNCATED` / `ACTOR_TRUNCATED`).
 
 A multi-byte sequence is never split. The result is at most `cap` bytes and may be shorter
-when the walk-back dropped a multi-byte character (vector V15 pins this: 46 and 94 bytes
+when the walk-back dropped a multi-byte character (vector V13 pins this: 46 and 94 bytes
 against caps of 47 and 95).
 
 ### 9.3 ASCII folding and `CAP_UTF8_TEXT`
@@ -703,16 +739,39 @@ the consequence. The relay MUST NOT let it wrap past `0xffffffff`.
 
 ### 10.2 Baseline and re-baseline
 
-The device remembers `session_id` from the last `WELCOME` of this power cycle. On each
-`WELCOME`, in this order:
+On each `WELCOME`, the device applies exactly one test:
 
-1. fresh boot (`last_seq == 0`), **or** `session_id` differs from the remembered one, **or**
-   `latest_seq < last_seq` ⇒ **re-baseline**: `last_seq = latest_seq`, remember the new
-   `session_id`, keep whatever is already queued for display;
+1. fresh boot (`last_seq == 0`) **or** `latest_seq < last_seq` ⇒ **re-baseline**:
+   `last_seq = latest_seq`, keep whatever is already queued for display;
 2. otherwise keep `last_seq` and expect the replay burst.
 
-Rule 1's `session_id` clause closes the v2 hole where a restarted relay that happened to
-reach a *higher* seq than the device had seen would silently skip the gap.
+**This test and the relay's replay test of §10.3 are the same predicate, computed from the
+same two numbers, and that is the point of stating it this way.** The device re-baselines on
+exactly the greets for which the relay sends no replay, and expects the burst on exactly the
+greets for which the relay sends one. A condition that only one side can evaluate is not a
+protocol rule, it is two behaviours that agree until they do not.
+
+`session_id` is **not** part of this test, and this is a correction to an earlier draft of
+this document. That draft made a differing `session_id` a third re-baseline trigger, on the
+reasoning that a restarted relay which happened to reach a *higher* seq than the device had
+seen would otherwise silently skip the gap. The relay cannot implement the matching rule:
+`HELLO` (§6.1) carries no `session_id` echo, so the relay has no way to know whether the
+`last_seq` it is being shown belongs to its own sequence space or to a dead one. The two
+sides therefore used different tests for the same condition, and after a relay restart the
+relay pushed a replay burst that the device — having just re-baselined to `latest_seq` —
+discarded frame by frame as duplicates. Nothing was drawn and the outbound queue was spent.
+
+Dropping the clause also loses nothing. When a restarted relay is at `latest_seq = 130` and
+the device holds 117, the events the relay still retains above 117 are events this device has
+genuinely never seen, so replaying them is right; the events *below* 117 in the new sequence
+space are past the end of a 64-entry ring and are unrecoverable either way. Re-baselining
+did not close that hole, it only hid it. The number-based test delivers strictly more, and
+both sides can compute it.
+
+`session_id` stays on the wire and keeps its §6.2 meaning — it changes once per relay process
+start. It is diagnostic: a device SHOULD log it, because "the relay restarted under me" is
+the first thing an operator wants to know from a serial log, and a future version that adds a
+`session_id` echo to `HELLO` can make the §10.3 precondition exact without moving a field.
 
 `last_seq` lives in RAM only; there is no NVS persistence, so every power loss re-baselines.
 
@@ -729,9 +788,11 @@ unsequenced or unreplayable kind, because a kind that is skipped by replay lets 
 hold the high-water mark past a lost durable one, which silently defeats replay exactly when
 it matters.
 
-On greet, and only when `last_seq > 0` and no re-baseline occurred, the relay sends every
-retained event with `seq > last_seq` from both rings, **merged into one ascending `seq`
-order**, each with `flags.REPLAY` set. It then sends exactly one `STATS`. Replayed events are
+On greet, and only when `0 < last_seq <= latest_seq`, the relay sends every retained event
+with `seq > last_seq` from both rings, **merged into one ascending `seq` order**, each with
+`flags.REPLAY` set. That condition is the exact complement of §10.2's re-baseline test, which
+is what makes the two sides agree: the relay replays on precisely the greets for which the
+device kept its mark. It then sends exactly one `STATS`. Replayed events are
 filtered by the effective capabilities exactly as live events are: a device without
 `CAP_CHAT` is not buried in replayed chat on reconnect.
 
@@ -825,7 +886,14 @@ encoding changes.
 
 The relay is deliberately more patient than the device so that the **device**, not the relay,
 decides when to reconnect. `ping_interval < idle_timeout` MUST hold on each side and the
-relay MUST enforce it at startup.
+relay MUST enforce it at startup. The asymmetry between the two columns is mandated, not
+tolerated: §6.2 says what the device does with the relay's advertised values, and it is not to
+warn that they differ.
+
+The device's idle timeout is measured in **whole frames**, and so is the relay's. A read
+timeout on a single socket read is not the same thing: a peer that emits one byte every
+89 seconds and never completes a frame restarts a per-read timer forever while satisfying
+nothing. Both sides MUST time the interval since the last *complete inbound frame*.
 
 **Any inbound frame of any type resets the idle timer** — including a frame that was skipped
 under §4.3 or discarded under §4.5. A `PING` MUST be answered with a `PONG` echoing `token`
@@ -1044,6 +1112,12 @@ frame for frame), the firmware in a host-compiled unit test over the decoder plu
 mechanism by which two independent implementations stay aligned, and it is the single most
 valuable test in the repository.
 
+**Both suites MUST run under a command the repository configures** — `./mill test` on the
+relay and `pio test` on the firmware — and not only under a compiler line typed by hand out of
+a comment. A golden-vector suite that nothing runs pins nothing: the drift it exists to catch
+lands in a build that is still green, and the first symptom is a card on the display whose
+title is four bytes of the previous field.
+
 The behaviours the existing end-to-end suite covers remain the acceptance criteria and MUST
 all still hold: handshake; a fresh device receives exactly two frames; push; replay after
 reconnect; no replay when `last_seq == 0`; device ping answered with pong; relay ping
@@ -1067,7 +1141,7 @@ Additional v3 cases that MUST be covered:
     those bytes are ignored, not rejected;
 12. `msg_total` and `chat_rate` exclude a bot-authored message;
 13. a chat message whose truncation point falls inside a multi-byte sequence truncates to the
-    code-point boundary, not the byte (vector V15).
+    code-point boundary, not the byte (vector V13).
 
 ---
 

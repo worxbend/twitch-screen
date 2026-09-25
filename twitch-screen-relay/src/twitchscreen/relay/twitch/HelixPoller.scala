@@ -52,7 +52,12 @@ private[twitch] object HelixPoller:
     .foreach: streams =>
       streams.getStreams.asScala.headOption match
         case Some(stream) =>
-          tracker.wentLive(String.valueOf(stream.getTitle), String.valueOf(stream.getGameName)).foreach(bus.publish)
+          // Helix's own `started_at` is what §6.4.1 puts in `STREAM_START.value`; the moment this poll happened to
+          // run is not it, and would move the stream's start time on every relay restart.
+          tracker.channelInfo(stream.getTitle, stream.getGameName)
+          tracker
+            .wentLive(String.valueOf(stream.getTitle), String.valueOf(stream.getGameName), Option(stream.getStartedAtInstant))
+            .foreach(bus.publish)
           bus.publish(RelayEvent.ViewersObserved(Count.clamp(intOr(stream.getViewerCount)), uptimeOf(stream.getStartedAtInstant, clock)))
         case None => tracker.wentOffline().foreach(bus.publish)
 

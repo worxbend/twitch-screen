@@ -1,7 +1,7 @@
 package twitchscreen.relay.protocol
 
-/** Which way a frame travels. §6 partitions the type-code space by direction so that a confused peer is told apart from a corrupt stream:
-  * a frame carrying the receiver's own outbound code is a misrouted frame, not garbage.
+/** Which way a frame travels. §6 partitions the type-code space by direction so that a confused peer is told apart from a corrupt stream: a
+  * frame carrying the receiver's own outbound code is a misrouted frame, not garbage.
   */
 private[relay] enum WireDirection:
   case DeviceToRelay, RelayToDevice

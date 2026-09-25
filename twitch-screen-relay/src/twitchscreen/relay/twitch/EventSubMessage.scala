@@ -27,7 +27,11 @@ private[twitch] final case class EventSubPayload(
     tier: Option[String],
     total: Option[Int],
     cumulativeMonths: Option[Int],
-    bits: Option[Int]
+    bits: Option[Int],
+    /** `stream.online` only. §6.4.1 puts the stream's start in `STREAM_START.value`, and the moment the webhook happened to arrive is not
+      * that: a redelivered notification would otherwise move the stream's start time.
+      */
+    startedAt: Option[String]
 )
 
 private[twitch] object EventSubEnvelope:

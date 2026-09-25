@@ -21,6 +21,12 @@ object Main extends OxApp.Simple:
 
   override def run(using Ox): Unit =
     val config = Config.read.tap(Config.log)
-    Dependencies.create(config, Clock.systemUTC()).httpApi.start().discard
+    val dependencies = Dependencies.create(config, Clock.systemUTC())
+    dependencies.httpApi.start().discard
     // Nothing else to do on this thread; the scope holds every fork open until the process is asked to stop.
-    never
+    //
+    // §6.7 code 8: SIGTERM reaches this thread first, before the scope starts interrupting the session forks, so this is the
+    // one moment at which a `BYE` can still be queued onto a live socket. Without it a relay restart is exactly the failure §1
+    // says v2 had — silence — and every screen drops into the blind exponential ramp with nothing to show for it.
+    try never
+    finally dependencies.hub.shutdown().discard

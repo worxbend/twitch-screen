@@ -11,7 +11,7 @@ import twitchscreen.relay.device.{DeviceHub, DeviceLinkServer, NotificationRoute
 import twitchscreen.relay.http.HttpApi
 import twitchscreen.relay.observability.{LogBuffer, Otel, RelayMetrics}
 import twitchscreen.relay.stats.StatsAggregator
-import twitchscreen.relay.twitch.TwitchSource
+import twitchscreen.relay.twitch.{BotFilter, TwitchSource}
 
 /** What [[Main]] holds on to once the relay is assembled. */
 private[relay] final case class Dependencies(httpApi: HttpApi, hub: DeviceHub, twitch: TwitchSource)
@@ -29,7 +29,7 @@ private[relay] object Dependencies:
 
     // The bus first: everything below either publishes to it or subscribes to it, and nothing talks to anything else.
     val bus = EventBus(clock, config.bus.subscriberQueueCapacity)
-    val hub = DeviceHub.start(config.deviceLink, clock, bus)
+    val hub = DeviceHub.start(config.deviceLink, config.notifications.chat, clock, bus)
 
     val activityLog = ActivityLog.start(config.activity, bus)
     val alertStore = AlertMonitor.start(config.alerts, config.twitch.mode, bus, hub, clock)
@@ -39,7 +39,9 @@ private[relay] object Dependencies:
     // Consumers before producers, so no event is published into a bus nobody is listening to yet.
     NotificationRouter.start(config.notifications, bus, hub)
     StatsAggregator.start(config.stats, bus, hub, clock)
-    val twitch = TwitchSource.start(config.twitch, bus, clock)
+    // §13.1: one filter, built once from `notifications.ignored-display-names`, handed to whichever source is running.
+    val botFilter = BotFilter.from(config.notifications)
+    val twitch = TwitchSource.start(config.twitch, bus, botFilter, clock)
 
     DeviceLinkServer.start(config.deviceLink, hub, clock).discard
 

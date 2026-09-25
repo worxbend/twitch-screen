@@ -9,7 +9,7 @@ import sttp.tapir.server.interceptor.{EndpointInterceptor, RequestHandler, Reque
   * written from forks — carries the same id as the exported span.
   */
 private[relay] object SetTraceIdInMDCInterceptor extends RequestInterceptor[Identity]:
-  val MDCKey = "traceId"
+  val MDCKey: String = "traceId"
 
   override def apply[R, B](
       responder: Responder[Identity, B],
