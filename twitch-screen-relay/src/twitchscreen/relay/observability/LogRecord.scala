@@ -17,4 +17,5 @@ object LogLevel:
   given Codec[String, LogLevel, CodecFormat.TextPlain] = Codec.derivedEnumeration[String, LogLevel].defaultStringBased
 
 /** One captured log line. */
-final case class LogRecord(at: Instant, level: LogLevel, logger: String, thread: String, message: String) derives Schema
+final case class LogRecord(at: Instant, level: LogLevel, logger: String, thread: String, message: String, cause: Option[String] = None)
+    derives Schema

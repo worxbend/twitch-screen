@@ -115,5 +115,7 @@ object DeviceApi:
       .in("devices" / path[ConnectionId]("connection:disconnect")(using disconnectTarget))
       .out(jsonBody[Device_OUT])
       .summary("Disconnect a device")
-      .description("Closes the socket. The firmware reconnects on its own backoff schedule; retained events are eligible for best-effort replay.")
+      .description(
+        "Closes the socket. The firmware reconnects on its own backoff schedule; retained events are eligible for best-effort replay."
+      )
       .tag("devices")

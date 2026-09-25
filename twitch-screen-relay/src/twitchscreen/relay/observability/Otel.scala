@@ -31,6 +31,7 @@ private[relay] object Otel:
       .addPropertiesSupplier(() => optInDefaults.asJava)
       .build()
       .getOpenTelemetrySdk
+      .tap(sdk => useCloseableInScope(sdk).discard)
       .tap(sdk => useCloseableInScope(RuntimeMetrics.create(sdk)).discard) // JVM CPU, heap, GC and thread metrics
       .tap(OpenTelemetryAppender.install) // routes Logback records into the OTLP log exporter
       .tap(_ => logger.info("OpenTelemetry initialised; exporters stay off until OTEL_*_EXPORTER is set"))

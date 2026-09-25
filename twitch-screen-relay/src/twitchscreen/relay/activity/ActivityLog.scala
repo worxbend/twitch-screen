@@ -6,16 +6,21 @@ import ox.{Ox, discard}
 import twitchscreen.relay.bus.{BusEvent, EventBus, EventCategory, RelayEvent}
 import twitchscreen.relay.config.ActivityConfig
 
-/** A bounded in-memory history of everything that reached the bus, so an operator can answer "what just happened?" without a log
-  * aggregator. Deliberately not durable: it is a diagnostic aid on a Raspberry Pi, not an audit trail.
+/** A bounded in-memory history of lifecycle, audience milestones and failures, so an operator can answer "what just happened?" without a
+  * log aggregator. Deliberately not durable: it is a diagnostic aid on a Raspberry Pi, not an audit trail.
   */
 private[relay] final class ActivityLog(capacity: Int):
   private val lastId = AtomicLong(0)
   private val entries = AtomicReference(Vector.empty[ActivityEntry])
 
   def record(message: BusEvent): Unit =
-    val entry = ActivityEntry(lastId.incrementAndGet(), message.at, message.event.category, message.event.summary)
-    entries.updateAndGet(current => (current :+ entry).takeRight(capacity)).discard
+    message.event match
+      // Counts live in /stats; routine polls and high-volume chat must not evict lifecycle and failure history.
+      case _: (RelayEvent.ViewersObserved | RelayEvent.FollowersObserved | RelayEvent.SubscribersObserved | RelayEvent.ChatMessaged) => ()
+      case RelayEvent.NotificationPublished(notification) if notification.kind == twitchscreen.relay.protocol.NotificationKind.Chat  => ()
+      case _ =>
+        val entry = ActivityEntry(lastId.incrementAndGet(), message.at, message.event.category, message.event.summary)
+        entries.updateAndGet(current => (current :+ entry).takeRight(capacity)).discard
 
   /** Most recent first. */
   def recent(limit: Int, category: Option[EventCategory]): List[ActivityEntry] =

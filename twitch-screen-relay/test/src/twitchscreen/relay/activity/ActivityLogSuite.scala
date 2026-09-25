@@ -18,6 +18,15 @@ class ActivityLogSuite extends munit.FunSuite:
     val log = ActivityLog(2)
     (1 to 5).foreach(record(log, _))
     assertEquals(log.size, 2)
+    assertEquals(log.recent(10, None).map(entry => (entry.id, entry.summary)), List((5L, "viewer5 followed"), (4L, "viewer4 followed")))
+
+  test("routine poll observations and chat cannot evict lifecycle history"):
+    val log = ActivityLog(2)
+    log.record(BusEvent(at, RelayEvent.TwitchLinkDown("network")))
+    (1 to 20).foreach: _ =>
+      log.record(BusEvent(at, RelayEvent.FollowersObserved(twitchscreen.relay.protocol.Count.Zero)))
+      log.record(BusEvent(at, RelayEvent.ChatMessaged("viewer", "hi", None)))
+    assertEquals(log.recent(10, None).map(_.summary), List("Twitch link down: network"))
 
   test("filtering by category leaves the other categories out"):
     val log = ActivityLog(10)

@@ -28,19 +28,17 @@ class EventBusSuite extends munit.FunSuite:
       (1 to 5).foreach(index => bus.publish(RelayEvent.Followed(s"viewer$index")))
       val stats = bus.subscriberStats.head
       assertEquals(stats.delivered + stats.dropped, 5L)
-
-  test("a stalled subscriber reports what it lost"):
-    supervised:
-      val bus = EventBus(clock, queueCapacity = 2)
-      bus.subscribe("stalled").discard
-      (1 to 5).foreach(index => bus.publish(RelayEvent.Followed(s"viewer$index")))
-      assert(bus.subscriberStats.head.dropped > 0)
+      assertEquals((stats.delivered, stats.dropped), (2L, 3L))
 
   test("publishing with no subscribers is not an error"):
     supervised:
       EventBus(clock, queueCapacity = 2).publish(RelayEvent.Followed("nobody is listening"))
 
   test("a device event is categorised as a device event"):
-    assertEquals(RelayEvent.TwitchLinkDown("network").category, EventCategory.Twitch)
+    val device = twitchscreen.relay.protocol.DeviceId("device").toOption.get
+    summon[sttp.tapir.Codec[String, twitchscreen.relay.device.ConnectionId, sttp.tapir.CodecFormat.TextPlain]].decode("1") match
+      case sttp.tapir.DecodeResult.Value(connection) =>
+        assertEquals(RelayEvent.DeviceDisconnected(device, connection, "closed").category, EventCategory.Device)
+      case other => fail(s"could not decode connection: $other")
 
   extension [T](value: T) private def discard: Unit = ()

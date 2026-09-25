@@ -7,14 +7,18 @@
     </appender>
 
     <!-- Feeds GET /api/v1/logs. See LogBuffer for why it reaches a global. -->
-    <appender name="MEMORY" class="twitchscreen.relay.observability.InMemoryLogAppender"/>
+    <appender name="MEMORY" class="twitchscreen.relay.observability.InMemoryLogAppender">
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>${RELAY_MEMORY_LOG_LEVEL:-INFO}</level>
+        </filter>
+    </appender>
 
     <!-- Exports log records over OTLP. A no-op until OpenTelemetryAppender.install runs with a configured SDK. -->
     <appender name="OTEL" class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
         <captureExperimentalAttributes>false</captureExperimentalAttributes>
     </appender>
 
-    <logger name="twitchscreen.relay" level="DEBUG"/>
+    <logger name="twitchscreen.relay" level="${RELAY_LOG_LEVEL:-INFO}"/>
 
     <!-- twitch4j and its transitive stack are chatty at INFO and below. -->
     <logger name="io.netty" level="WARN"/>
