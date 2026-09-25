@@ -3,7 +3,8 @@ package twitchscreen.relay.twitch
 import java.time.{Clock, Duration as JDuration, Instant}
 import scala.concurrent.duration.{Duration, FiniteDuration, SECONDS}
 import twitchscreen.relay.bus.RelayEvent
-import ox.{Ox, tap}
+import ox.Ox
+import scala.util.control.NonFatal
 import ox.channels.{Actor, ActorRef}
 
 private[twitch] enum ChannelLiveness:
@@ -95,6 +96,18 @@ private final class ChannelTrackerState(channel: String, clock: Clock, pushGrace
       case _ => None
     before.copy(liveness = ChannelLiveness.Offline) -> event
 
+  /** Publication and state are one actor operation; a failed publish must leave a redelivery eligible. */
+  def publishTransition(publish: RelayEvent => Unit)(transition: => Option[RelayEvent]): Option[RelayEvent] =
+    val before = state
+    try
+      val event = transition
+      event.foreach(publish)
+      event
+    catch
+      case NonFatal(error) =>
+        state = before
+        throw error
+
   private def change(transition: ChannelObservation => (ChannelObservation, Option[RelayEvent])): Option[RelayEvent] =
     val (after, event) = transition(state)
     state = after
@@ -104,13 +117,13 @@ private final class ChannelTrackerState(channel: String, clock: Clock, pushGrace
 private[twitch] final class ChannelStateTracker private (state: ActorRef[ChannelTrackerState]):
   def channelInfo(title: String, game: String): Unit = state.ask(_.channelInfo(title, game))
   def wentLive(title: String, game: String, startedAt: Option[Instant] = None, publish: RelayEvent => Unit = _ => ()): Option[RelayEvent] =
-    state.ask(_.wentLive(title, game, startedAt).tap(_.foreach(publish)))
+    state.ask(tracker => tracker.publishTransition(publish)(tracker.wentLive(title, game, startedAt)))
   def observedLive(title: String, game: String, startedAt: Option[Instant], publish: RelayEvent => Unit = _ => ()): Option[RelayEvent] =
-    state.ask(_.observedLive(title, game, startedAt).tap(_.foreach(publish)))
+    state.ask(tracker => tracker.publishTransition(publish)(tracker.observedLive(title, game, startedAt)))
   def wentOffline(publish: RelayEvent => Unit = _ => ()): Option[RelayEvent] =
-    state.ask(_.wentOffline().tap(_.foreach(publish)))
+    state.ask(tracker => tracker.publishTransition(publish)(tracker.wentOffline()))
   def observedOffline(publish: RelayEvent => Unit = _ => ()): Option[RelayEvent] =
-    state.ask(_.observedOffline().tap(_.foreach(publish)))
+    state.ask(tracker => tracker.publishTransition(publish)(tracker.observedOffline()))
 
 private[twitch] object ChannelStateTracker:
   def apply(channel: String, clock: Clock, pushGrace: JDuration = JDuration.ofSeconds(60), pollInterval: FiniteDuration = Duration.Zero)(

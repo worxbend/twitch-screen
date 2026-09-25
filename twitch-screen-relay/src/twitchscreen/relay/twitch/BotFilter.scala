@@ -48,7 +48,7 @@ private[relay] final class BotFilter(ignored: Set[String]):
     */
   def publish(bus: EventBus, event: RelayEvent): Unit =
     if allows(event) then bus.publish(event)
-    else logger.debug(s"Suppressed an event from an ignored display name: ${event.summary}")
+    else if logger.isDebugEnabled then logger.debug(s"Suppressed an event from an ignored display name: ${event.summary}")
 
 private[relay] object BotFilter:
   /** Matches nothing. Used by the disabled source and by tests that are not about filtering. */

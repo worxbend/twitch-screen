@@ -2,7 +2,7 @@ package twitchscreen.relay.twitch
 
 import com.github.plokhotnyuk.jsoniter_scala.core.{JsonReaderException, readFromString}
 import com.github.twitch4j.eventsub.condition.EventSubCondition
-import com.github.twitch4j.eventsub.EventSubSubscriptionStatus
+import com.github.twitch4j.eventsub.{EventSubSubscription, EventSubSubscriptionStatus, EventSubTransportMethod}
 import scala.jdk.CollectionConverters.*
 import com.github.twitch4j.eventsub.subscriptions.{SubscriptionType, SubscriptionTypes}
 import com.github.twitch4j.helix.TwitchHelix
@@ -19,7 +19,7 @@ import scala.util.control.NonFatal
 import sttp.shared.Identity
 import sttp.tapir.*
 import sttp.tapir.server.ServerEndpoint
-import twitchscreen.relay.bus.{EventBus, RelayEvent}
+import twitchscreen.relay.bus.EventBus
 import twitchscreen.relay.config.TwitchConfig
 import twitchscreen.relay.http.{Fail, Http, ServerEndpoints}
 
@@ -41,6 +41,7 @@ private[twitch] final class EventSubWebhookApi(
 
   private val logger = LoggerFactory.getLogger(getClass)
   private val deduplication = WebhookDeduplication()
+  private val mapping = EventSubMapping(tracker, config.channel, event => filter.publish(bus, event))
 
   private val callbackServerEndpoint: ServerEndpoint[Any, Identity] =
     EventSubWebhookApi.callbackEndpoint.handle(handleCallback)
@@ -55,15 +56,32 @@ private[twitch] final class EventSubWebhookApi(
       body: String
   ): Either[Fail, String] =
     for
-      sent <- verifyFreshness(timestamp)
       _ <- verifySignature(messageId, timestamp, signature, body)
+      sent <- verifyFreshness(timestamp)
       envelope <- parse(body)
-      fresh <-
+      response <-
         if messageType == "notification" || messageType == "revocation" then
-          deduplication.claim(messageId, clock.instant(), sent.plus(ReplayWindow).plusNanos(1))
-        else Right(true)
-      response <- if fresh then dispatch(messageType, envelope) else Right("")
+          deduplication
+            .claim(messageId, clock.instant(), sent.plus(ReplayWindow).plusNanos(1))
+            .flatMap:
+              case WebhookClaim.Duplicate => Right("")
+              case WebhookClaim.Fresh     => dispatchClaimed(messageId, messageType, envelope)
+        else dispatch(messageType, envelope)
     yield response
+
+  private def dispatchClaimed(id: String, messageType: String, envelope: EventSubEnvelope): Either[Fail, String] =
+    var completed = false
+    try
+      val result = dispatch(messageType, envelope)
+      if result.isRight then
+        deduplication.complete(id)
+        completed = true
+      result
+    catch
+      case NonFatal(error) =>
+        logger.warn(s"EventSub dispatch failed (${error.getClass.getSimpleName}); allowing redelivery")
+        Left(Fail.Unavailable("EventSub dispatch failed; retry delivery"))
+    finally if !completed then deduplication.release(id)
 
   /** Twitch replays are valid signatures on stale bodies; ten minutes is the window Twitch documents. */
   private def verifyFreshness(timestamp: String): Either[Fail, Instant] =
@@ -100,10 +118,13 @@ private[twitch] final class EventSubWebhookApi(
           logger.info(s"Twitch verified the EventSub callback for ${envelope.subscription.kind}")
 
     case "notification" =>
-      // Through the filter, not straight to the bus: §13.1 requires bot-authored events to be dropped at the
-      // source on *both* EventSub transports, not only on the one that happens to be wired to twitch4j.
-      toRelayEvents(envelope).foreach(filter.publish(bus, _))
-      Right("")
+      if HealthComponent.subscription(envelope.subscription.kind).isEmpty then Right("")
+      else
+        envelope.event
+          .toRight(Fail.IncorrectInput("notification payload carried no event"))
+          .map: payload =>
+            mapping.dispatch(envelope.subscription.kind, payload)
+            ""
 
     case "revocation" =>
       val reason = envelope.subscription.status.getOrElse("revoked")
@@ -115,40 +136,7 @@ private[twitch] final class EventSubWebhookApi(
       logger.debug(s"Ignoring EventSub message type '$unknown'")
       Right("")
 
-  /** Mirrors [[TwitchEventHandlers.registerEventSub]]: the same four subscriptions, arriving by a different road. */
-  private def toRelayEvents(envelope: EventSubEnvelope): List[RelayEvent] =
-    val payload = envelope.event.getOrElse(EventSubPayload(None, None, None, None, None, None, None, None, None, None, None))
-    envelope.subscription.kind match
-      case "stream.online" =>
-        tracker
-          .wentLive(
-            payload.title.getOrElse(""),
-            payload.categoryName.getOrElse(""),
-            payload.startedAt.flatMap(parseInstant),
-            publish = event => filter.publish(bus, event)
-          )
-          .discard
-        Nil
-      case "stream.offline" =>
-        tracker.wentOffline(event => filter.publish(bus, event)).discard
-        Nil
-      case "channel.follow" => payload.userName.map(RelayEvent.Followed.apply).toList
-      case "channel.update" =>
-        tracker.channelInfo(payload.title.getOrElse(""), payload.categoryName.getOrElse(""))
-        List(
-          RelayEvent.ChannelUpdated(
-            payload.broadcasterUserName.getOrElse(config.channel),
-            payload.title.getOrElse(""),
-            payload.categoryName.getOrElse("")
-          )
-        )
-      case other =>
-        logger.debug(s"No mapping for EventSub type '$other'")
-        Nil
-
 private[twitch] object EventSubWebhookApi:
-  /** Twitch sends RFC 3339; an unparseable value degrades to "not reported" rather than failing a notification. */
-  private def parseInstant(raw: String): Option[Instant] = Instant.parse(raw).catching[DateTimeParseException].toOption
   private val ReplayWindow = java.time.Duration.ofMinutes(10)
 
   val callbackEndpoint: PublicEndpoint[(String, String, String, String, String), Fail, String, Any] =
@@ -187,8 +175,8 @@ private[twitch] object EventSubWebhookApi:
     SubscriptionTypes.CHANNEL_FOLLOW_V2 -> EventSubFactory.follow(broadcasterId, broadcasterId)
   )
 
-  /** Reconcile only this callback and broadcaster's subscriptions. Application credentials are selected by the client with no default user
-    * token.
+  /** Reconcile this application and broadcaster's subscriptions, removing obsolete callback URLs and duplicates. Application credentials
+    * are selected by the client with no default user token.
     *
     * Every call here uses the application token, so a 401 from any of them calls `appTokenRejected` to have the session rebuild the client
     * with a fresh token. Iteration deliberately continues: each remaining kind is still observed as failed on this pass, so no component
@@ -203,18 +191,19 @@ private[twitch] object EventSubWebhookApi:
   ): Unit =
     subscriptions.foreach: (kind, condition) =>
       try
-        val existing = helix
-          .getEventSubSubscriptions(null, null, kind, null, null, 100)
-          .execute()
-          .getSubscriptions
-          .asScala
-          .find(sub => sub.getCondition == condition && sub.getTransport.getCallback == config.eventSub.callbackUrl)
-        val usable = existing.filter(sub =>
-          sub.getStatus == EventSubSubscriptionStatus.ENABLED ||
-            sub.getStatus == EventSubSubscriptionStatus.WEBHOOK_CALLBACK_VERIFICATION_PENDING
+        val existing = listSubscriptions(helix, kind).filter(sub =>
+          sub.getCondition == condition && Option(sub.getTransport).exists(_.getMethod == EventSubTransportMethod.WEBHOOK)
         )
+        val usable = existing.find(sub =>
+          sub.getTransport.getCallback == config.eventSub.callbackUrl && (sub.getStatus == EventSubSubscriptionStatus.ENABLED ||
+            sub.getStatus == EventSubSubscriptionStatus.WEBHOOK_CALLBACK_VERIFICATION_PENDING)
+        )
+        // List credentials constrain ownership to this client. Keep unrelated broadcasters/kinds/transports intact.
+        existing
+          .filterNot(sub => usable.exists(_.getId == sub.getId))
+          .foreach: stale =>
+            helix.deleteEventSubSubscription(null, stale.getId).execute().discard
         if usable.isEmpty then
-          existing.foreach(sub => helix.deleteEventSubSubscription(null, sub.getId).execute().discard)
           val created = helix
             .createEventSubSubscription(
               null,
@@ -232,6 +221,25 @@ private[twitch] object EventSubWebhookApi:
         case NonFatal(error) =>
           if HelixPoller.isUnauthorized(error) then appTokenRejected()
           observe(kind.getName, Some(s"registration failed (${error.getClass.getSimpleName}); retrying"))
+
+  /** Bound remote pagination and detect repeated cursors; deletion waits until the whole listing completes. */
+  private def listSubscriptions(helix: TwitchHelix, kind: SubscriptionType[?, ?, ?]): Vector[EventSubSubscription] =
+    var cursor = Option.empty[String]
+    var seen = Set.empty[String]
+    var subscriptions = Vector.empty[EventSubSubscription]
+    var more = true
+    var pages = 0
+    while more do
+      if pages >= 100 then throw IllegalStateException("EventSub pagination exceeded 100 pages")
+      val page = helix.getEventSubSubscriptions(null, null, kind, null, cursor.orNull, 100).execute()
+      subscriptions = subscriptions ++ page.getSubscriptions.asScala
+      pages += 1
+      cursor = Option(page.getPagination).flatMap(page => Option(page.getCursor)).filter(_.nonEmpty)
+      cursor.foreach: next =>
+        if seen.contains(next) then throw IllegalStateException("EventSub pagination repeated a cursor")
+        seen = seen + next
+      more = cursor.isDefined
+    subscriptions
 
   extension [E, T](either: Either[E, T])
     private def tapRight(effect: T => Unit): Either[E, T] =

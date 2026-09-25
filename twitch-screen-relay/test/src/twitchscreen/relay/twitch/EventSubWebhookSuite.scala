@@ -180,3 +180,40 @@ class EventSubWebhookSuite extends munit.FunSuite:
       moving.current = now.plusSeconds(1200)
       assertEquals(post("notification", body, timestamp = sent, messageId = "future").code, StatusCode.Ok)
       assert(events.tryReceive().isEmpty)
+
+  test("a known notification without an event is refused and its id remains retryable"):
+    withWebhook: (backend, events) =>
+      given SyncBackend = backend
+      assertEquals(
+        post("notification", """{"subscription":{"type":"channel.follow"}}""", messageId = "missing").code,
+        StatusCode.BadRequest
+      )
+      val fixed = """{"subscription":{"type":"channel.follow"},"event":{"user_name":"retried"}}"""
+      assertEquals(post("notification", fixed, messageId = "missing").code, StatusCode.Ok)
+      assertEquals(events.receive().event, RelayEvent.Followed("retried"))
+
+  test("a failed dispatch allows the same signed message to be redelivered"):
+    supervised:
+      val bus = EventBus(clock, queueCapacity = 16)
+      var attempts = 0
+      val api = EventSubWebhookApi.create(
+        config,
+        bus,
+        ChannelStateTracker(config.channel, clock),
+        BotFilter.from(notifications),
+        clock,
+        (_, _) =>
+          attempts += 1
+          if attempts == 1 then throw IllegalStateException("temporary failure")
+      )
+      given SyncBackend = TapirSyncStubInterpreter().whenServerEndpointsRunLogic(api.endpoints).backend()
+      val body = """{"subscription":{"type":"channel.follow","status":"authorization_revoked"}}"""
+      assertEquals(post("revocation", body, messageId = "retry").code, StatusCode.ServiceUnavailable)
+      assertEquals(post("revocation", body, messageId = "retry").code, StatusCode.Ok)
+      assertEquals(post("revocation", body, messageId = "retry").code, StatusCode.Ok)
+      assertEquals(attempts, 2)
+
+  test("signature authentication runs before timestamp diagnostics"):
+    withWebhook: (backend, _) =>
+      given SyncBackend = backend
+      assertEquals(post("notification", "{}", timestamp = "not-a-date", signature = Some("forged")).code, StatusCode.Unauthorized)

@@ -195,3 +195,14 @@ class ChannelStateTrackerSuite extends munit.FunSuite:
       assert(published.poll().isInstanceOf[RelayEvent.StreamStarted])
       assert(published.poll().isInstanceOf[RelayEvent.StreamEnded])
       assert(published.isEmpty)
+
+  test("failed publication rolls back liveness so redelivery can publish the stream transition"):
+    supervised:
+      val tracker = ChannelStateTracker("channel", java.time.Clock.systemUTC())
+      intercept[IllegalStateException]:
+        tracker.wentLive("title", "game", publish = _ => throw IllegalStateException("bus unavailable"))
+      .discard
+      var published = List.empty[RelayEvent]
+      val retried = tracker.wentLive("title", "game", publish = event => published = published :+ event)
+      assert(retried.isDefined)
+      assertEquals(published.size, 1)

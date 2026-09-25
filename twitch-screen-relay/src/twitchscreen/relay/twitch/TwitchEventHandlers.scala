@@ -15,6 +15,7 @@ import java.util.function.Consumer
 import org.slf4j.LoggerFactory
 import ox.discard
 import scala.reflect.ClassTag
+import scala.jdk.OptionConverters.*
 import twitchscreen.relay.bus.{EventBus, RelayEvent}
 import twitchscreen.relay.protocol.{ChatColour, SubTier}
 
@@ -86,20 +87,21 @@ private[twitch] object TwitchEventHandlers:
     logger.debug("Chat event handlers registered")
 
   def registerEventSub(events: EventManager, bus: EventBus, tracker: ChannelStateTracker, filter: BotFilter, channel: String): Unit =
-    on[ChannelFollowEvent](events)(event => filter.publish(bus, RelayEvent.Followed(event.getUserName)))
-
-    on[StreamOnlineEvent](events): event =>
-      tracker
-        // stream.online carries no title or category (event.getType is "live", not a game); the tracker fills both in.
-        .wentLive(title = "", game = "", startedAt = Option(event.getStartedAt), publish = bus.publish)
-        .discard
-
-    on[StreamOfflineEvent](events)(_ => tracker.wentOffline(bus.publish).discard)
-
+    val mapping = EventSubMapping(tracker, channel, event => filter.publish(bus, event))
+    on[ChannelFollowEvent](events)(event => mapping.dispatch("channel.follow", EventSubPayload(userName = Option(event.getUserName))))
+    on[StreamOnlineEvent](events)(event =>
+      mapping.dispatch("stream.online", EventSubPayload(startedAt = Option(event.getStartedAt).map(_.toString)))
+    )
+    on[StreamOfflineEvent](events)(_ => mapping.dispatch("stream.offline", EventSubPayload()))
     on[ChannelUpdateV2Event](events): event =>
-      val update = channelUpdated(event.getBroadcasterUserName, event.getTitle, event.getCategoryName, channel)
-      tracker.channelInfo(update.title, update.game)
-      bus.publish(update)
+      mapping.dispatch(
+        "channel.update",
+        EventSubPayload(
+          broadcasterUserName = Option(event.getBroadcasterUserName),
+          title = Option(event.getTitle),
+          categoryName = Option(event.getCategoryName)
+        )
+      )
 
     logger.debug("EventSub handlers registered")
 
@@ -112,7 +114,7 @@ private[twitch] object TwitchEventHandlers:
     * `CHAT_COLOUR_PRESENT` eflag, because black is a legal colour and would otherwise read as "not reported".
     */
   private def chatColour(event: ChannelMessageEvent): Option[ChatColour] =
-    Option(event.getMessageEvent).flatMap(raw => Option(raw.getUserChatColor.orElse(null))).flatMap(ChatColour.fromHex)
+    Option(event.getMessageEvent).flatMap(raw => raw.getUserChatColor.toScala).flatMap(ChatColour.fromHex)
 
   /** §1/§13.1: the wire carries the Twitch DISPLAY NAME, and bot matching is on it. twitch4j's `EventUser.getName` is the IRC `login` tag
     * (lowercase, ASCII), so the `display-name` tag is read off the raw message; on a USERNOTICE it belongs to the notice's author — the
@@ -120,7 +122,7 @@ private[twitch] object TwitchEventHandlers:
     */
   private def displayName(raw: IRCMessageEvent, user: EventUser): String =
     Option(raw)
-      .flatMap(r => Option(r.getUserDisplayName.orElse(null)))
+      .flatMap(r => r.getUserDisplayName.toScala)
       .map(_.trim)
       .filter(_.nonEmpty)
       .getOrElse(Option(user).map(_.getName).getOrElse(""))
@@ -144,4 +146,4 @@ private[twitch] object TwitchEventHandlers:
       category: String,
       fallbackChannel: String
   ): RelayEvent.ChannelUpdated =
-    RelayEvent.ChannelUpdated(Option(broadcaster).getOrElse(fallbackChannel), textOr(title), textOr(category))
+    EventSubMapping.channelUpdated(Option(broadcaster), Option(title), Option(category), fallbackChannel)
