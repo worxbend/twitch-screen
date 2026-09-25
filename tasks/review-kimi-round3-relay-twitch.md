@@ -665,3 +665,33 @@ Retention in `tasks/review-kimi-root.md:44` ("would change HOCON default semanti
 | `./mill --no-daemon mill.scalalib.scalafmt/` then `mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
 | `grep -rn '"device-link"' twitch-screen-relay/src twitch-screen-relay/test` (from the worktree root) | One hit, `Config.scala:226 leaves("device-link", ConfigKeys.of[DeviceLinkConfig])`. This is the K-016 `SchemaPaths` leaf prefix, not a section registry. |
 | K-016 masking tests and "the rendered configuration masks every secret" | Unmodified and green in the ConfigSuite run above |
+
+## K-156 (Nit, relay-twitch): WWW-Authenticate sent on 403/503
+
+- **Disposition: fixed (test only).** This closes the `[partial]` gap. Production already sent the challenge only on 401: in `http/ManagementAuth.scala` the 403 (cross-site) and 503 (password verification busy) rejections pass `challenge = None`, and only `ManagementRejection.unauthorized` carries `Basic realm="relay", Bearer realm="relay"`. 401 (header present) and 403 (header absent) were already tested. 503 had no test until now.
+
+### Change
+
+- `twitch-screen-relay/test/src/twitchscreen/relay/http/ManagementAuthSuite.scala`, test "password verification has a shared nonblocking two-request limit": `assertEquals(send().code.code, 503)` becomes `val busy = send()`, and the following are asserted on it:
+  - `busy.code.code == 503` (unchanged)
+  - `busy.header("WWW-Authenticate").isEmpty` (new; sttp's `header` is case-insensitive)
+  - the body starts with `{"error":` (new; the same JSON error body check as the 401/403 tests)
+  - The forks, the latch release and the two 200 joins are unchanged.
+- No production change. `docs/reference/http-api.md:17` ("Only 401 includes WWW-Authenticate") already matches.
+
+### Proof experiment (not committed; `ManagementAuth.scala` restored from a scratch copy)
+
+- I changed the 503 rejection in `checkBasic` from `None` to `Some("Basic realm=\"relay\", Bearer realm=\"relay\"")`, the same value as `ManagementRejection.unauthorized`.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.http.ManagementAuthSuite` FAILED, 1 of 15: "password verification has a shared nonblocking two-request limit", `munit.FailException` at `ManagementAuthSuite.scala:255` (the new header assertion).
+- After I restored the file, `git status --short` showed only `ManagementAuthSuite.scala` (plus this tasks file).
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly twitchscreen.relay.http.ManagementAuthSuite` | SUCCESS: 15 tests, 0 failed. RED (1 failed, at line 255) during the proof experiment |
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.http.*'` | SUCCESS: ApiSuite 28, TraceIdMdcSuite 2, ManagementRoutesSuite 5, ManagementAuthSuite 15, 0 failed |
+| `./mill --no-daemon compile` | SUCCESS (`-Werror`) |
+| `./mill --no-daemon mill.scalalib.scalafmt/` then `mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
+| `./mill --no-daemon test` | SUCCESS: 45 suites, 505 tests, 0 failed (count unchanged; this change adds assertions to an existing test) |
+| `git status --short` | only `ManagementAuthSuite.scala` and `tasks/review-kimi-round3-relay-twitch.md` |

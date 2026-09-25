@@ -250,7 +250,10 @@ class ManagementAuthSuite extends munit.FunSuite:
       val second = fork(send())
       try
         assert(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
-        assertEquals(send().code.code, 503)
+        val busy = send()
+        assertEquals(busy.code.code, 503)
+        assert(busy.header("WWW-Authenticate").isEmpty, busy.headers)
+        assert(busy.body.fold(identity, identity).startsWith("{\"error\":"), busy.body)
       finally release.countDown()
       assertEquals(first.join().code.code, 200)
       assertEquals(second.join().code.code, 200)
