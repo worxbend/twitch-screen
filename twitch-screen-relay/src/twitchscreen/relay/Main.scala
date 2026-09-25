@@ -3,7 +3,7 @@ package twitchscreen.relay
 import java.time.Clock
 import ox.logback.InheritableMDC
 import ox.otel.context.PropagatingVirtualThreadFactory
-import ox.{Ox, OxApp, discard, never, tap}
+import ox.{Ox, OxApp, discard, tap}
 import twitchscreen.relay.config.Config
 
 /** The relay: a bridge between the Twitch API and the round-display firmware.
@@ -19,14 +19,8 @@ object Main extends OxApp.Simple:
   override protected def settings: OxApp.Settings =
     OxApp.Settings.Default.copy(threadFactory = Some(PropagatingVirtualThreadFactory()))
 
-  override def run(using Ox): Unit =
+  override def run(using Ox): Unit = ApplicationLifetime.run:
     val config = Config.read.tap(Config.log)
     val dependencies = Dependencies.create(config, Clock.systemUTC())
     dependencies.httpApi.start().discard
-    // Nothing else to do on this thread; the scope holds every fork open until the process is asked to stop.
-    //
-    // §6.7 code 8: SIGTERM reaches this thread first, before the scope starts interrupting the session forks, so this is the
-    // one moment at which a `BYE` can still be queued onto a live socket. Without it a relay restart is exactly the failure §1
-    // says v2 had — silence — and every screen drops into the blind exponential ramp with nothing to show for it.
-    try never
-    finally dependencies.hub.shutdown().discard
+    () => dependencies.hub.shutdown().discard

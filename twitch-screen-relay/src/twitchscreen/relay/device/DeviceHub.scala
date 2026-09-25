@@ -135,13 +135,19 @@ private[device] final class DeviceHubState(
   private var connectionsAccepted: Long = 0
   private var notificationsPublished: Long = 0
   private var recentReclaims: Vector[Instant] = Vector.empty
+  private var stopping: Boolean = false
 
   def attach(request: AttachRequest): ConnectionId =
     val now = clock.instant()
     val connection = nextConnectionId()
     recentReclaims = recentReclaims.dropWhile(_.isBefore(now.minusSeconds(60)))
     val replacing = attached.values.exists(_.device == request.device)
-    if replacing && recentReclaims.size >= 16 then
+    if stopping then
+      request.outbound
+        .trySendOrClosed(Outbound(RelayMessage.Bye(ByeCode.ServerShutdown, ByeDetail.Zero, 0.seconds, "relay shutting down")))
+        .discard
+      request.outbound.doneOrClosed().discard
+    else if replacing && recentReclaims.size >= 16 then
       request.outbound
         .trySendOrClosed(Outbound(RelayMessage.Bye(ByeCode.RateLimit, ByeDetail.Zero, 60.seconds, "reclaim rate exceeded")))
         .discard
@@ -246,6 +252,7 @@ private[device] final class DeviceHubState(
     * socket is drained within a bounded deadline before the facade closes every remaining socket.
     */
   def shutdown(): List[AttachedDevice] =
+    stopping = true
     val devices = attached.values.toList
     devices.foreach: device =>
       device.outbound
