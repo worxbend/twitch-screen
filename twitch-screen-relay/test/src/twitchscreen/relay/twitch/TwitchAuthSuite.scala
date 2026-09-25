@@ -62,7 +62,7 @@ class TwitchAuthSuite extends munit.FunSuite:
     clientId = "client-id",
     clientSecret = Sensitive("client-secret"),
     oauth = TwitchOAuthConfig(redirectUrl, scopes, tokenFile.toString, 15.minutes),
-    eventSub = EventSubConfig(EventSubTransport.WebSocket, "", Sensitive.Empty),
+    eventSub = EventSubConfig(EventSubTransport.WebSocket, "", Sensitive("")),
     pollInterval = 30.seconds,
     simulation = SimulationConfig(10.seconds, 2.seconds)
   )

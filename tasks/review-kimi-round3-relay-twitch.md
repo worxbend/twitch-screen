@@ -581,3 +581,43 @@ Every hit is one of these: the constants, the guarded HOCON default and its comm
 | `./mill --no-daemon mill.scalalib.scalafmt/` then `mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
 | `grep -rn "validate()" src/.../HttpAuthConfig.scala src/.../Config.scala src/.../ManagementAuth.scala test/src` | Only the private constructor-body calls and definitions: HttpAuthConfig:20/22 and Config:27/29, 119/122 (DeviceLinkConfig and TwitchConfig). There are no hits in HttpConfig, ManagementAuth or tests. `grep -rn "tap(_.validate" src` finds nothing. |
 | K-016 tests (unknown keys under `http.auth` rejected, `http.auth.preference` system property tolerated) | Green in the ConfigSuite run above. |
+
+## K-100 (Low, relay-twitch): Sensitive.Empty sentinel instead of Option
+
+Retention in `tasks/review-kimi-root.md:44` ("would change HOCON default semantics") was wrong: a reader that maps only the exact `""` to `None` keeps `application.conf`'s `= ""` / `${?ENV}` defaults working unchanged. `application.conf` is untouched.
+
+### Change
+
+- `config/Sensitive.scala`: deleted `val Empty`. Added `Sensitive.optionalReader: ConfigReader[Option[Sensitive]]` = `ConfigReader[String].map(raw => Option.when(raw.nonEmpty)(Sensitive(raw)))`. Only the exact empty string is absent, so a whitespace-only value reaches validation and is rejected. `given ConfigReader[Sensitive]` and `isSet` stay. `twitch.client-secret` and `eventSub.secret` stay plain `Sensitive`, and `isSet` still validates them.
+- `config/HttpAuthConfig.scala`: `basicPasswordHash: Option[Sensitive] = None`, `apiToken: Option[Sensitive] = None`. `object HttpAuthConfig` declares `private given ConfigReader[Option[Sensitive]] = Sensitive.optionalReader` before the `derivedValidated` given, so derivation picks it instead of pureconfig's generic option reader. The second mutation below proves this. `validate()` now uses `forall`/`isEmpty`/`isDefined`, and every message text is unchanged. A programmatic `Some(Sensitive(""))` or `Some(Sensitive("  "))` is rejected as "cannot be whitespace". Scaladoc updated.
+- `http/ManagementAuth.scala`: Bearer: `config.apiToken.exists(expected => equal(token, expected.value))`. `checkBasic`: `config.basicPasswordHash match { case Some(hash) if encoded.length <= 2048 => <tryAcquire / verify / finally release, as before>; case _ => unauthorized }`. The order is unchanged: an absent hash or an oversized header is rejected before the semaphore is touched.
+- ConfigApi masking is path-based, so it is unaffected. `HttpAuthConfig.toString` renders `Some(***)`, and a test pins this.
+
+### Tests
+
+- ConfigSuite: call sites now wrap values in `Some`. `liveTwitchConfig` uses `Sensitive("")`. Added a well-formed `ValidHash` constant. New tests:
+  - "K-100: an empty HOCON auth secret reads as None and a whitespace-only one is rejected": `basic-password-hash = ""` becomes `None`. `api-token = "   "` is a CannotConvert at `http.auth` naming api-token. A whitespace hash with a username gives "basic-password-hash cannot be whitespace".
+  - "K-100: whitespace-only secrets and a Basic password hash without a username cannot be constructed": a blank token, a blank hash, an empty `Some(Sensitive(""))` hash, and a valid hash with no username ("requires both Basic username and password hash").
+  - "K-100: an optional auth secret stays masked when the config is rendered".
+  - The K-045 HOCON test (`api-token = ""` gives "requires Basic credentials or an API token") is unchanged and green.
+- ManagementAuthSuite: `withServer` takes `credentials: HttpAuthConfig = auth`. New "K-100: a token-only config rejects Basic and a Basic-only config rejects Bearer": each config gets a 401 for the wrong method and a 200 for its own, and the handler runs once each.
+- TraceIdMdcSuite and TwitchAuthSuite updated (wrapped in `Some` / `Sensitive("")`).
+
+### Red, then green
+
+- Red: tests changed, production untouched. `./mill --no-daemon test.compile` FAILED with 22 compile errors (type mismatches between `Option[Sensitive]` test values and the old `Sensitive` fields).
+- Green: `test.testOnly ConfigSuite ManagementAuthSuite TraceIdMdcSuite TwitchAuthSuite`: 46 + 15 + 2 + 23 tests, 0 failed (ConfigSuite +3, ManagementAuthSuite +1).
+- Mutation 1 (reader maps `raw.trim.nonEmpty` to Some): 1 ConfigSuite failure, the K-100 HOCON whitespace test ("got requires Basic credentials or an API token"). Reverted from a scratch copy.
+- Mutation 2 (deleted the `private given` so pureconfig's default option reader is used): 10+ ConfigSuite failures, including the K-045 HOCON test (`""` became `Some`, giving the "ASCII Bearer token alphabet" error), the K-100 HOCON test, and the shipped-config load tests. Reverted from a scratch copy. `grep` confirms both originals are back.
+
+### Validation (from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly twitchscreen.relay.config.ConfigSuite twitchscreen.relay.http.ManagementAuthSuite twitchscreen.relay.http.TraceIdMdcSuite twitchscreen.relay.twitch.TwitchAuthSuite` | SUCCESS: 46/15/2/23 tests, 0 failed |
+| `./mill --no-daemon compile` | SUCCESS (`-Werror`) |
+| `./mill --no-daemon test` | SUCCESS: 45 suites, 502 tests, 0 failed (up from 497, +5), on two consecutive runs. An earlier run on the same tree reported 1 failure that I did not capture and that did not recur; it is presumably an existing timing-sensitive test, not this change. |
+| `./mill --no-daemon mill.scalalib.scalafmt/` then `mill.scalalib.scalafmt/checkFormatAll` | SUCCESS |
+| `grep -rn 'Sensitive.Empty' src test` | no output |
+| `grep -rn 'basicPasswordHash.isSet\|apiToken.isSet\|apiToken.value.isEmpty\|basicPasswordHash.value.isEmpty' src` | no output |
+| `git status --short` | 7 Scala files; `application.conf` unchanged |

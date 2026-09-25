@@ -29,13 +29,14 @@ class ManagementAuthSuite extends munit.FunSuite:
   private val key =
     SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(PBEKeySpec(password.toCharArray, salt, 600000, 256)).getEncoded
   private val hash = s"pbkdf2-sha256$$600000$$${Base64.getEncoder.encodeToString(salt)}$$${Base64.getEncoder.encodeToString(key)}"
-  private val auth = HttpAuthConfig("operator", Sensitive(hash), Sensitive(token))
+  private val auth = HttpAuthConfig("operator", Some(Sensitive(hash)), Some(Sensitive(token)))
   private val basic = "Basic " + Base64.getEncoder.encodeToString(s"operator:$password".getBytes(UTF_8))
 
   private def withServer(
       readTimeout: FiniteDuration = 30.seconds,
       requestDeadline: FiniteDuration = 30.seconds,
-      host: String = "127.0.0.1"
+      host: String = "127.0.0.1",
+      credentials: HttpAuthConfig = auth
   )(
       test: (Int, AtomicInteger) => Unit
   ): Unit = supervised:
@@ -58,7 +59,7 @@ class ManagementAuthSuite extends munit.FunSuite:
           .handle(_ => Left(Fail.Unauthorized("callback signature required"))),
         Http.baseEndpoint.get.in("failure").out(stringBody).handleSuccess(_ => throw IllegalStateException("private exception detail"))
       )
-    val config = HttpConfig(Hostname(host).toOption.get, Port(8080).toOption.get, auth)
+    val config = HttpConfig(Hostname(host).toOption.get, Port(8080).toOption.get, credentials)
     val binding =
       HttpApi(List(api), config, OpenTelemetry.noop()).startOnPort(0, readTimeout = readTimeout, requestDeadline = requestDeadline)
     test(binding.port, calls)
@@ -160,6 +161,16 @@ class ManagementAuthSuite extends munit.FunSuite:
       assertEquals(request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("token")).statusCode(), 200)
       assertEquals(calls.get(), 2)
 
+  test("K-100: a token-only config rejects Basic and a Basic-only config rejects Bearer"):
+    withServer(credentials = HttpAuthConfig(apiToken = Some(Sensitive(token)))): (port, calls) =>
+      assertEquals(request(port, "/api/v1/protected", Some(basic), Some("basic")).statusCode(), 401)
+      assertEquals(request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("bearer")).statusCode(), 200)
+      assertEquals(calls.get(), 1)
+    withServer(credentials = HttpAuthConfig("operator", basicPasswordHash = Some(Sensitive(hash)))): (port, calls) =>
+      assertEquals(request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("bearer")).statusCode(), 401)
+      assertEquals(request(port, "/api/v1/protected", Some(basic), Some("basic")).statusCode(), 200)
+      assertEquals(calls.get(), 1)
+
   test("missing malformed and incorrect credentials are JSON 401s without executing handlers"):
     withServer(): (port, calls) =>
       List(None, Some("Basic !!!"), Some("Basic"), Some("Bearer wrong"), Some("Unknown foo")).foreach: credential =>
@@ -213,8 +224,8 @@ class ManagementAuthSuite extends munit.FunSuite:
 
   test("absent or incomplete credentials cannot be constructed and password verification rejects a wrong password"):
     intercept[IllegalArgumentException](HttpAuthConfig()).discard
-    intercept[IllegalArgumentException](HttpAuthConfig("operator", apiToken = Sensitive(token))).discard
-    intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Sensitive("short"))).discard
+    intercept[IllegalArgumentException](HttpAuthConfig("operator", apiToken = Some(Sensitive(token)))).discard
+    intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Some(Sensitive("short")))).discard
     assert(PasswordVerifier.verify(password, hash))
     assert(!PasswordVerifier.verify("wrong", hash))
 

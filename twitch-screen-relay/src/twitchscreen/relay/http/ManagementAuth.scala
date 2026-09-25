@@ -49,7 +49,7 @@ private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword
   private def authorize(basic: Option[String], bearer: Option[String], request: ServerRequest): Either[ManagementRejection, Unit] =
     val oneHeader = request.headers.count(_.name.equalsIgnoreCase("Authorization")) == 1
     if !oneHeader then Left(ManagementRejection.unauthorized)
-    else if bearer.exists(token => config.apiToken.isSet && equal(token, config.apiToken.value)) then Right(())
+    else if bearer.exists(token => config.apiToken.exists(expected => equal(token, expected.value))) then Right(())
     else
       basic match
         case Some(encoded) =>
@@ -60,21 +60,23 @@ private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword
         case None => Left(ManagementRejection.unauthorized)
 
   private def checkBasic(encoded: String): Either[ManagementRejection, Unit] =
-    if !config.basicPasswordHash.isSet || encoded.length > 2048 then Left(ManagementRejection.unauthorized)
-    else if !passwordChecks.tryAcquire() then
-      Left(ManagementRejection(StatusCode.ServiceUnavailable, None, Error_OUT("Password verification busy; retry request")))
-    else
-      try
-        val valid =
-          Try(String(Base64.getDecoder.decode(encoded), UTF_8)).toOption.exists: decoded =>
-            val separator = decoded.indexOf(':')
-            if separator < 0 then false
-            else
-              val usernameMatches = equal(decoded.take(separator), config.basicUsername)
-              val passwordMatches = verifyPassword(decoded.drop(separator + 1), config.basicPasswordHash.value)
-              usernameMatches && passwordMatches
-        Either.cond(valid, (), ManagementRejection.unauthorized)
-      finally passwordChecks.release()
+    config.basicPasswordHash match
+      case Some(hash) if encoded.length <= 2048 =>
+        if !passwordChecks.tryAcquire() then
+          Left(ManagementRejection(StatusCode.ServiceUnavailable, None, Error_OUT("Password verification busy; retry request")))
+        else
+          try
+            val valid =
+              Try(String(Base64.getDecoder.decode(encoded), UTF_8)).toOption.exists: decoded =>
+                val separator = decoded.indexOf(':')
+                if separator < 0 then false
+                else
+                  val usernameMatches = equal(decoded.take(separator), config.basicUsername)
+                  val passwordMatches = verifyPassword(decoded.drop(separator + 1), hash.value)
+                  usernameMatches && passwordMatches
+            Either.cond(valid, (), ManagementRejection.unauthorized)
+          finally passwordChecks.release()
+      case _ => Left(ManagementRejection.unauthorized)
 
   /** Browsers attach Basic credentials automatically. Restrict all management requests, including the OAuth authorize GET. Non-browser
     * clients omit Origin/Fetch Metadata. A TLS proxy must preserve public Host; Forwarded headers are not trusted.

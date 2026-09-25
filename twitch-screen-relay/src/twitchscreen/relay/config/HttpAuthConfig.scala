@@ -9,13 +9,14 @@ import pureconfig.ConfigReader
 import scala.util.Try
 import ox.computeIntensive
 
-/** Empty fields disable a method. Construction rejects an invalid credential set or one without a complete method, so every instance is
-  * usable as-is: the HOCON reader reports that rejection as a `CannotConvert` at `http.auth`.
+/** An absent secret (`None`; an empty string in HOCON) disables its method. Construction rejects an invalid credential set, a present but
+  * whitespace-only secret, or a set without a complete method, so every instance is usable as-is: the HOCON reader reports that rejection
+  * as a `CannotConvert` at `http.auth`.
   */
 final case class HttpAuthConfig(
     basicUsername: String = "",
-    basicPasswordHash: Sensitive = Sensitive.Empty,
-    apiToken: Sensitive = Sensitive.Empty
+    basicPasswordHash: Option[Sensitive] = None,
+    apiToken: Option[Sensitive] = None
 ):
   validate()
 
@@ -26,18 +27,19 @@ final case class HttpAuthConfig(
       "http.auth.basic-username must be nonblank without surrounding whitespace, controls or colon"
     )
     require(
-      apiToken.value.isEmpty || apiToken.value.matches("[A-Za-z0-9._~+/-]+=*"),
+      apiToken.forall(_.value.matches("[A-Za-z0-9._~+/-]+=*")),
       "http.auth.api-token must use the ASCII Bearer token alphabet"
     )
-    require(basicPasswordHash.value.isEmpty || basicPasswordHash.isSet, "http.auth.basic-password-hash cannot be whitespace")
-    require(apiToken.value.isEmpty || apiToken.isSet, "http.auth.api-token cannot be whitespace")
-    require(basicUsername.isBlank == !basicPasswordHash.isSet, "http.auth requires both Basic username and password hash")
+    require(basicPasswordHash.forall(_.isSet), "http.auth.basic-password-hash cannot be whitespace")
+    require(apiToken.forall(_.isSet), "http.auth.api-token cannot be whitespace")
+    require(basicUsername.isBlank == basicPasswordHash.isEmpty, "http.auth requires both Basic username and password hash")
     require(basicUsername.isBlank || !basicUsername.contains(':'), "http.auth.basic-username cannot contain ':'")
-    require(!basicPasswordHash.isSet || PasswordVerifier.valid(basicPasswordHash.value), "http.auth.basic-password-hash has invalid format")
-    require(!apiToken.isSet || apiToken.value.getBytes(UTF_8).length >= 32, "http.auth.api-token must contain at least 32 bytes")
-    require(basicPasswordHash.isSet || apiToken.isSet, "http.auth requires Basic credentials or an API token")
+    require(basicPasswordHash.forall(hash => PasswordVerifier.valid(hash.value)), "http.auth.basic-password-hash has invalid format")
+    require(apiToken.forall(_.value.getBytes(UTF_8).length >= 32), "http.auth.api-token must contain at least 32 bytes")
+    require(basicPasswordHash.isDefined || apiToken.isDefined, "http.auth requires Basic credentials or an API token")
 
 object HttpAuthConfig:
+  private given ConfigReader[Option[Sensitive]] = Sensitive.optionalReader
   given ConfigReader[HttpAuthConfig] = ValidatedConfigReader.derivedValidated[HttpAuthConfig]
 
 /** PBKDF2-SHA256 verifier: pbkdf2-sha256$600000$base64(salt)$base64(32-byte key). No password is retained. */
