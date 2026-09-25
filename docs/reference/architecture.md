@@ -114,7 +114,7 @@ The default capacities are explicit and finite:
 | Per-device outbound queue | 128 frames | An event delivery gap closes that device connection; replaceable statistics can be dropped. |
 | Non-chat replay ring | 64 events | Oldest records are evicted. |
 | Chat replay ring | 16 events | Oldest chat records are evicted without evicting non-chat records. |
-| Firmware card queue | 8 cards | Refuses the newest card without advancing its accepted sequence. |
+| Firmware card queue | 8 cards | Pauses EVENT consumption until a slot frees; defensive refusal preserves the accepted sequence and reconnects. |
 | Activity history | 500 entries | Retains a bounded recent history. |
 | Alert history | 100 entries | Retains a bounded alert history. |
 | Log history | 500 records | Retains a bounded recent log tail. |
@@ -142,7 +142,7 @@ sequenceDiagram
 
 On a fresh boot, the device sends `last_seq = 0`. It baselines to the relay's current sequence and receives no historical backlog. A reconnect with `0 < last_seq <= latest_seq` is eligible for retained events newer than that mark, subject to device capabilities and chat policy. A device ahead of the relay's current sequence rebaselines. The random relay session ID is diagnostic; it is not a persistent recovery identity.
 
-The device's sequence mark tracks **accepted cards**, not cards already shown. An ACK therefore does not prove that a viewer saw a notification. On queue overflow, the firmware refuses the newest card, preserves the earlier accepted cards and high-water mark, and reconnects for a replay attempt. TCP reading also yields while the queue is full so queued cards can finish rendering.
+The device's sequence mark tracks **accepted cards**, not cards already shown. An ACK therefore does not prove that a viewer saw a notification. While the queue is full, the link pauses EVENT consumption so queued cards can finish rendering. If queue admission nevertheless refuses a card, the firmware preserves the earlier accepted cards and high-water mark and reconnects for a replay attempt.
 
 Replay is best effort within finite memory. Evicted events are lost; a device reboot loses its queue; a relay restart loses its rings and sequence state. After a restart, a numeric sequence overlap cannot establish that the device and relay refer to the same old event history. TSB/3 does not provide durable delivery or an end-to-end exactly-once guarantee.
 
