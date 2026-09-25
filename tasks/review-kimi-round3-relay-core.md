@@ -131,3 +131,29 @@ Findings: **K-073** (Low) EventBus subscriber overflow is silent; **K-153** (Nit
 - `./mill --no-daemon test`: 39 suites / 444 tests. 11 of 12 runs passed. One run had an intermittent failure in `SequenceExhaustionSuite` "a stream lifecycle transition on an exhausted hub still delivers STATS…" (`:134`, the Offline STATS frame did not arrive within the device read budget under full-suite load). That suite passed 5 / 5 when run alone. An export of the untouched HEAD passed 6 / 6 full runs. The test does not read any subscriber counter, and this change only adds one atomic increment per handled event. It is recorded here as an existing timing-sensitive test and was not changed in this unit.
 - `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS.
 - `git diff --check`: PASS.
+
+## test(relay): pin shared encoded frames across sessions
+
+Findings: **K-138** (Low) Identical frames re-encoded per session. The code fix was already on main. `Outbound` (DeviceHub.scala:22-28) caches one `EncodedFrame` per `TextPolicy` in `private lazy val verbatim`/`folded`, and `broadcast` (DeviceHub.scala:371-373) builds one `Outbound` and sends that same instance to every attached device. No test covered either half. This unit adds tests only. Production code does not change.
+
+### Change
+
+- NEW `test/src/twitchscreen/relay/device/OutboundSuite.scala` (package `twitchscreen.relay.device`, so the `private[device]` types are visible).
+
+### Tests
+
+- "K-138: an Outbound encodes once per text policy and returns the same bytes on every call". For `Outbound(Pong(Token.fromWire(1)))`, `encoded(Verbatim) eq encoded(Verbatim)`, `encoded(AsciiFolded) eq encoded(AsciiFolded)`, and `encoded(Verbatim) ne encoded(AsciiFolded)`. The last assertion pins the per-policy dispatch.
+- "K-138: a broadcast hands every same-policy device the same Outbound and the same encoded bytes". Setup: `DeviceHub.start` with no listener. Two devices, "alpha" and "beta", attach directly through `hub.attach(AttachRequest(...))`, each with `TestDevice.FullCaps` and its own `Channel.buffered[Outbound](16)`. Each greeting (WELCOME, STATS) is drained and its types asserted; greeting frames are per device and are not expected to be shared. Then `hub.broadcastStats(StreamStats.Unknown)` and `hub.publish(EventRequest.of(Info, "shäred", ""))` (Right) each deliver one frame to both devices. For each broadcast the test asserts the Outbound instances are `eq`, and that `encoded(Verbatim)` and `encoded(AsciiFolded)` are `eq` across the two devices. `encoded` runs on the test thread rather than a writer fork, which is equivalent because `EncodedFrame` is immutable.
+
+### Revert checks (DeviceHub.scala restored with `git checkout` after each; `git diff --stat src/` empty afterwards; the suite passed 2 / 2 again)
+
+1. `private lazy val verbatim`/`folded` changed to `private def`: 2 failed / 2. Test 1 failed at `OutboundSuite.scala:20` (Verbatim `eq`). Test 2 got past the Outbound `eq` and failed at `OutboundSuite.scala:57` (`encoded(Verbatim)` `eq` across devices).
+2. `broadcast` changed to `attached.values.foreach(d => send(d, Outbound(message)))`, with the now-unused `val frame` removed. When that val was left in place, the strict warning flags stopped compilation. Result: 1 failed / 2. Test 2 failed at `OutboundSuite.scala:56` ("each device received its own Outbound") on the first STATS broadcast. Test 1 was unaffected, as expected.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `./mill --no-daemon test.testOnly twitchscreen.relay.device.OutboundSuite` ×3: PASS each time, 2 / 2.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.device.*'`: PASS, 9 suites / 84 tests, 0 failed.
+- `./mill --no-daemon test`: PASS, exit 0, 40 suites / 451 tests, 0 failed.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS on the first run, so no reformat was needed.
+- `git diff --check`: PASS. `git status` lists only the new suite and this record. No production source changed.
