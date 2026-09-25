@@ -29,13 +29,14 @@ private[relay] object Tsb3Decoder:
     else fromDeviceCurrent(frame)
 
   private def fromDeviceCurrent(frame: Frame): Either[ProtocolError, DeviceMessage] =
-    expect(frame, WireDirection.DeviceToRelay).flatMap {
-      case MessageType.Hello      => hello(frame.payload)
-      case MessageType.DevicePing => Right(DeviceMessage.Ping(Token.fromWire(u32(frame.payload, Tsb3.Heartbeat.Token))))
-      case MessageType.DevicePong => Right(DeviceMessage.Pong(Token.fromWire(u32(frame.payload, Tsb3.Heartbeat.Token))))
-      case MessageType.Ack        => Right(DeviceMessage.Ack(SeqNo.fromWire(u32(frame.payload, Tsb3.Ack.Seq))))
-      case other                  => Left(ProtocolError.WrongDirection(other.code))
-    }
+    frame.header.typeCode.known match
+      case Some(t @ MessageType.Hello) => withBase(frame, t)(hello)
+      case Some(t @ MessageType.DevicePing) =>
+        withBase(frame, t)(p => Right(DeviceMessage.Ping(Token.fromWire(u32(p, Tsb3.Heartbeat.Token)))))
+      case Some(t @ MessageType.DevicePong) =>
+        withBase(frame, t)(p => Right(DeviceMessage.Pong(Token.fromWire(u32(p, Tsb3.Heartbeat.Token)))))
+      case Some(t @ MessageType.Ack) => withBase(frame, t)(p => Right(DeviceMessage.Ack(SeqNo.fromWire(u32(p, Tsb3.Ack.Seq)))))
+      case _                         => Left(misdirected(frame, WireDirection.DeviceToRelay))
 
   /** Decodes a frame the relay sends to a device (§6, `0x20`…`0x3f`).
     *
@@ -44,31 +45,40 @@ private[relay] object Tsb3Decoder:
     * aligned.
     */
   def fromRelay(frame: Frame): Either[ProtocolError, RelayMessage] =
-    expect(frame, WireDirection.RelayToDevice).flatMap {
-      case MessageType.Welcome   => Right(welcome(frame.payload))
-      case MessageType.Event     => event(frame.payload).map(RelayMessage.Event.apply)
-      case MessageType.Stats     => Right(stats(frame.payload))
-      case MessageType.RelayPing => Right(RelayMessage.Ping(Token.fromWire(u32(frame.payload, Tsb3.Heartbeat.Token))))
-      case MessageType.RelayPong => Right(RelayMessage.Pong(Token.fromWire(u32(frame.payload, Tsb3.Heartbeat.Token))))
-      case MessageType.Bye       => Right(bye(frame.payload))
-      case other                 => Left(ProtocolError.WrongDirection(other.code))
-    }
+    frame.header.typeCode.known match
+      case Some(t @ MessageType.Welcome) => withBase(frame, t)(p => Right(welcome(p)))
+      case Some(t @ MessageType.Event)   => withBase(frame, t)(p => event(p).map(RelayMessage.Event.apply))
+      case Some(t @ MessageType.Stats)   => withBase(frame, t)(p => Right(stats(p)))
+      case Some(t @ MessageType.RelayPing) =>
+        withBase(frame, t)(p => Right(RelayMessage.Ping(Token.fromWire(u32(p, Tsb3.Heartbeat.Token)))))
+      case Some(t @ MessageType.RelayPong) =>
+        withBase(frame, t)(p => Right(RelayMessage.Pong(Token.fromWire(u32(p, Tsb3.Heartbeat.Token)))))
+      case Some(t @ MessageType.Bye) => withBase(frame, t)(p => Right(bye(p)))
+      case _                         => Left(misdirected(frame, WireDirection.RelayToDevice))
 
-  /** §4.3's three framing dispositions, in the order the specification lists them: a type this build does not implement is unknown, a type
-    * from the receiver's own outbound range is a confused peer rather than a corrupt stream, and a payload below the base length is short.
+  /** §4.3's third disposition, applied only once a frame is known to be of a type from the receiver's inbound direction: a payload below
+    * the type's base length is short. A misdirected frame never reaches this check, so it is reported as wrong-direction whatever its
+    * length.
     */
-  private def expect(frame: Frame, inbound: WireDirection): Either[ProtocolError, MessageType] =
+  private def withBase[A](frame: Frame, messageType: MessageType)(
+      decode: Array[Byte] => Either[ProtocolError, A]
+  ): Either[ProtocolError, A] =
+    if frame.payload.length < messageType.baseLength then
+      Left(ProtocolError.ShortPayload(messageType.toString, messageType.baseLength, frame.payload.length))
+    else decode(frame.payload)
+
+  /** §4.3's first two dispositions, for every frame that is not a type from the receiver's inbound direction. A type from the receiver's
+    * own outbound range — known or not — is a confused peer rather than a corrupt stream; any other code this build does not implement is
+    * unknown. Both are checked before the payload length, which only means something for a type the receiver decodes.
+    */
+  private def misdirected(frame: Frame, inbound: WireDirection): ProtocolError =
     val code = frame.header.typeCode.value
     frame.header.typeCode.known match
-      case Some(messageType) if messageType.direction == inbound =>
-        if frame.payload.length < messageType.baseLength then
-          Left(ProtocolError.ShortPayload(messageType.toString, messageType.baseLength, frame.payload.length))
-        else Right(messageType)
-      case Some(_) => Left(ProtocolError.WrongDirection(code))
+      case Some(_) => ProtocolError.WrongDirection(code)
       case None =>
         frame.header.typeCode.direction match
-          case Some(direction) if direction != inbound => Left(ProtocolError.WrongDirection(code))
-          case _                                       => Left(ProtocolError.UnknownType(code))
+          case Some(direction) if direction != inbound => ProtocolError.WrongDirection(code)
+          case _                                       => ProtocolError.UnknownType(code)
 
   private def hello(payload: Array[Byte]): Either[ProtocolError, DeviceMessage] =
     val rxMax = FrameSize.fromWire(u16(payload, Tsb3.Hello.RxMax))

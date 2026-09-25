@@ -505,3 +505,52 @@ The control test still passed. The source was restored from a backup, and the di
 - `./mill --no-daemon test`: the first run had 1 failure, `DeviceLinkSuite` "an attached device appears in the hub's link list with its counters in bytes": `bytesSent` read 32 where 72 was expected, because the device read STATS before the writer recorded its byte count. This is a pre-existing read-after-write race on the writer's counter, and this unit does not touch the writer or the counters. Two further full runs gave PASS (exit 0), 49 suites / 524 tests, 0 failed, with no `[warn]` lines. The previous full run was 48 / 519, so this unit adds 1 suite and 5 tests.
 - `./mill --no-daemon mill.scalalib.scalafmt/reformatAll`, then `checkFormatAll`: PASS.
 - `git diff --check` (with the new suite intent-added): PASS. `git status` lists only `DeviceSession.scala`, the new `DeviceSessionSeamsSuite.scala` and this record.
+
+## refactor(relay): make wrong-direction the real fall-through in Tsb3Decoder
+
+Findings: **K-141** (Nit), "Unreachable WrongDirection fallbacks" (`Tsb3Decoder.scala:37,54`).
+
+Supersedes KIMI-P15 (tasks/review-kimi-device.md:26): the arms were removable without casts or a new hierarchy by matching typeCode.known directly.
+
+### Change
+
+- `src/twitchscreen/relay/protocol/Tsb3Decoder.scala`:
+  - `expect` is deleted. `fromDeviceCurrent` and `fromRelay` now match on `frame.header.typeCode.known`. There is one `case Some(t @ MessageType.X) => withBase(frame, t)(...)` arm for each type of the inbound direction: HELLO, PING, PONG and ACK on the device path, and WELCOME, EVENT, STATS, PING, PONG and BYE on the relay path. The last arm is `case _ => Left(misdirected(frame, <inbound>))`.
+  - The fall-through arm now does real work. It handles every known type of the other direction and every unknown code. The two unreachable `case other => Left(ProtocolError.WrongDirection(other.code))` arms are gone. The change adds no cast, throw, `@unchecked` or new type.
+  - New `private def withBase[A](frame, messageType)(decode)` holds the ShortPayload check from `expect`, unchanged. New `private def misdirected(frame, inbound): ProtocolError` holds the WrongDirection-vs-UnknownType logic from `expect`, unchanged. The §4.3 scaladoc moved to these two helpers. It now says that a misdirected frame is WrongDirection whatever its length.
+  - The HELLO version gate in `fromDevice`, the public signatures and the ProtocolError values are all unchanged.
+- `test/src/twitchscreen/relay/protocol/Tsb3DecoderSuite.scala`, 3 new characterization tests:
+  - (a) "§4.3: every type code is classified the same way on both inbound paths". It covers codes 0x01..0xff on both `fromDevice` and `fromRelay`, 510 cases. Each frame is `withHeader(event, typeCode = code)`, a 168-byte payload at version 3. The expected class is computed from `MessageType.fromCode` and `WireDirection.ofCode`, not from the decoder:
+    - an inbound known type is neither WrongDirection nor UnknownType
+    - a known type of the other direction gives `WrongDirection(code)`
+    - an unknown code in the other direction's range gives `WrongDirection(code)`
+    - any other code gives `UnknownType(code)`
+
+    Code 0x00 is excluded because `FrameHeader` rejects it as `IllegalTypeCode` before it reaches the decoder.
+  - (b) "§4.3: a wrong-direction type is reported as such even when its payload is shorter than its base". `fromDevice(resized(welcome, 0))` gives `WrongDirection(0x20)`, and `fromRelay(resized(hello, 0))` gives `WrongDirection(0x01)`. This pins that the misdirected check comes before ShortPayload.
+  - (c) "§4.3: the relay-bound path mirrors the device-bound one for unknown codes in each range". On `fromRelay`, 0x1f gives `WrongDirection(0x1f)`, 0x80 gives `UnknownType(0x80)` and 0x3f gives `UnknownType(0x3f)`.
+
+### Characterization (before the decoder change)
+
+The tests were added first and run against the unchanged decoder. `./mill --no-daemon test.testOnly twitchscreen.relay.protocol.Tsb3DecoderSuite` gave PASS, 0 failed / 33 total (30 existing + 3 new). The same suite passed after the refactor, 33/33, so the refactor changes no behavior.
+
+### Revert check
+
+`misdirected`'s body was temporarily replaced so that it always returns `ProtocolError.UnknownType(code)`. `Tsb3DecoderSuite` then had **5 failed / 33 total**:
+- the existing "own outbound range is a confused peer" test (:32)
+- the existing "unknown type from the receiver's own range is wrong-direction" test (:37)
+- the new (c)
+- the new (a)
+- the new (b)
+
+The source was restored from a backup, and `grep` confirmed the original `misdirected` body.
+
+### Validation (from `twitch-screen-relay/`)
+
+- `grep -n "case other\|def expect" src/twitchscreen/relay/protocol/Tsb3Decoder.scala` returns nothing.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.protocol.Tsb3DecoderSuite`: PASS, 33/33.
+- `./mill --no-daemon test.testOnly twitchscreen.relay.protocol.Tsb3GoldenVectorSuite`: PASS, 23/23, covering all 20 vectors V1..V20.
+- `./mill --no-daemon test.testOnly 'twitchscreen.relay.protocol.*'`: PASS, 7 suites / 115 tests, 0 failed.
+- `./mill --no-daemon test`: PASS (exit 0), 49 suites / 527 tests, 0 failed, with no `[warn]` lines under `-Werror`. The previous full run was 49 / 524, so this unit adds only the 3 new tests.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll`: PASS, after `reformatAll`.
+- `git diff --check`: PASS.

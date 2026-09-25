@@ -39,6 +39,43 @@ class Tsb3DecoderSuite extends munit.FunSuite:
   test("§4.3: a reserved type outside both ranges is unknown"):
     assertEquals(Tsb3Decoder.fromDevice(frame(withHeader(hello, typeCode = 0x80))), Left(ProtocolError.UnknownType(0x80)))
 
+  test("§4.3: the relay-bound path mirrors the device-bound one for unknown codes in each range"):
+    assertEquals(Tsb3Decoder.fromRelay(frame(withHeader(welcome, typeCode = 0x1f))), Left(ProtocolError.WrongDirection(0x1f)))
+    assertEquals(Tsb3Decoder.fromRelay(frame(withHeader(welcome, typeCode = 0x80))), Left(ProtocolError.UnknownType(0x80)))
+    assertEquals(Tsb3Decoder.fromRelay(frame(withHeader(welcome, typeCode = 0x3f))), Left(ProtocolError.UnknownType(0x3f)))
+
+  test("§4.3: every type code is classified the same way on both inbound paths"):
+    // 0x00 never reaches the decoder: the header layer refuses it as IllegalTypeCode. The EVENT payload is 168 bytes, at or above every
+    // base length, so a type of the inbound direction can only fail on its fields, never on direction or length.
+    val paths: List[(WireDirection, Array[Byte] => Either[ProtocolError, Any])] = List(
+      WireDirection.DeviceToRelay -> (bytes => Tsb3Decoder.fromDevice(frame(bytes))),
+      WireDirection.RelayToDevice -> (bytes => Tsb3Decoder.fromRelay(frame(bytes)))
+    )
+    for
+      (inbound, decode) <- paths
+      code <- 0x01 to 0xff
+    do
+      val result = decode(withHeader(event, typeCode = code))
+      val clue = f"code 0x$code%02x inbound $inbound: $result"
+      MessageType.fromCode(code) match
+        case Some(known) if known.direction == inbound =>
+          assert(
+            !result.left.exists {
+              case _: ProtocolError.WrongDirection | _: ProtocolError.UnknownType => true
+              case _                                                              => false
+            },
+            clue
+          )
+        case Some(_) => assertEquals(result, Left(ProtocolError.WrongDirection(code)), clue)
+        case None =>
+          WireDirection.ofCode(code) match
+            case Some(direction) if direction != inbound => assertEquals(result, Left(ProtocolError.WrongDirection(code)), clue)
+            case _                                       => assertEquals(result, Left(ProtocolError.UnknownType(code)), clue)
+
+  test("§4.3: a wrong-direction type is reported as such even when its payload is shorter than its base"):
+    assertEquals(Tsb3Decoder.fromDevice(frame(resized(welcome, 0))), Left(ProtocolError.WrongDirection(0x20)))
+    assertEquals(Tsb3Decoder.fromRelay(frame(resized(hello, 0))), Left(ProtocolError.WrongDirection(0x01)))
+
   test("§17.2: a length one byte short of a known base is skipped, counted, and the link survives"):
     val short = resized(stats, MessageType.Stats.baseLength - 1)
     val reader = FrameReader(ByteArrayInputStream(short ++ welcome))
