@@ -1,4 +1,22 @@
-# TwitchScreen enclosure
+<div align="center">
+
+<h1>🛠️ Twitch Screen · The Enclosure</h1>
+
+<p><strong>A tiny pod with extremely important desk-job energy.</strong></p>
+<p>Parametric FreeCAD · Four printable parts · Rear USB-C · 55° display face</p>
+
+<p>
+  <a href="../docs/guides/device-build.md">Build guide</a> ·
+  <a href="output/3mf/print_plate.3mf">Print plate</a> ·
+  <a href="docs/measurement_checklist.md">Measure your hardware</a> ·
+  <a href="../docs/README.md">Guidebook</a>
+</p>
+
+<img src="output/preview/01_front_hero.png" alt="CAD render of the warm-colored round display pod on its dark removable base" width="820">
+
+<p><em>Rendered from the project CAD. Nominal design validated; physical print and fit still require testing.</em></p>
+
+</div>
 
 Parametric FreeCAD enclosure for the photographed **30-pin ESP32 DevKit V1
 Type-C** and **Waveshare 1.28inch LCD Module**, based on `PLAN.md`.
@@ -6,6 +24,14 @@ Type-C** and **Waveshare 1.28inch LCD Module**, based on `PLAN.md`.
 The circular face tilts 55° from horizontal. A warm-coloured pod meets a dark
 removable base; all fasteners are concealed from the front. USB-C faces the rear.
 Nominal envelope: **64 × 86 × 78.1 mm**, before adhesive feet.
+
+## ✨ Take the tour
+
+| Backstage access 🔌 | Every layer, explained 🧩 |
+| --- | --- |
+| ![Rear CAD render showing the recessed USB-C opening](output/preview/02_rear_usb.png) | ![Exploded CAD render showing the four printed parts and electronics](output/preview/06_exploded.png) |
+
+New to the build? The [step-by-step device guide](../docs/guides/device-build.md) covers the parts list, exact GPIO wiring, slicer starting points and assembly. Prove the electronics with [simulated events](../docs/guides/first-simulated-stream.md), then close the case. 💜
 
 All four hardware photos and five added concept screenshots were inspected.
 The exterior follows their light curved pod, thin rim/dark face, side and rear
@@ -115,6 +141,8 @@ the LCD seat. The base prints underside-down, with its posts upward. The
 retainer and face insert print flat. A brim can help the shell's narrow first-layer annulus.
 The four-part plate uses two rows; inspect its reported dimensions in
 `output/reports/mesh_validation.json` before adding brim/support expansion.
+The current plate footprint is approximately **197 × 151 mm**; print parts
+individually when your bed, brim or color choices call for a different layout.
 
 Additional parts: the two electronic boards and supplied eight-wire loom;
 four M2 × 6 mm pan-head screws (Ø3.8 mm heads) for the ESP32, four M2.5 × 8 mm low-profile
@@ -147,3 +175,11 @@ not detailed manufacturer CAD. Physical assembly and print tolerances must be
 confirmed against the actual boards using the measurement checklist.
 The single rounded `cable_route` body is a Ø4.4 mm reserved corridor for the
 eight-wire loom, not one thick wire or an electrical pin-mapping diagram.
+
+## 📚 Next stops
+
+- [Full device build guide](../docs/guides/device-build.md) — BOM, exact wiring and ordered assembly.
+- [Firmware setup](../docs/guides/firmware-setup.md) — configure, build and upload over USB.
+- [Using the device](../docs/guides/device-use.md) — understand the dashboard and event cards.
+- [Troubleshooting](../docs/guides/troubleshooting.md) — fit checks, USB clearance and display issues.
+- [Project overview](../README.md) and [complete guidebook](../docs/README.md).
