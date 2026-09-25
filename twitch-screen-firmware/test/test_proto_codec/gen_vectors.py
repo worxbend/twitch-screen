@@ -203,7 +203,7 @@ L.append('')
 
 for v in vectors:
     L.append('// V%d. %s — %d bytes' % (v['idx'], v['name'], v['size']))
-    L.append('static const uint8_t %s[%d] = {' % (ident(v['name']), v['size']))
+    L.append('static constexpr uint8_t %s[%d] = {' % (ident(v['name']), v['size']))
     L.append(carr(v['frame']))
     L.append('};')
     L.append('')
@@ -212,7 +212,7 @@ for v in vectors:
 for v in vectors:
     for k, val in sorted(v['fields'].items()):
         if isinstance(val, str):
-            L.append('static const char %s_%s[] = %s;' % (ident(v['name']), k.upper(), cstrarr(val)))
+            L.append('static constexpr char %s_%s[] = %s;' % (ident(v['name']), k.upper(), cstrarr(val)))
 L.append('')
 
 L.append('// --------------------------------------------------------------------------')
@@ -256,7 +256,7 @@ for label, mtype, sname, members in tables:
         L.append('  %s%s;' % (t + (' ' if t.endswith('*') else ' '), n))
     L.append('};')
     L.append('')
-    L.append('static const %s %s_VECTORS[] = {' % (sname, label.upper()))
+    L.append('static constexpr %s %s_VECTORS[] = {' % (sname, label.upper()))
     for v in rows:
         vals = []
         for t, n in members:
@@ -267,7 +267,7 @@ for label, mtype, sname, members in tables:
                  % (v['idx'], v['name'], ident(v['name']), v['size'], v['type'],
                     v['length'], v['flags'], ', '.join(vals)))
     L.append('};')
-    L.append('static const size_t %s_COUNT = sizeof(%s_VECTORS) / sizeof(%s_VECTORS[0]);'
+    L.append('static constexpr size_t %s_COUNT = sizeof(%s_VECTORS) / sizeof(%s_VECTORS[0]);'
              % (label.upper(), label.upper(), label.upper()))
     L.append('')
 
@@ -275,12 +275,12 @@ L.append('// Every vector, in specification order, for the whole-corpus sweeps.'
 L.append('struct ExpFrame { const char *name; const uint8_t *frame; uint16_t size;')
 L.append('                  uint8_t type; uint16_t length; uint8_t flags; };')
 L.append('')
-L.append('static const ExpFrame ALL_VECTORS[] = {')
+L.append('static constexpr ExpFrame ALL_VECTORS[] = {')
 for v in vectors:
     L.append('  { "V%d %s", %s, %d, 0x%02x, %d, 0x%02x },'
              % (v['idx'], v['name'], ident(v['name']), v['size'], v['type'], v['length'], v['flags']))
 L.append('};')
-L.append('static const size_t ALL_COUNT = sizeof(ALL_VECTORS) / sizeof(ALL_VECTORS[0]);')
+L.append('static constexpr size_t ALL_COUNT = sizeof(ALL_VECTORS) / sizeof(ALL_VECTORS[0]);')
 L.append('')
 L.append('}  // namespace gv')
 L.append('')

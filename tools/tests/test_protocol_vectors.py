@@ -1,5 +1,6 @@
 """The parity gate must fail if its specification assertions stop parsing."""
 import importlib.util
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = ROOT / "twitch-screen-firmware/docs/PROTOCOL.md"
 GENERATOR = ROOT / "twitch-screen-firmware/test/test_proto_codec/gen_vectors.py"
+GENERATED_HEADER = ROOT / "twitch-screen-firmware/test/test_proto_codec/vectors.h"
 module_spec = importlib.util.spec_from_file_location("vectors", ROOT / "tools/check_protocol_vectors.py")
 vectors = importlib.util.module_from_spec(module_spec)
 module_spec.loader.exec_module(vectors)
@@ -43,6 +45,17 @@ class ProtocolVectorsTest(unittest.TestCase):
         result = self.generate(text[:begin] + text[begin:end].replace("- `", "* `") + text[end:])
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no prose expectations checked", result.stderr)
+
+    def test_generated_header_uses_constexpr_declarations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "vectors.h"
+            result = subprocess.run([sys.executable, str(GENERATOR), str(SPEC), str(output)],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            generated = output.read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"^static const\b", generated, re.M))
+        self.assertIn("static constexpr", generated)
+        self.assertIsNone(re.search(r"^static const\b", GENERATED_HEADER.read_text(encoding="utf-8"), re.M))
 
     def write_spec(self, directory, text):
         path = Path(directory) / "PROTOCOL.md"
