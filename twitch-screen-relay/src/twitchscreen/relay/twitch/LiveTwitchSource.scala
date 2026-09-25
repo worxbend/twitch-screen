@@ -42,7 +42,7 @@ private[twitch] object LiveTwitchSource:
         forkDiscard:
           superviseSessions(() => attempt(build(config)), _.close(), reason => health.observe("startup", Some(reason)), sleep): client =>
             TwitchEventHandlers.registerChat(client.getEventManager, bus, filter)
-            TwitchEventHandlers.registerEventSub(client.getEventManager, bus, tracker, filter)
+            TwitchEventHandlers.registerEventSub(client.getEventManager, bus, tracker, filter, config.channel)
             val restartRequested = AtomicBoolean(false)
             val acceptingCallbacks = AtomicBoolean(true)
             val onAppTokenRejected = appTokenRejected(health, restartRequested)

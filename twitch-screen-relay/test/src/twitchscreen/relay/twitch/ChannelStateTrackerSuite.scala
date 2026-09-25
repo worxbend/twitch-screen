@@ -47,6 +47,14 @@ class ChannelStateTrackerSuite extends munit.FunSuite:
         Some(RelayEvent.StreamStarted("somechannel", "Round LCD build night", "Science & Technology", Some(now)))
       )
 
+  test("RLY-21: a channel update with no title or category leaves them empty rather than 'null'"):
+    supervised:
+      val subject = tracker()
+      subject.channelInfo(null, null)
+      val started = subject.wentLive("", "")
+      assertEquals(started, Some(RelayEvent.StreamStarted("somechannel", "", "", Some(now))))
+      assert(!started.map(_.summary).getOrElse("").contains("null"), started)
+
   test("a second observer seeing the same live channel announces nothing"):
     supervised:
       val subject = tracker()

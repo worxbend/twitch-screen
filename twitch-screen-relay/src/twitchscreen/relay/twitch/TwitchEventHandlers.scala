@@ -85,7 +85,7 @@ private[twitch] object TwitchEventHandlers:
 
     logger.debug("Chat event handlers registered")
 
-  def registerEventSub(events: EventManager, bus: EventBus, tracker: ChannelStateTracker, filter: BotFilter): Unit =
+  def registerEventSub(events: EventManager, bus: EventBus, tracker: ChannelStateTracker, filter: BotFilter, channel: String): Unit =
     on[ChannelFollowEvent](events)(event => filter.publish(bus, RelayEvent.Followed(event.getUserName)))
 
     on[StreamOnlineEvent](events): event =>
@@ -97,8 +97,9 @@ private[twitch] object TwitchEventHandlers:
     on[StreamOfflineEvent](events)(_ => tracker.wentOffline(bus.publish).discard)
 
     on[ChannelUpdateV2Event](events): event =>
-      tracker.channelInfo(event.getTitle, event.getCategoryName)
-      bus.publish(RelayEvent.ChannelUpdated(event.getBroadcasterUserName, event.getTitle, event.getCategoryName))
+      val update = channelUpdated(event.getBroadcasterUserName, event.getTitle, event.getCategoryName, channel)
+      tracker.channelInfo(update.title, update.game)
+      bus.publish(update)
 
     logger.debug("EventSub handlers registered")
 
@@ -132,3 +133,15 @@ private[twitch] object TwitchEventHandlers:
 
   /** A resub or cheer with no attached message is the common case, not an error; §6.4.1 leaves `text` empty for it. */
   private def textOr(value: String): String = if value == null then "" else value
+
+  /** twitch4j leaves a `channel.update`'s fields null when Twitch omits them. This mirrors the webhook mapping in [[EventSubWebhookApi]]
+    * (`channel.update`): a missing title or category becomes empty text, and a missing broadcaster name falls back to the configured
+    * channel — only when null, never when blank, exactly as the webhook's `getOrElse` does (RLY-21).
+    */
+  private[twitch] def channelUpdated(
+      broadcaster: String,
+      title: String,
+      category: String,
+      fallbackChannel: String
+  ): RelayEvent.ChannelUpdated =
+    RelayEvent.ChannelUpdated(Option(broadcaster).getOrElse(fallbackChannel), textOr(title), textOr(category))

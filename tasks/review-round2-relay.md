@@ -336,3 +336,36 @@ Residuals:
 - idle > 15 s (§12) is not enforced. It is a device-side warning under §6.2, and the test fixtures rely on short timers.
 - handshake-timeout can still be sub-second by design.
 - NotificationApi's private `MaxTtlMillis` is not yet shared with `NotificationsConfig` (optional).
+
+## RLY-21 — normalize nullable ChannelUpdateV2Event fields (WebSocket path)
+
+Change:
+- `TwitchEventHandlers.channelUpdated(broadcaster, title, category, fallbackChannel)` is a new pure `private[twitch]` mapper. A null title or category becomes `""` (via the existing `textOr`). A null broadcaster name falls back to the configured channel. Only null triggers the fallback, never a blank value, so it matches the webhook's `getOrElse(config.channel)` exactly.
+- `registerEventSub` takes a `channel: String` argument. The `ChannelUpdateV2Event` handler builds the update with the mapper, then feeds `update.title`/`update.game` to the tracker and publishes `update`. The order (tracker first, then `bus.publish`) and the publish path are unchanged.
+- `LiveTwitchSource` passes `config.channel`. It is the only caller.
+- `EventSubWebhookApi` is unchanged. Its `channel.update` mapping was already correct. It was not rewritten to call the mapper, because that would need `.orNull` for no behavioral gain.
+- `grep -n "ChannelUpdated(" src` now finds only the mapper and the webhook mapping, plus the ADT and `summary`.
+
+Tests:
+- `ChannelStateTrackerSuite` gains "RLY-21: a channel update with no title or category leaves them empty rather than 'null'". `channelInfo(null, null)` followed by `wentLive("", "")` gives `StreamStarted("somechannel", "", "", Some(now))`, and its summary does not contain "null". It locks in tracker behavior that was already correct, so it passed before the fix.
+- New `TwitchEventHandlersSuite` (3 tests):
+  - B1: all-null input gives `ChannelUpdated("somechannel", "", "")`, whose summary is `"somechannel updated:  ()"` with no "null".
+  - B2: present values pass through unchanged.
+  - B3: title set and category null gives `ChannelUpdated("Streamer", "Soldering", "")`.
+- B4 (end-to-end through a twitch4j `EventManager`) was skipped. The handler is a one-line delegation to the mapper, which B1-B3 cover.
+
+Red to green: before the fix, `TwitchEventHandlersSuite` did not compile, because `channelUpdated` did not exist (3 errors). After the fix, 3/3 pass and ChannelStateTrackerSuite passes 17/17.
+
+Mutation check:
+- Passing `title` raw fails B1 only. B3 sets a title, so it cannot catch this mutation.
+- Passing `category` raw fails B1 and B3.
+- The file was restored from a backup each time, and `sha256sum -c` reported OK.
+
+Validation (run from twitch-screen-relay):
+- `./mill --no-daemon test.testOnly twitchscreen.relay.twitch.TwitchEventHandlersSuite twitchscreen.relay.twitch.ChannelStateTrackerSuite` → 3 + 17, 0 failed.
+- The focused twitch set (TwitchEventHandlers, WebSocketRegistration, TwitchRecovery, TwitchAuth, EventSubWebhook, ChannelStateTracker, WebhookDeduplication) → 3/8/14/12/13/17/2, 0 failed. EventSubWebhookSuite still passes, so webhook behavior is unchanged.
+- `./mill --no-daemon compile` (`-Werror`) → SUCCESS.
+- `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` → SUCCESS; `git diff --check` clean.
+- `./mill --no-daemon test` → 31 suites, 359 tests (was 30/355), 0 failed. The LifecycleOrderingSuite flake did not appear.
+
+Residuals: there is no live-Twitch acceptance for this change, and the end-to-end twitch4j `EventManager` test (B4) was not written.
