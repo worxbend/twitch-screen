@@ -54,20 +54,19 @@ private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword
     else
       basic match
         case Some(encoded) =>
-          checkBasic(encoded).flatMap: valid =>
-            if !valid then Left(ManagementRejection.unauthorized)
-            else if crossSite(request) then
+          checkBasic(encoded).flatMap: _ =>
+            if crossSite(request) then
               Left(ManagementRejection(StatusCode.Forbidden, None, Error_OUT("Cross-site management request rejected")))
             else Right(())
         case None => Left(ManagementRejection.unauthorized)
 
-  private def checkBasic(encoded: String): Either[ManagementRejection, Boolean] =
-    if !config.basicPasswordHash.isSet || encoded.length > 2048 then Right(false)
+  private def checkBasic(encoded: String): Either[ManagementRejection, Unit] =
+    if !config.basicPasswordHash.isSet || encoded.length > 2048 then Left(ManagementRejection.unauthorized)
     else if !passwordChecks.tryAcquire() then
       Left(ManagementRejection(StatusCode.ServiceUnavailable, None, Error_OUT("Password verification busy; retry request")))
     else
       try
-        Right(
+        val valid =
           Try(String(Base64.getDecoder.decode(encoded), UTF_8)).toOption.exists: decoded =>
             val separator = decoded.indexOf(':')
             if separator < 0 then false
@@ -75,7 +74,7 @@ private[relay] final class ManagementAuth(config: HttpAuthConfig, verifyPassword
               val usernameMatches = equal(decoded.take(separator), config.basicUsername)
               val passwordMatches = verifyPassword(decoded.drop(separator + 1), config.basicPasswordHash.value)
               usernameMatches && passwordMatches
-        )
+        Either.cond(valid, (), ManagementRejection.unauthorized)
       finally passwordChecks.release()
 
   /** Browsers attach Basic credentials automatically. Restrict all management requests, including the OAuth authorize GET. Non-browser

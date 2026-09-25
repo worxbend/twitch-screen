@@ -33,6 +33,7 @@ pushed directly to `main` under `AGENTS.md`.
 | Zero-rule monitor still runs | No subscription, timer or worker when no rules are enabled. |
 | Silent EventBus overflow | Drop totals logged at powers of two; bounded diagnostics under sustained overload. |
 | Basic timing fingerprint | Already mitigated: password verification runs for both wrong and correct usernames. New regression proves verifier calls for both; malformed headers remain cheap rejects. |
+| Basic-check Boolean blindness | `checkBasic` returns success or a typed rejection directly. Invalid credentials and exhausted permits retain distinct 401/503 responses; the caller only applies the browser-origin policy after successful authentication. |
 | Basic permit exhaustion undocumented | Source and API reference document two expensive verifications, 503 retry behavior and independent Bearer path. Existing concurrency regression retained. |
 | Case-sensitive Host/Origin | Scheme and authority compare case-insensitively; malicious-origin rejection retained and regression added. |
 | Duplicate fold scaffolding | Shared timed fold handles event/timer merge and failure isolation. |
