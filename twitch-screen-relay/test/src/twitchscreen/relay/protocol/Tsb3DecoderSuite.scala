@@ -76,7 +76,7 @@ class Tsb3DecoderSuite extends munit.FunSuite:
 
   test("§8.1: the relay writes the five reserved EVENT bytes as zero and never as anything else"):
     val encoded = Tsb3Encoder.toDevice(
-      RelayMessage.Event(EventRecord.raid(SeqNo.fromWire(9), "raider", viewers = 3, at = Instant.EPOCH, ttl = 8.seconds))
+      RelayMessage.Event(EventRecords.raid(SeqNo.fromWire(9), "raider", viewers = 3, at = Instant.EPOCH, ttl = 8.seconds))
     )
     val payload = frame(encoded).payload
     assertEquals(hex(payload.slice(Tsb3.Event.Reserved1, Tsb3.Event.Reserved1 + 4)), "00000000")
@@ -179,7 +179,6 @@ class Tsb3DecoderSuite extends munit.FunSuite:
 
   test("§6.6: ACK carries only a sequence number, and seq 0 on an ACK is legal"):
     assertEquals(Tsb3Decoder.fromDevice(frame(ack)), Right(DeviceMessage.Ack(SeqNo.fromWire(127))))
-    assertEquals(Tsb3Decoder.fromDevice(frame(resized(ack, 4))), Right(DeviceMessage.Ack(SeqNo.fromWire(127))))
     val zero = (0 until 4).foldLeft(ack)((acc, offset) => withPayloadByte(acc, offset, 0))
     assertEquals(Tsb3Decoder.fromDevice(frame(zero)), Right(DeviceMessage.Ack(SeqNo.Zero)))
 

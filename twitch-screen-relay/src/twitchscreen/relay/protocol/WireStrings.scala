@@ -56,8 +56,9 @@ private[relay] object WireStrings:
     * — which is what vector V13 fixes at 46 and 94 bytes against caps of 47 and 95.
     */
   def truncate(bytes: Array[Byte], width: Int): WireField =
-    val cap = width - 1
+    val cap = math.max(0, width - 1)
     if bytes.length <= cap then WireField(bytes, truncated = false)
+    else if cap < Ellipsis.length then WireField(Ellipsis.take(cap), truncated = true)
     else
       var cut = cap - 3
       while cut > 0 && (bytes(cut) & 0xc0) == 0x80 do cut -= 1
@@ -72,7 +73,19 @@ private[relay] object WireStrings:
   /** §9.3. Transliterate where there is a mapping, decompose and strip the accent where there is not, drop what neither reaches, then
     * collapse the runs of spaces that dropping leaves behind.
     */
-  def fold(value: String): String = collapse(value.flatMap(foldChar))
+  def fold(value: String): String =
+    val result = new java.lang.StringBuilder(value.length)
+    var spacePending = false
+    def append(ch: Char): Unit =
+      if ch == ' ' then spacePending = result.length > 0
+      else
+        if spacePending then result.append(' '): Unit
+        spacePending = false
+        result.append(ch): Unit
+    value.foreach: ch =>
+      if ch >= 0x20 && ch <= 0x7e then append(ch)
+      else Transliterations.getOrElse(ch, decompose(ch)).foreach(append)
+    result.toString
 
   /** Writes `field` into a `char[width]` slot and zeroes every remaining byte, so the field's last byte is always the NUL. */
   def write(target: Array[Byte], offset: Int, width: Int, field: WireField): Unit =
@@ -92,12 +105,6 @@ private[relay] object WireStrings:
 
   private def isControl(ch: Char): Boolean = ch < 0x20 || ch == 0x7f || (ch >= 0x80 && ch <= 0x9f)
 
-  private def collapse(value: String): String = value.replaceAll(" +", " ").trim
-
-  private def foldChar(ch: Char): String =
-    if ch >= 0x20 && ch <= 0x7e then ch.toString
-    else Transliterations.getOrElse(ch, decompose(ch))
-
   /** NFD splits a precomposed letter into its base and its combining marks, so dropping everything outside printable ASCII leaves the base:
     * `ä` → `a`, `ś` → `s`, `ę` → `e`. A character with no decomposition and no mapping — an emoji, a CJK ideograph, half a surrogate pair —
     * leaves nothing, which is the specified behaviour.
@@ -112,6 +119,14 @@ private[relay] object WireStrings:
       'đ' -> "d",
       'ø' -> "o",
       'ß' -> "ss",
+      'ẞ' -> "SS",
+      'ﬀ' -> "ff",
+      'ﬁ' -> "fi",
+      'ﬂ' -> "fl",
+      'ﬃ' -> "ffi",
+      'ﬄ' -> "ffl",
+      'ﬅ' -> "st",
+      'ﬆ' -> "st",
       'æ' -> "ae",
       'œ' -> "oe",
       'þ' -> "th",

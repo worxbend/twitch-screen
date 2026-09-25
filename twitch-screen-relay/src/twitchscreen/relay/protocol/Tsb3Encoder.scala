@@ -70,11 +70,7 @@ private[relay] object Tsb3Encoder:
     * allocated with: §8.1 holds those five bytes open for a future monetary amount, so that reintroducing one moves no existing field.
     */
   private def event(record: EventRecord, policy: TextPolicy): Array[Byte] =
-    val placeholder = record.kind match
-      case NotificationKind.Follow | NotificationKind.Sub | NotificationKind.Gift | NotificationKind.Raid | NotificationKind.Chat |
-          NotificationKind.Bits =>
-        Some(WireStrings.FoldedPlaceholder)
-      case _ => None
+    val placeholder = Option.when(record.kind.foldsToPlaceholder)(WireStrings.FoldedPlaceholder)
     val actor = WireStrings.field(record.actor, Tsb3.ActorWidth, policy, placeholder)
     val text = WireStrings.field(record.text, Tsb3.TextWidth, policy)
     val flags = record.flags

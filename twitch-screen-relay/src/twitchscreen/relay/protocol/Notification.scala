@@ -27,7 +27,7 @@ final case class Notification(
     kind: NotificationKind,
     title: String,
     body: String,
-    at: Instant,
+    at: Option[Instant],
     ttl: FiniteDuration
 )
 
@@ -39,7 +39,7 @@ object Notification:
       kind = record.kind,
       title = record.actor,
       body = record.text,
-      at = record.at.getOrElse(Instant.EPOCH),
+      at = record.at,
       ttl = record.ttl.duration
     )
 

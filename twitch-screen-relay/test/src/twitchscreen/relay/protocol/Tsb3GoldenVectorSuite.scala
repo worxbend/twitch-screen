@@ -110,7 +110,7 @@ class Tsb3GoldenVectorSuite extends munit.FunSuite:
   // ── The ten event kinds a v3 relay can emit ──────────────────────────────────────────────────────────────────────
 
   test("V6 event_stream_start"):
-    val record = EventRecord.streamStart(
+    val record = EventRecords.streamStart(
       seq = SeqNo.fromWire(118),
       channel = "w0rxbend",
       title = "Round LCD build night",
@@ -124,14 +124,14 @@ class Tsb3GoldenVectorSuite extends munit.FunSuite:
     assertEquals(record.value.value, 1790305340L)
 
   test("V7 event_follow — value is fixed at 0, because a follower total of 0 would mean 'not reported'"):
-    val record = EventRecord.follow(SeqNo.fromWire(119), "newfriend", at = Instant.ofEpochSecond(1790308990L), ttl = 6.seconds)
+    val record = EventRecords.follow(SeqNo.fromWire(119), "newfriend", at = Instant.ofEpochSecond(1790308990L), ttl = 6.seconds)
     assertBytes("V7", V7, Tsb3Encoder.toDevice(RelayMessage.Event(record), text = verbatim))
     assertEquals(eventOf(V7), record)
     assertEquals(record.value.value, 0L)
     assertEquals(record.text, "")
 
   test("V8 event_sub — months and tier reach the wire as numbers, not as English"):
-    val record = EventRecord.sub(
+    val record = EventRecords.sub(
       seq = SeqNo.fromWire(120),
       subscriber = "loyalviewer",
       tier = SubTier.Tier2,
@@ -146,7 +146,7 @@ class Tsb3GoldenVectorSuite extends munit.FunSuite:
     assertEquals(record.months.value, 14)
 
   test("V9 event_gift"):
-    val record = EventRecord.gift(
+    val record = EventRecords.gift(
       seq = SeqNo.fromWire(121),
       gifter = "generouspal",
       tier = SubTier.Tier1,
@@ -160,7 +160,7 @@ class Tsb3GoldenVectorSuite extends munit.FunSuite:
     assertEquals(record.value.value, 5L)
 
   test("V10 event_raid_replayed — REPLAY lives in the header, and changes exactly bytes 6 and 7"):
-    val record = EventRecord.raid(SeqNo.fromWire(122), "streamfriend", viewers = 128, at = serverTime, ttl = 10.seconds)
+    val record = EventRecords.raid(SeqNo.fromWire(122), "streamfriend", viewers = 128, at = serverTime, ttl = 10.seconds)
     val replayed = Tsb3Encoder.toDevice(RelayMessage.Event(record), flags = FrameFlags.Replay, text = verbatim)
     assertBytes("V10", V10, replayed)
     assertEquals(eventOf(V10), record)
@@ -173,7 +173,7 @@ class Tsb3GoldenVectorSuite extends munit.FunSuite:
     assert(!frameOf(V11).header.flags.isReplay)
 
   test("V11 event_bits — a plain count of bits; bits are not money and carry no currency (§8)"):
-    val record = EventRecord.bits(
+    val record = EventRecords.bits(
       seq = SeqNo.fromWire(123),
       sender = "bitsfan",
       amount = 1500,
@@ -186,7 +186,7 @@ class Tsb3GoldenVectorSuite extends munit.FunSuite:
     assertEquals(record.value.value, 1500L)
 
   test("V12 event_chat_utf8 — field widths are byte counts, never character counts"):
-    val record = EventRecord.chat(
+    val record = EventRecords.chat(
       seq = SeqNo.fromWire(124),
       chatter = "Paweł",
       message = "świetny stream! 🎉",
@@ -208,7 +208,7 @@ class Tsb3GoldenVectorSuite extends munit.FunSuite:
     assertEquals(longActor.getBytes("UTF-8").length, 68)
     assertEquals(longText.getBytes("UTF-8").length, 99)
 
-    val record = EventRecord.chat(
+    val record = EventRecords.chat(
       seq = SeqNo.fromWire(125),
       chatter = longActor,
       message = longText,
@@ -227,7 +227,7 @@ class Tsb3GoldenVectorSuite extends munit.FunSuite:
     assertEquals(decoded.copy(actor = longActor, text = longText, flags = EventFlags.Empty), record)
 
   test("V14 event_info_generic — a posted card keeps its own title and body, numeric fields at 0 (§6.4.3)"):
-    val record = EventRecord.card(
+    val record = EventRecords.card(
       seq = SeqNo.fromWire(126),
       kind = NotificationKind.Info,
       title = "Relay restarted",
@@ -243,7 +243,7 @@ class Tsb3GoldenVectorSuite extends munit.FunSuite:
     assertEquals(record.tier.code, 0)
 
   test("V15 event_stream_end"):
-    val record = EventRecord.streamEnd(
+    val record = EventRecords.streamEnd(
       seq = SeqNo.fromWire(127),
       channel = "w0rxbend",
       duration = 3760.seconds,

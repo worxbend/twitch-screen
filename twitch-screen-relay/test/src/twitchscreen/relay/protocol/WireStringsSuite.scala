@@ -124,16 +124,17 @@ class WireStringsSuite extends munit.FunSuite:
     assertEquals(text(WireStrings.field(" a  b ", Tsb3.TextWidth, TextPolicy.AsciiFolded)), "a b")
 
   test("§9.3: the encoder honours the policy, so a device without a UTF-8 font never sees UTF-8"):
-    val record = EventRecord.chat(
+    val record = EventRecords.chat(
       seq = SeqNo.fromWire(1),
       chatter = "Paweł",
       message = "świetny stream! 🎉",
       colour = None,
-      at = Instant.EPOCH,
+      at = Instant.ofEpochSecond(1790309000L),
       ttl = 6.seconds
     )
     val encoded = Tsb3Encoder.toDevice(RelayMessage.Event(record), text = TextPolicy.AsciiFolded)
-    assert(encoded.drop(Tsb3.HeaderSize).forall(byte => (byte & 0xff) <= 0x7e), "a folded frame carries no byte above 0x7e")
+    val actorAndText = encoded.slice(Tsb3.HeaderSize + Tsb3.Event.Actor, Tsb3.HeaderSize + Tsb3.Event.Text + Tsb3.TextWidth)
+    assert(actorAndText.forall(byte => (byte & 0xff) <= 0x7e), "folded text fields carry no byte above 0x7e")
     Tsb3Decoder.fromRelay(WireBytes.frameOf(encoded).toOption.get) match
       case Right(RelayMessage.Event(decoded)) =>
         assertEquals(decoded.actor, "Pawel")

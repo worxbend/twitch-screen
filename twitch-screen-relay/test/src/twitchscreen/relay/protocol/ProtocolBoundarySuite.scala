@@ -18,13 +18,16 @@ class ProtocolBoundarySuite extends munit.FunSuite:
   test("chat rates saturate at the wire width instead of wrapping"):
     for value <- List(65535, 65536, 70000, Int.MaxValue) do
       val stats = StreamStats.Unknown.copy(chatRate = MessagesPerMinute.clamp(value))
-      val result = decoded(RelayMessage.Stats(stats, None)).asInstanceOf[RelayMessage.Stats]
-      assertEquals(result.stats.chatRate.value, 65535)
+      decoded(RelayMessage.Stats(stats, None)) match
+        case RelayMessage.Stats(result, _) => assertEquals(result.chatRate.value, 65535)
+        case other                         => fail(s"expected STATS, got $other")
 
   test("ASCII fallback applies only to audience display names"):
     for kind <- NotificationKind.values do
       val record = EventRequest(kind, "🎉", "", 6.seconds).record(SeqNo.fromWire(1), Instant.EPOCH)
-      val result = decoded(RelayMessage.Event(record)).asInstanceOf[RelayMessage.Event]
+      val result = decoded(RelayMessage.Event(record)) match
+        case RelayMessage.Event(result) => result
+        case other                      => fail(s"expected EVENT, got $other")
       val isAudience = Set(
         NotificationKind.Follow,
         NotificationKind.Sub,
@@ -33,7 +36,7 @@ class ProtocolBoundarySuite extends munit.FunSuite:
         NotificationKind.Chat,
         NotificationKind.Bits
       ).contains(kind)
-      assertEquals(result.record.actor, if isAudience then "viewer" else "", kind.toString)
+      assertEquals(result.actor, if isAudience then "viewer" else "", kind.toString)
 
   test("device identity keeps spaces distinct and enforces the wire byte contract"):
     assertEquals(DeviceId(" device ").map(_.value), Right(" device "))

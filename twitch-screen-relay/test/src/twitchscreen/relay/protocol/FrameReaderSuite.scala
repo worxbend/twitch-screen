@@ -56,7 +56,7 @@ class FrameReaderSuite extends munit.FunSuite:
     assertEquals(hex(rebuild(readOne(reader))), hex(ping))
 
   test("§4.4: a payload carrying 0xa7 is never mistaken for a header, because length is honoured"):
-    val record = EventRecord.card(
+    val record = EventRecords.card(
       seq = SeqNo.fromWire(1),
       kind = NotificationKind.Info,
       title = "§ sign",
@@ -149,8 +149,13 @@ class FrameReaderSuite extends munit.FunSuite:
     // restarts it forever while completing nothing — it holds a session, a row in the device table and a
     // 128-frame outbound queue open indefinitely, and §4.5's 4096-byte budget would take days to fire at that rate.
     var lastTimeout = 0
-    val reader = FrameReader(DribblingInputStream(welcome, perByte = 25.millis))
-    val outcome = reader.read(Some(FrameBudget(120.millis, lastTimeout = _)))
+    var now = 0L
+    val stream = new ByteArrayInputStream(welcome):
+      override def read(target: Array[Byte], offset: Int, length: Int): Int =
+        now += 25.millis.toNanos
+        super.read(target, offset, math.min(length, 1))
+    val reader = FrameReader(stream)
+    val outcome = reader.read(Some(FrameBudget(120.millis, lastTimeout = _, () => now)))
     assertEquals(outcome, Left(ProtocolError.FrameTimeout(120.millis)))
     // The socket's own timeout is narrowed to what is left of the budget before each blocking read, so the wait
     // is bounded by the budget itself rather than by one read's worth of it.

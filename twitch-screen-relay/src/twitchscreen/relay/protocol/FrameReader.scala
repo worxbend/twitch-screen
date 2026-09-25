@@ -1,6 +1,7 @@
 package twitchscreen.relay.protocol
 
 import java.io.InputStream
+import java.net.SocketTimeoutException
 import scala.concurrent.duration.FiniteDuration
 
 /** §14's per-cause frame counters, as the reader sees them. The decoder's four causes are counted by the session; these two are the ones
@@ -30,7 +31,11 @@ private[relay] object FrameCounters:
   * so the budget is spent across every read that goes into one frame, and `setReadTimeout` narrows the socket's own timeout to whatever is
   * left of it before each blocking read. That keeps the timeout exact rather than "somewhere between one budget and two".
   */
-private[relay] final case class FrameBudget(timeout: FiniteDuration, setReadTimeout: Int => Unit)
+private[relay] final case class FrameBudget(
+    timeout: FiniteDuration,
+    setReadTimeout: Int => Unit,
+    nanoTime: () => Long = () => System.nanoTime()
+)
 
 /** Lifts a byte stream into whole TSB/3 frames (§4): find an eight-byte header that validates, then read exactly `length` payload bytes.
   *
@@ -66,43 +71,27 @@ private[relay] final class FrameReader(
     * own `SO_TIMEOUT`.
     */
   def read(budget: Option[FrameBudget] = None): Either[ProtocolError, Frame] =
-    val window = new Array[Byte](Tsb3.HeaderSize)
-    val deadline = budget.map(Deadline(_))
-    var held = 0
-    var rejectedCandidates = 0
-    var discardedBytes = 0
-    var outcome: Option[Either[ProtocolError, Frame]] = None
+    try readWithin(budget)
+    catch
+      case _: SocketTimeoutException => Left(ProtocolError.FrameTimeout(budget.fold(scala.concurrent.duration.Duration.Zero)(_.timeout)))
 
+  private def readWithin(budget: Option[FrameBudget]): Either[ProtocolError, Frame] =
+    val search = HeaderSearch(counters)
+    val deadline = budget.map(Deadline(_))
+    var outcome: Option[Either[ProtocolError, Frame]] = None
     while outcome.isEmpty do
-      fill(window, held, Tsb3.HeaderSize - held, deadline) match
+      fill(search.window, search.held, Tsb3.HeaderSize - search.held, deadline) match
         case Left(error) => outcome = Some(Left(error))
         case Right(_) =>
-          held = Tsb3.HeaderSize
-          FrameHeader.decode(window) match
+          FrameHeader.decode(search.window) match
             case Right(header) if header.length > maxPayload =>
-              // §4.1's SKIP state, which §4.3 files under "payload-level problems — skip the frame, keep the link". It is
-              // unreachable between two v3 peers, because §4.2 already caps `length` at 248 and §5 makes 256 the smallest
-              // frame any peer may accept; it is implemented rather than asserted because the ceiling is a parameter, and
-              // the day it moves the screen must show the next card rather than "connecting".
               discardPayload(header.length, deadline) match
                 case Left(error) => outcome = Some(Left(error))
                 case Right(_) =>
                   counters.recordOversizeSkipped()
-                  // §4.5: both budget counters reset, because a frame that was skipped was nonetheless correctly framed.
-                  held = 0
-                  rejectedCandidates = 0
-                  discardedBytes = 0
+                  search.reset()
             case Right(header) => outcome = Some(payload(header, deadline))
-            case Left(_)       =>
-              // §4.4: the candidate is not trustworthy, so neither is its `length`. Shift by one byte and re-examine.
-              if (window(0) & 0xff) == (Tsb3.Magic0 & 0xff) then rejectedCandidates += 1
-              counters.recordResync()
-              System.arraycopy(window, 1, window, 0, Tsb3.HeaderSize - 1)
-              held = Tsb3.HeaderSize - 1
-              discardedBytes += 1
-              if rejectedCandidates >= Tsb3.MaxRejectedCandidates || discardedBytes >= Tsb3.MaxDiscardedBytes then
-                outcome = Some(Left(ProtocolError.FramingViolation(discardedBytes, rejectedCandidates)))
-
+            case Left(_)       => outcome = search.reject().map(Left(_))
     outcome.getOrElse(Left(ProtocolError.EndOfStream))
 
   /** §4.1: `have` is reset to 0 on entry to `BODY`. A fresh array per frame is that rule made structural — sharing one accumulator between
@@ -151,12 +140,35 @@ private[relay] final class FrameReader(
   * completed, and therefore exactly what §12 measures.
   */
 private final class Deadline(budget: FrameBudget):
-  private val expiresAt: Long = System.nanoTime() + budget.timeout.toNanos
+  private val startedAt: Long = budget.nanoTime()
 
   /** Narrows the socket's read timeout to what is left, and reports expiry rather than arming a blocking read that cannot help. */
   def arm(): Option[ProtocolError] =
-    val remainingMs = (expiresAt - System.nanoTime()) / 1000000L
+    val elapsed = math.max(0L, budget.nanoTime() - startedAt)
+    val remainingMs = (budget.timeout.toNanos - elapsed) / 1000000L
     if remainingMs <= 0 then Some(ProtocolError.FrameTimeout(budget.timeout))
     else
       budget.setReadTimeout(math.min(remainingMs, Int.MaxValue.toLong).toInt)
       None
+
+/** One-byte resynchronization window and the §4.5 budgets, confined to one read call. */
+private final class HeaderSearch(counters: FrameCounters):
+  val window: Array[Byte] = new Array[Byte](Tsb3.HeaderSize)
+  var held: Int = 0
+  private var rejected = 0
+  private var discarded = 0
+
+  def reset(): Unit =
+    held = 0
+    rejected = 0
+    discarded = 0
+
+  def reject(): Option[ProtocolError] =
+    if window(0) == Tsb3.Magic0 then rejected += 1
+    counters.recordResync()
+    System.arraycopy(window, 1, window, 0, Tsb3.HeaderSize - 1)
+    held = Tsb3.HeaderSize - 1
+    discarded += 1
+    Option.when(rejected >= Tsb3.MaxRejectedCandidates || discarded >= Tsb3.MaxDiscardedBytes)(
+      ProtocolError.FramingViolation(discarded, rejected)
+    )

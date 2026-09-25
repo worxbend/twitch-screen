@@ -86,7 +86,7 @@ class NotificationRouterSuite extends munit.FunSuite:
       kind = NotificationKind.Info,
       title = "t",
       body = "b",
-      at = Instant.EPOCH,
+      at = Some(Instant.EPOCH),
       ttl = 1.second
     )
     assertEquals(NotificationRouter.toRequest(RelayEvent.NotificationPublished(notification)), None)

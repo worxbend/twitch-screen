@@ -22,9 +22,7 @@ private[relay] object EventValue:
 
   def fromWire(raw: Long): EventValue = raw & 0xffffffffL
 
-  extension (amount: EventValue)
-    def value: Long = amount
-    def toInt: Int = amount.toInt
+  extension (amount: EventValue) def value: Long = amount
 
 /** How long the device should hold the card, in units of 100 ms (§6.4). Zero means "use the receiver's per-kind default". */
 private[relay] opaque type DisplayTtl = Int
@@ -54,20 +52,7 @@ private[relay] object DisplayTtl:
     * the same share of the display as a stream transition, and a large one turns §10.3's reconnect burst into a slideshow that keeps the
     * idle dashboard off the screen for minutes while the device's 8-entry queue drains one card at a time.
     */
-  def defaultFor(kind: NotificationKind): FiniteDuration = kind match
-    case NotificationKind.Follow | NotificationKind.Chat                                                      => FollowAndChat
-    case NotificationKind.Raid | NotificationKind.StreamStart | NotificationKind.StreamEnd                    => StreamAndRaid
-    case NotificationKind.Sub | NotificationKind.Gift | NotificationKind.Bits                                 => Audience
-    case NotificationKind.Info | NotificationKind.Message | NotificationKind.Warning | NotificationKind.Alert => Audience
-
-  /** V7, V12, V13: `ttl_ds` = 60. */
-  private val FollowAndChat: FiniteDuration = FiniteDuration(6, TimeUnit.SECONDS)
-
-  /** V8, V9, V11, V14: `ttl_ds` = 80. */
-  private val Audience: FiniteDuration = FiniteDuration(8, TimeUnit.SECONDS)
-
-  /** V6, V10, V15: `ttl_ds` = 100. */
-  private val StreamAndRaid: FiniteDuration = FiniteDuration(10, TimeUnit.SECONDS)
+  def defaultFor(kind: NotificationKind): FiniteDuration = kind.defaultTtl
 
   extension (ttl: DisplayTtl)
     def deciseconds: Int = ttl
@@ -106,7 +91,7 @@ private[relay] object EventFlags:
     def withFlag(other: EventFlags): EventFlags = flags | other
 
 /** The one record behind every notification and every stream event: `EVENT`, 168 bytes, one layout and one decode path for all twelve kinds
-  * (§6.4.1). Field meanings are fixed per kind by §6.4.1, which the constructors below are the single encoding of.
+  * (§6.4.1). Field meanings are fixed per kind by §6.4.1, which the notification router maps from incoming events.
   *
   * `actor` and `text` are the values *before* truncation: the encoder truncates them to the field widths per §9.2 and sets the matching
   * `eflags` bit, so a caller can never produce a record whose flags disagree with its bytes.
@@ -123,62 +108,3 @@ private[relay] final case class EventRecord(
     actor: String,
     text: String
 )
-
-private[relay] object EventRecord:
-  /** The generic kinds and the `POST /api/v1/notifications` path (§6.4.3): the posted title and body travel as `actor` and `text` with the
-    * numeric fields at 0, whatever kind was named, so that a hand-written card is never replaced by a composed sentence.
-    */
-  def card(seq: SeqNo, kind: NotificationKind, title: String, body: String, at: Instant, ttl: FiniteDuration): EventRecord =
-    base(seq, kind, at, ttl).copy(actor = title, text = body)
-
-  def streamStart(seq: SeqNo, channel: String, title: String, startedAt: Instant, at: Instant, ttl: FiniteDuration): EventRecord =
-    base(seq, NotificationKind.StreamStart, at, ttl)
-      .copy(value = EventValue.clamp(startedAt.getEpochSecond), actor = channel, text = title)
-
-  def streamEnd(seq: SeqNo, channel: String, duration: FiniteDuration, at: Instant, ttl: FiniteDuration): EventRecord =
-    base(seq, NotificationKind.StreamEnd, at, ttl).copy(value = EventValue.clamp(duration.toSeconds), actor = channel)
-
-  /** `value` is fixed at 0: a follower total of 0 would be indistinguishable from "not reported", so totals live in `STATS`. */
-  def follow(seq: SeqNo, follower: String, at: Instant, ttl: FiniteDuration): EventRecord =
-    base(seq, NotificationKind.Follow, at, ttl).copy(actor = follower)
-
-  def sub(
-      seq: SeqNo,
-      subscriber: String,
-      tier: SubTier,
-      months: SubMonths,
-      message: String,
-      at: Instant,
-      ttl: FiniteDuration
-  ): EventRecord =
-    base(seq, NotificationKind.Sub, at, ttl).copy(months = months, tier = tier, actor = subscriber, text = message)
-
-  def gift(seq: SeqNo, gifter: String, tier: SubTier, count: Int, anonymous: Boolean, at: Instant, ttl: FiniteDuration): EventRecord =
-    val flags = if anonymous then EventFlags.Anonymous else EventFlags.Empty
-    base(seq, NotificationKind.Gift, at, ttl).copy(value = EventValue.clamp(count.toLong), tier = tier, flags = flags, actor = gifter)
-
-  def raid(seq: SeqNo, raider: String, viewers: Int, at: Instant, ttl: FiniteDuration): EventRecord =
-    base(seq, NotificationKind.Raid, at, ttl).copy(value = EventValue.clamp(viewers.toLong), actor = raider)
-
-  def chat(seq: SeqNo, chatter: String, message: String, colour: Option[ChatColour], at: Instant, ttl: FiniteDuration): EventRecord =
-    val flags = colour.fold(EventFlags.Empty)(_ => EventFlags.ChatColourPresent)
-    base(seq, NotificationKind.Chat, at, ttl)
-      .copy(value = EventValue.clamp(colour.fold(0L)(_.rgb.toLong)), flags = flags, actor = chatter, text = message)
-
-  /** Bits are a plain count. This protocol carries no monetary amount of any kind (§8). */
-  def bits(seq: SeqNo, sender: String, amount: Int, message: String, at: Instant, ttl: FiniteDuration): EventRecord =
-    base(seq, NotificationKind.Bits, at, ttl).copy(value = EventValue.clamp(amount.toLong), actor = sender, text = message)
-
-  private def base(seq: SeqNo, kind: NotificationKind, at: Instant, ttl: FiniteDuration): EventRecord =
-    EventRecord(
-      seq = seq,
-      at = Some(at),
-      value = EventValue.Zero,
-      months = SubMonths.Zero,
-      ttl = DisplayTtl.fromDuration(ttl),
-      kind = kind,
-      tier = SubTier.NotApplicable,
-      flags = EventFlags.Empty,
-      actor = "",
-      text = ""
-    )

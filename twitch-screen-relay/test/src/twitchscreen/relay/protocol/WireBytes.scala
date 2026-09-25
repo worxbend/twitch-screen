@@ -83,19 +83,3 @@ final class ChunkedInputStream(data: Array[Byte], caps: Seq[Int]) extends InputS
     val index = call.getAndIncrement()
     val cap = if index < caps.length then math.max(1, caps(index)) else length
     source.read(target, offset, math.min(length, cap))
-
-/** An `InputStream` that hands over one byte at a time, slowly, and never gets to the end of a frame.
-  *
-  * This is the shape of the peer §12's frame budget exists for: every read succeeds, so a per-read `SO_TIMEOUT` is restarted forever, and
-  * the bytes are legal header bytes, so §4.5's resync budget never fires either. Only a budget measured across the whole frame drops it.
-  */
-final class DribblingInputStream(data: Array[Byte], perByte: scala.concurrent.duration.FiniteDuration) extends InputStream:
-  private val source = ByteArrayInputStream(data)
-
-  override def read(): Int =
-    Thread.sleep(perByte.toMillis)
-    source.read()
-
-  override def read(target: Array[Byte], offset: Int, length: Int): Int =
-    Thread.sleep(perByte.toMillis)
-    source.read(target, offset, 1)

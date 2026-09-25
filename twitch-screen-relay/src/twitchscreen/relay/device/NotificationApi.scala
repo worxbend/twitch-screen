@@ -30,7 +30,7 @@ final case class Notification_OUT(
     @encodedName("type") kind: NotificationKind,
     title: String,
     body: String,
-    at: Instant,
+    at: Option[Instant],
     ttlMs: Long
 ) derives Schema
 
