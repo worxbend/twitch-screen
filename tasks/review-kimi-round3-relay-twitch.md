@@ -342,3 +342,102 @@ Command for each: `./mill --no-daemon test.testOnly twitchscreen.relay.config.Co
 | `./mill --no-daemon test` | SUCCESS. 41 suites, 459 tests, 0 failed. |
 | `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS (163 sources) |
 | `git diff --stat -- twitch-screen-relay/src` | empty (no production change) |
+
+## K-038: move remaining EventSub transport switches onto the transport strategy
+
+- Finding: K-038, "maintainSubscriptions Long Method + transport Switch Statements". Severity: Medium-smell. Area: relay-twitch.
+- **Disposition: fixed.** This closes both `[partial]` gaps. The Long Method part was already fixed. This unit removes the five transport switches that were left, at LiveTwitchSource :35, :57 and :122, SubscriptionPlan :22 and TwitchRuntimeHealth :45. It also replaces the substring "awaiting" detection with a typed outcome.
+
+### Change
+
+All paths are under `twitch-screen-relay/src/twitchscreen/relay/twitch/`.
+
+- `EventSubOutcome.scala` (new): `private[twitch] enum EventSubOutcome { Healthy; Awaiting; Failed(reason) }`.
+- `TwitchRuntimeHealth.scala`:
+  - Added `record(component, outcome)`. It is the only mapping from outcome to health: Healthy goes to `observe(_, None)`, Awaiting to `awaiting(_)`, and Failed(r) to `observe(_, Some(r))`.
+  - Added `recordSubscription(kind, outcome)`.
+  - `resetSession` now takes the transport extras from `EventSubTransportPolicy.of(...).expectedHealth`, in place of the `Option.when` on the transport. The order and content of the expected list are unchanged.
+- `EventSubTransportStrategy.scala`:
+  - New `EventSubTransportPolicy`, a sealed trait with private `Webhook` and `WebSocket` objects. It has one resolver, `of(transport)`, whose match is the only place in the package that names `EventSubTransport.Webhook` or `EventSubTransport.WebSocket`.
+  - Its members are `requiresGrant`, `enablesEventSocket`, `expectedHealth`, `webhookApi(...)` and `session(...)`. `webhookApi` is the single selection made before any session starts: Some for Webhook, None for WebSocket. `session(...)` replaces the old `EventSubTransportStrategy.create` match, which is deleted.
+  - `SocketTransport` now takes `acceptingCallbacks`. Its constructor is the session-start hook: it calls `listenToSocket(client.getEventManager, ...)`, which is the former `LiveTwitchSource.observeSocket` moved here unchanged. It registers the ConnectionState, SubscriptionSuccess and SubscriptionFailure listeners, each gated by `acceptingCallbacks`. `WebhookTransport` does nothing at session start.
+  - `subscriptionFailed` and `subscriptionSucceeded` moved to the `EventSubTransportStrategy` companion and now call `recordSubscription`.
+  - Both strategies pass `health.recordSubscription` or `health.record` straight through. There is no string inspection left.
+  - Both strategy classes are `private[twitch]` so the selection can be tested.
+- `EventSubWebhookApi.reconcileSubscriptions`: `observe` is now `(String, EventSubOutcome) => Unit`.
+  - An enabled subscription gives Healthy.
+  - Both "awaiting callback verification" branches give Awaiting.
+  - The catch branch gives `Failed(s"registration failed (...); retrying")`, with the text unchanged.
+  - The doc comment is updated to match.
+- `WebSocketRegistration.step`: `observe` is now `(HealthComponent, EventSubOutcome) => Unit`.
+  - Before each register it emits Awaiting.
+  - A rejected register emits `Failed("registration rejected; rebuilding connection")`.
+  - A missing grant emits `Failed("awaiting broadcaster authorization")` on EventSubConnection. That report reached `health.observe` as a failure before this change, and the doc now says so.
+- `LiveTwitchSource.scala`:
+  - `create` resolves `val policy = EventSubTransportPolicy.of(config.eventSub.transport)` once.
+  - The webhook API comes from `policy.webhookApi(...)`.
+  - `build(config, policy)` calls `.withEnableEventSocket(policy.enablesEventSocket)`.
+  - The session calls `val transport = policy.session(...)` where `observeSocket` used to be called: after the event handlers are registered and before `resolveBroadcasterId`. Nothing is reordered. `transport` is then passed into `maintainSubscriptions`.
+  - `observeSocket`, `subscriptionFailed` and `subscriptionSucceeded` are deleted, along with the EventSocket event imports and the `EventSubTransport` import.
+- `SubscriptionPlan.scala`: `needsGrant = EventSubTransportPolicy.of(config.eventSub.transport).requiresGrant || config.oauth.scopes.nonEmpty`. The signature of `build` is unchanged.
+- `Config.scala:65` is validation and is not changed.
+
+### Tests
+
+- `EventSubTransportPolicySuite.scala` (new, 7 tests):
+  - Pins WebSocket: requiresGrant, enablesEventSocket, and `expectedHealth == List(EventSubConnection)`.
+  - Pins Webhook: no grant, no socket, and `expectedHealth == Nil`.
+  - `webhookApi` is defined, with 1 endpoint, only for Webhook.
+  - `policy.session` returns a `WebhookTransport` or a `SocketTransport`. This uses a real Helix-only `TwitchClient`, which makes no network calls, and closes it afterwards.
+  - Driven through `listenToSocket` on a synchronous `EventManager` with real twitch4j `EventSocket*Event` objects:
+    - A subscription failure sets restart and records `EventSubFollow` Failed("subscription rejected; rebuilding connection"), while an unrelated success stays healthy. This is the SocketTransport restart path.
+    - The connection state maps to EventSubConnection health.
+    - Callbacks are ignored once `acceptingCallbacks` is false: no restart and an identical status.
+- `TwitchRecoverySuite.scala` (6 new, 4 migrated):
+  - Migrated `reconcileSubscriptions` call sites: `isDefined`/`None` became `Failed(reason)` checks with the "registration failed" prefix kept, or `Healthy`.
+  - The `subscriptionFailed` and `subscriptionSucceeded` calls now go through `EventSubTransportStrategy`.
+  - New: a created subscription that is not yet enabled gives Awaiting.
+  - New: an existing `webhook_callback_verification_pending` subscription at our callback gives Awaiting, with 0 creations.
+  - New, through `record`:
+    - Awaiting leaves the component non-failed and the link non-connected, and publishes no RelayFailure.
+    - Failed(r) publishes `RelayFailure("twitch-streams", r)` and shows `streams: r` in the status.
+    - Healthy after Failed logs "recovered" once and clears the failure.
+    - `recordSubscription` with an unknown kind leaves the status unchanged and publishes nothing.
+- `WebSocketRegistrationSuite.scala` (1 new, migrated):
+  - The harness now records `(label, EventSubOutcome)` and logs Awaiting as "awaiting", Failed(r) as r, and Healthy as "ok".
+  - `AwaitingGrant` is now `("eventsub-connection", Failed("awaiting broadcaster authorization"))`.
+  - The rejected test also asserts the typed `Failed("registration rejected; rebuilding connection")`.
+  - New: "a pre-register observation is typed awaiting and never failed".
+- `SubscriptionPlanSuite` is unchanged and passes.
+
+### Red, then green
+
+- Red: before the production change, `./mill --no-daemon test.testOnly twitchscreen.relay.twitch.EventSubTransportPolicySuite` failed at `test.compile` with 49 errors, among them `Not found: EventSubTransportPolicy` (4 sites), `Not found: type EventSubOutcome` and `value listenToSocket is not a member of object twitchscreen.relay.twitch.EventSubTransportStrategy` (3 sites).
+- Green: after the change, all 9 suites of the targeted command below pass.
+
+### Mutation proof (restored from backup copies afterwards; `grep -c` confirms each original line is back)
+
+| Mutation | Result |
+|---|---|
+| `TwitchRuntimeHealth.record`: `Awaiting => awaiting(component)` changed to `observe(component, Some("awaiting"))` | TwitchRecoverySuite: 1 failed of 30, "a typed awaiting outcome leaves the component neither failed nor connected..." |
+| WebSocket policy: `expectedHealth = List(HealthComponent.EventSubConnection)` changed to `Nil` | EventSubTransportPolicySuite: 1 failed of 7, "the WebSocket policy needs a grant..." |
+
+### Grep proofs (from the worktree root)
+
+| Command | Output |
+|---|---|
+| `grep -rnE 'EventSubTransport\.(Webhook\|WebSocket)' twitch-screen-relay/src/twitchscreen/relay/twitch` | 2 lines, both in the resolver: `EventSubTransportStrategy.scala:51: case EventSubTransport.Webhook => Webhook` and `:52: case EventSubTransport.WebSocket => WebSocket` |
+| `grep -rn 'eventSub.transport ==' twitch-screen-relay/src` | no matches (exit 1) |
+| `grep -nw 'EventSubTransport' .../LiveTwitchSource.scala` | no matches (exit 1). The substring form without `-w` still matches the type names `EventSubTransportPolicy` (:29, :107) and `EventSubTransportStrategy` (:125), which the plan itself uses. The enum `EventSubTransport` is no longer referenced or imported. |
+| `grep -rn 'contains("awaiting' twitch-screen-relay/src` | no matches (exit 1) |
+| `grep -n 'observeSocket\|withEnableEventSocket(config' .../LiveTwitchSource.scala` | no matches (exit 1) |
+
+### Validation (run from `twitch-screen-relay/`)
+
+| Command | Result |
+|---|---|
+| `./mill --no-daemon test.testOnly twitchscreen.relay.twitch.WebSocketRegistrationSuite twitchscreen.relay.twitch.TwitchRecoverySuite twitchscreen.relay.twitch.TwitchAuthSuite twitchscreen.relay.twitch.EventSubWebhookSuite twitchscreen.relay.twitch.ChannelStateTrackerSuite twitchscreen.relay.twitch.WebhookDeduplicationSuite twitchscreen.relay.twitch.SubscriptionPlanSuite twitchscreen.relay.twitch.EventSubTransportPolicySuite twitchscreen.relay.twitch.EventSubTransportParitySuite` | SUCCESS. 9 suites, 0 failed: WebSocketRegistration 9, TwitchRecovery 30, TwitchAuth 18, EventSubWebhook 16, ChannelStateTracker 18, WebhookDeduplication 3, SubscriptionPlan 5, EventSubTransportPolicy 7, EventSubTransportParity 1. |
+| `./mill --no-daemon test.testOnly 'twitchscreen.relay.twitch.*'` | SUCCESS. 12 suites, 127 tests, 0 failed. |
+| `./mill --no-daemon compile` | SUCCESS, with `-Werror` (no unused imports) |
+| `./mill --no-daemon test` | SUCCESS. 42 suites, 474 tests, 0 failed, 0 ignored. That is 14 more declared `test(` cases than HEAD `08cd1c1` (441 declared, now 455). |
+| `./mill --no-daemon mill.scalalib.scalafmt/checkFormatAll` | SUCCESS, after `reformatAll` |

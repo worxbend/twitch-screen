@@ -5,7 +5,7 @@ import org.slf4j.LoggerFactory
 import ox.Ox
 import ox.channels.{Actor, ActorRef}
 import twitchscreen.relay.bus.{EventBus, RelayEvent}
-import twitchscreen.relay.config.{EventSubTransport, TwitchConfig}
+import twitchscreen.relay.config.TwitchConfig
 import twitchscreen.relay.observability.DiagnosticText
 
 /** Serializes foreign callbacks, polling and link transitions so the alert monitor sees the same health as the status endpoint. */
@@ -15,6 +15,14 @@ private[twitch] final class TwitchRuntimeHealth private (state: ActorRef[TwitchH
   def failure(component: HealthComponent): Option[String] = state.ask(_.failure(component))
   def resetSession(): Unit = state.ask(_.resetSession())
   def awaiting(component: HealthComponent): Unit = state.ask(_.awaiting(component))
+
+  /** The one mapping from a typed EventSub outcome to a health observation. */
+  def record(component: HealthComponent, outcome: EventSubOutcome): Unit = outcome match
+    case EventSubOutcome.Healthy        => observe(component, None)
+    case EventSubOutcome.Awaiting       => awaiting(component)
+    case EventSubOutcome.Failed(reason) => observe(component, Some(reason))
+
+  def recordSubscription(kind: String, outcome: EventSubOutcome): Unit = HealthComponent.subscription(kind).foreach(record(_, outcome))
   def status: TwitchStatus = snapshot.get()
 
 private[twitch] object TwitchRuntimeHealth:
@@ -42,7 +50,7 @@ private final class TwitchHealthState(config: TwitchConfig, bus: EventBus, snaps
       HealthComponent.EventSubOffline,
       HealthComponent.EventSubUpdate
     ) ++
-      Option.when(config.eventSub.transport == EventSubTransport.WebSocket)(HealthComponent.EventSubConnection).toList ++
+      EventSubTransportPolicy.of(config.eventSub.transport).expectedHealth ++
       Option.when(config.oauth.scopes.contains(TwitchScopes.Followers))(HealthComponent.EventSubFollow).toList
     parts = expected.map(_ -> Awaiting).toMap
     updateSnapshot()

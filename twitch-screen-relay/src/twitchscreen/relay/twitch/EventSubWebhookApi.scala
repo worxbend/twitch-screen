@@ -181,12 +181,15 @@ private[twitch] object EventSubWebhookApi:
     * Every call here uses the application token, so a 401 from any of them calls `appTokenRejected` to have the session rebuild the client
     * with a fresh token. Iteration deliberately continues: each remaining kind is still observed as failed on this pass, so no component
     * keeps a stale healthy status, and the rebuild itself is paced by the maintenance loop rather than by this method.
+    *
+    * Each kind is observed once per pass: `Healthy` when an enabled subscription exists at our callback, `Awaiting` while Twitch has not
+    * yet verified the callback, and `Failed` when any call for that kind threw.
     */
   def reconcileSubscriptions(
       helix: TwitchHelix,
       config: TwitchConfig,
       subscriptions: List[(SubscriptionType[?, ?, ?], EventSubCondition)],
-      observe: (String, Option[String]) => Unit,
+      observe: (String, EventSubOutcome) => Unit,
       appTokenRejected: () => Unit
   ): Unit =
     subscriptions.foreach: (kind, condition) =>
@@ -211,16 +214,16 @@ private[twitch] object EventSubWebhookApi:
             )
             .execute()
           val enabled = created.getSubscriptions.asScala.exists(_.getStatus == EventSubSubscriptionStatus.ENABLED)
-          observe(kind.getName, if enabled then None else Some("awaiting callback verification"))
+          observe(kind.getName, if enabled then EventSubOutcome.Healthy else EventSubOutcome.Awaiting)
         else
           observe(
             kind.getName,
-            if usable.exists(_.getStatus == EventSubSubscriptionStatus.ENABLED) then None else Some("awaiting callback verification")
+            if usable.exists(_.getStatus == EventSubSubscriptionStatus.ENABLED) then EventSubOutcome.Healthy else EventSubOutcome.Awaiting
           )
       catch
         case NonFatal(error) =>
           if HelixPoller.isUnauthorized(error) then appTokenRejected()
-          observe(kind.getName, Some(s"registration failed (${error.getClass.getSimpleName}); retrying"))
+          observe(kind.getName, EventSubOutcome.Failed(s"registration failed (${error.getClass.getSimpleName}); retrying"))
 
   /** Bound remote pagination and detect repeated cursors; deletion waits until the whole listing completes. */
   private def listSubscriptions(helix: TwitchHelix, kind: SubscriptionType[?, ?, ?]): Vector[EventSubSubscription] =

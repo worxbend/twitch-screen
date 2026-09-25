@@ -30,7 +30,8 @@ private[twitch] object WebSocketRegistration:
     * `connect` called with the grant, which the caller records before connecting (so a throwing connect is not followed by a second
     * registration on the next pass), and `Connected` returned; otherwise a restart is requested, because Twitch4J may discard permanently
     * failed subscriptions from its pool and only a rebuilt client registers them again. Without a grant the connection is reported as
-    * awaiting authorization, on the restart path too.
+    * awaiting authorization, on the restart path too. That report is deliberately `Failed`, not `Awaiting`: health has always counted a
+    * missing broadcaster grant as a failed connection, and only the per-subscription confirmation wait is typed `Awaiting`.
     */
   def step(
       token: Option[String],
@@ -39,7 +40,7 @@ private[twitch] object WebSocketRegistration:
       subscriptions: List[(SubscriptionType[?, ?, ?], EventSubCondition)],
       register: (OAuth2Credential, EventSubSubscription) => Boolean,
       connect: String => Unit,
-      observe: (HealthComponent, Option[String]) => Unit
+      observe: (HealthComponent, EventSubOutcome) => Unit
   ): WebSocketStep =
     val grant = token
     val result =
@@ -48,10 +49,12 @@ private[twitch] object WebSocketRegistration:
         (grant, registeredGrant, credential) match
           case (Some(granted), None, Some(user)) =>
             val accepted = subscriptions.map: (kind, condition) =>
-              HealthComponent.subscription(kind.getName).foreach(observe(_, Some("awaiting subscription confirmation")))
+              HealthComponent.subscription(kind.getName).foreach(observe(_, EventSubOutcome.Awaiting))
               val success = register(user, EventSubFactory.webSocketSubscription(kind, condition))
               if !success then
-                HealthComponent.subscription(kind.getName).foreach(observe(_, Some("registration rejected; rebuilding connection")))
+                HealthComponent
+                  .subscription(kind.getName)
+                  .foreach(observe(_, EventSubOutcome.Failed("registration rejected; rebuilding connection")))
               success
             if accepted.forall(identity) then
               connect(granted)
@@ -59,5 +62,5 @@ private[twitch] object WebSocketRegistration:
             else WebSocketStep.Restart
           case (None, _, _) => WebSocketStep.Await
           case _            => WebSocketStep.Unchanged
-    if grant.isEmpty then observe(HealthComponent.EventSubConnection, Some("awaiting broadcaster authorization"))
+    if grant.isEmpty then observe(HealthComponent.EventSubConnection, EventSubOutcome.Failed("awaiting broadcaster authorization"))
     result

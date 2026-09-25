@@ -2,7 +2,7 @@ package twitchscreen.relay.twitch
 
 import com.github.twitch4j.eventsub.condition.EventSubCondition
 import com.github.twitch4j.eventsub.subscriptions.SubscriptionType
-import twitchscreen.relay.config.{EventSubTransport, TwitchConfig}
+import twitchscreen.relay.config.TwitchConfig
 
 /** Both transports consume the same grant/scopes observation and therefore select the same eligible subscription kinds. */
 private[twitch] final case class SubscriptionPlan(
@@ -19,7 +19,7 @@ private[twitch] object SubscriptionPlan:
     val missing = config.oauth.scopes.diff(broadcaster.toList.flatMap(_.scopes))
     val followRequested = config.oauth.scopes.contains(TwitchScopes.Followers)
     val canFollow = followRequested && broadcaster.exists(_.scopes.contains(TwitchScopes.Followers))
-    val needsGrant = config.eventSub.transport == EventSubTransport.WebSocket || config.oauth.scopes.nonEmpty
+    val needsGrant = EventSubTransportPolicy.of(config.eventSub.transport).requiresGrant || config.oauth.scopes.nonEmpty
     SubscriptionPlan(
       broadcaster,
       EventSubWebhookApi.unscopedSubscriptions(broadcasterId) ++ (if canFollow then EventSubWebhookApi.scopedSubscriptions(broadcasterId)

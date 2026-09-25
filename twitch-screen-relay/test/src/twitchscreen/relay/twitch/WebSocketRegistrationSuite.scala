@@ -1,18 +1,21 @@
 package twitchscreen.relay.twitch
 
 import com.github.philippheuer.credentialmanager.domain.OAuth2Credential
+import ox.discard
 import scala.collection.mutable.ListBuffer
 
 class WebSocketRegistrationSuite extends munit.FunSuite:
   private val credential = OAuth2Credential("twitch", "user-token")
   private val subscriptions = EventSubWebhookApi.unscopedSubscriptions("123") ++ EventSubWebhookApi.scopedSubscriptions("123")
   private val Follow = "moderator:read:followers"
-  private val AwaitingGrant = ("eventsub-connection", Some("awaiting broadcaster authorization"))
+
+  /** Stays a failure, not awaiting: health has always reported a missing broadcaster grant as a failed connection. */
+  private val AwaitingGrant = ("eventsub-connection", EventSubOutcome.Failed("awaiting broadcaster authorization"))
 
   /** One interleaved log, so the order of observations, register calls and connect is asserted as a whole. */
   private final class Harness(rejected: Set[String] = Set.empty):
     val log = ListBuffer.empty[String]
-    val observations = ListBuffer.empty[(String, Option[String])]
+    val observations = ListBuffer.empty[(String, EventSubOutcome)]
     val registered = ListBuffer.empty[String]
     var connects = 0
     val connectedGrants = ListBuffer.empty[String]
@@ -39,10 +42,15 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
           connectedGrants += granted
           log += "connect"
         ,
-        (kind, failure) =>
-          observations += kind.label -> failure
-          log += s"observe ${kind.label} ${failure.getOrElse("ok")}"
+        (kind, outcome) =>
+          observations += kind.label -> outcome
+          log += s"observe ${kind.label} ${describe(outcome)}"
       )
+
+  private def describe(outcome: EventSubOutcome): String = outcome match
+    case EventSubOutcome.Healthy        => "ok"
+    case EventSubOutcome.Awaiting       => "awaiting"
+    case EventSubOutcome.Failed(reason) => reason
 
   test("no broadcaster token awaits authorization without registering"):
     val harness = Harness()
@@ -65,16 +73,19 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
     assertEquals(
       harness.log.toList,
       List(
-        "observe eventsub-stream.online awaiting subscription confirmation",
+        "observe eventsub-stream.online awaiting",
         "register stream.online",
-        "observe eventsub-stream.offline awaiting subscription confirmation",
+        "observe eventsub-stream.offline awaiting",
         "register stream.offline",
-        "observe eventsub-channel.update awaiting subscription confirmation",
+        "observe eventsub-channel.update awaiting",
         "register channel.update",
         "observe eventsub-channel.update registration rejected; rebuilding connection",
-        "observe eventsub-channel.follow awaiting subscription confirmation",
+        "observe eventsub-channel.follow awaiting",
         "register channel.follow"
       )
+    )
+    assert(
+      harness.observations.contains("eventsub-channel.update" -> EventSubOutcome.Failed("registration rejected; rebuilding connection"))
     )
 
   test("all accepted connects once and records the grant"):
@@ -85,7 +96,15 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
     assertEquals(harness.connectedGrants.toList, List("a"))
     assertEquals(harness.log.last, "connect")
     assert(!harness.observations.contains(AwaitingGrant))
-    assert(harness.observations.forall(_._2.contains("awaiting subscription confirmation")))
+    assert(harness.observations.forall(_._2 == EventSubOutcome.Awaiting))
+
+  test("a pre-register observation is typed awaiting and never failed"):
+    val harness = Harness()
+    harness.step(token = Some("a")).discard
+    val beforeRegister = harness.log.toList.sliding(2).collect { case List(observed, s"register $_") => observed }.toList
+    assertEquals(beforeRegister.size, subscriptions.size)
+    assert(beforeRegister.forall(_.endsWith(" awaiting")), clue(beforeRegister))
+    assert(!harness.observations.exists { case (_, EventSubOutcome.Failed(_)) => true; case _ => false })
 
   test("a changed access token after registration requests restart without registering"):
     val harness = Harness()

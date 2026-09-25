@@ -110,7 +110,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
   test("webhook registration failure is observable and the next reconciliation recovers using app credentials"):
     val rejected = AtomicBoolean(false)
     var attempts = 0
-    var results = List.empty[Option[String]]
+    var results = List.empty[EventSubOutcome]
     val client = helix: (method, arguments) =>
       assertEquals(arguments(0), null, "webhook Helix calls use the app-token fallback")
       method match
@@ -139,13 +139,13 @@ class TwitchRecoverySuite extends munit.FunSuite:
       (_, result) => results = results :+ result,
       () => rejected.set(true)
     )
-    assert(results.head.isDefined)
-    assertEquals(results.last, None)
+    assert(results.head match { case EventSubOutcome.Failed(reason) => reason.startsWith("registration failed"); case _ => false })
+    assertEquals(results.last, EventSubOutcome.Healthy)
     assert(!rejected.get(), "a failure unrelated to authorization must not rebuild the client")
 
   test("webhook reconciliation requests a client rebuild when Twitch rejects the application token"):
     val rejected = AtomicBoolean(false)
-    var results = List.empty[(String, Option[String])]
+    var results = List.empty[(String, EventSubOutcome)]
     val client = helix: (method, arguments) =>
       assertEquals(arguments(0), null, "webhook Helix calls use the app-token fallback")
       method match
@@ -161,12 +161,12 @@ class TwitchRecoverySuite extends munit.FunSuite:
     )
     assert(rejected.get())
     assertEquals(results.map(_._1), List("stream.online"))
-    assert(results.head._2.exists(_.startsWith("registration failed")))
+    assert(results.head._2 match { case EventSubOutcome.Failed(reason) => reason.startsWith("registration failed"); case _ => false })
 
   test("listing subscriptions with a rejected application token requests a rebuild before any creation"):
     val rejected = AtomicBoolean(false)
     var creations = 0
-    var results = List.empty[Option[String]]
+    var results = List.empty[EventSubOutcome]
     val client = helix: (method, _) =>
       method match
         case "getEventSubSubscriptions" => command[EventSubSubscriptionList](throw unauthorizedCause("eventsub/subscriptions"))
@@ -184,7 +184,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
     assert(rejected.get())
     assertEquals(creations, 0)
     assertEquals(results.size, EventSubWebhookApi.unscopedSubscriptions("123").size, "every kind is still observed as failed")
-    assert(results.forall(_.isDefined))
+    assert(results.forall { case EventSubOutcome.Failed(reason) => reason.startsWith("registration failed"); case _ => false })
 
   private def streamsFailing(error: => Throwable): TwitchHelix = helix: (method, arguments) =>
     method match
@@ -390,8 +390,8 @@ class TwitchRecoverySuite extends munit.FunSuite:
     supervised:
       val health = TwitchRuntimeHealth(config, EventBus(Clock.systemUTC(), 64))
       val restart = java.util.concurrent.atomic.AtomicBoolean(false)
-      LiveTwitchSource.subscriptionFailed(health, restart, "channel.follow")
-      LiveTwitchSource.subscriptionSucceeded(health, "stream.online")
+      EventSubTransportStrategy.subscriptionFailed(health, restart, "channel.follow")
+      EventSubTransportStrategy.subscriptionSucceeded(health, "stream.online")
       assert(restart.get())
       assert(health.failure(HealthComponent.EventSubFollow).isDefined)
       assertEquals(health.failure(HealthComponent.EventSubOnline), None)
@@ -494,12 +494,97 @@ class TwitchRecoverySuite extends munit.FunSuite:
       client,
       config,
       EventSubWebhookApi.unscopedSubscriptions("123").take(1),
-      (_, failure) => assertEquals(failure, None),
+      (_, outcome) => assertEquals(outcome, EventSubOutcome.Healthy),
       () => ()
     )
     assertEquals(cursors, List(None, Some("page-2")))
     assertEquals(deleted, List("stale", "duplicate"))
     assertEquals(creations, 0)
+
+  private def pendingAt(callback: String): String =
+    s"""{"id":"p1","status":"webhook_callback_verification_pending","type":"stream.online","version":"1","condition":{"broadcaster_user_id":"123"},"transport":{"method":"webhook","callback":"$callback"}}"""
+
+  test("a created webhook subscription that is not yet enabled is typed awaiting"):
+    var results = List.empty[(String, EventSubOutcome)]
+    val client = helix: (method, _) =>
+      method match
+        case "getEventSubSubscriptions" => command(mapper.readValue(emptySubscriptions, classOf[EventSubSubscriptionList]))
+        case "createEventSubSubscription" =>
+          command(mapper.readValue(s"""{"data":[${pendingAt(config.eventSub.callbackUrl)}]}""", classOf[EventSubSubscriptionList]))
+        case other => fail(s"unexpected method $other")
+    EventSubWebhookApi.reconcileSubscriptions(
+      client,
+      config,
+      EventSubWebhookApi.unscopedSubscriptions("123").take(1),
+      (kind, outcome) => results = results :+ (kind -> outcome),
+      () => fail("no rejection")
+    )
+    assertEquals(results, List("stream.online" -> EventSubOutcome.Awaiting))
+
+  test("an existing subscription pending verification at our callback is typed awaiting and not recreated"):
+    var results = List.empty[(String, EventSubOutcome)]
+    var creations = 0
+    val client = helix: (method, _) =>
+      method match
+        case "getEventSubSubscriptions" =>
+          command(mapper.readValue(s"""{"data":[${pendingAt(config.eventSub.callbackUrl)}]}""", classOf[EventSubSubscriptionList]))
+        case "createEventSubSubscription" =>
+          creations += 1
+          command(mapper.readValue(emptySubscriptions, classOf[EventSubSubscriptionList]))
+        case other => fail(s"unexpected method $other")
+    EventSubWebhookApi.reconcileSubscriptions(
+      client,
+      config,
+      EventSubWebhookApi.unscopedSubscriptions("123").take(1),
+      (kind, outcome) => results = results :+ (kind -> outcome),
+      () => fail("no rejection")
+    )
+    assertEquals(creations, 0)
+    assertEquals(results, List("stream.online" -> EventSubOutcome.Awaiting))
+
+  private def drained(events: ox.channels.Source[twitchscreen.relay.bus.BusEvent]): List[RelayEvent] =
+    Iterator.continually(events.tryReceive()).takeWhile(_.isDefined).flatten.map(_.event).toList
+
+  test("a typed awaiting outcome leaves the component neither failed nor connected and publishes no failure"):
+    supervised:
+      val bus = EventBus(Clock.systemUTC(), 64)
+      val events = bus.subscribe("awaiting")
+      val health = TwitchRuntimeHealth(config, bus)
+      health.record(HealthComponent.Startup, EventSubOutcome.Healthy)
+      health.record(HealthComponent.Streams, EventSubOutcome.Awaiting)
+      assertEquals(health.failure(HealthComponent.Streams), None)
+      assertNotEquals(health.status.health, TwitchHealth.Connected)
+      assert(!drained(events).exists(_.isInstanceOf[RelayEvent.RelayFailure]))
+
+  test("a typed failed outcome publishes a relay failure and shows its reason in the status"):
+    supervised:
+      val bus = EventBus(Clock.systemUTC(), 64)
+      val events = bus.subscribe("failed")
+      val health = TwitchRuntimeHealth(config, bus)
+      health.record(HealthComponent.Streams, EventSubOutcome.Failed("callback unreachable"))
+      assertEquals(health.failure(HealthComponent.Streams), Some("callback unreachable"))
+      assert(health.status.detail.contains("streams: callback unreachable"), clue(health.status.detail))
+      assert(drained(events).contains(RelayEvent.RelayFailure("twitch-streams", "callback unreachable")))
+
+  test("a typed healthy outcome after a failure logs recovery and clears the failure"):
+    supervised:
+      val health = TwitchRuntimeHealth(config, EventBus(Clock.systemUTC(), 64))
+      val lines = recoveredLines:
+        health.record(HealthComponent.Streams, EventSubOutcome.Failed("x"))
+        health.record(HealthComponent.Streams, EventSubOutcome.Healthy)
+      assertEquals(lines, List(s"Twitch ${HealthComponent.Streams.label} recovered"))
+      assertEquals(health.failure(HealthComponent.Streams), None)
+
+  test("a typed outcome for an unknown subscription kind is ignored"):
+    supervised:
+      val bus = EventBus(Clock.systemUTC(), 64)
+      val events = bus.subscribe("unknown")
+      val health = TwitchRuntimeHealth(config, bus)
+      val before = health.status
+      health.recordSubscription("channel.raid", EventSubOutcome.Failed("x"))
+      health.recordSubscription("channel.raid", EventSubOutcome.Awaiting)
+      assertEquals(health.status, before)
+      assertEquals(drained(events), Nil)
 
   test("retry jitter stays within half to full capped delay"):
     def delays(jitter: Long => Long): List[FiniteDuration] =
