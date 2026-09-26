@@ -31,6 +31,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <array>
+
 #include "notification.h"
 #include "notification_wire.h"
 #include "notify_queue.h"
@@ -39,30 +41,38 @@
 
 namespace {
 
-int checks = 0;
-int failures = 0;
+// Suite-wide counters, reached through a function so no global is mutable.
+struct Totals {
+  int checks = 0;
+  int failures = 0;
+  int boundVectors = 0;
+};
+Totals &totals() {
+  static Totals t;
+  return t;
+}
 
 void ok(bool cond, const char *what) {
-  ++checks;
+  ++totals().checks;
   if (!cond) {
-    ++failures;
+    ++totals().failures;
     printf("  FAIL: %s\n", what);
   }
 }
 
 void okEq(unsigned long got, unsigned long want, const char *what) {
-  ++checks;
+  ++totals().checks;
   if (got != want) {
-    ++failures;
+    ++totals().failures;
     printf("  FAIL: %s: got %lu (0x%lx), want %lu (0x%lx)\n",
            what, got, got, want, want);
   }
 }
 
 void okStr(const char *got, const char *want, const char *what) {
-  ++checks;
+  ++totals().checks;
   if (strcmp(got, want) != 0) {
-    ++failures;
+    ++totals().failures;
     printf("  FAIL: %s: got \"%s\", want \"%s\"\n", what, got, want);
   }
 }
@@ -76,10 +86,9 @@ void section(const char *s) { printf("- %s\n", s); }
 void testKindIsAWireCode() {
   section("§6.4.1 every defined kind keeps its wire code end to end");
 
-  const uint8_t known[] = {0x00, 0x01, 0x02, 0x03, 0x10, 0x11,
-                           0x12, 0x13, 0x14, 0x15, 0x16, 0x17};
-  for (size_t i = 0; i < sizeof(known); ++i) {
-    const uint8_t code = known[i];
+  const std::array<uint8_t, 12> known = {{0x00, 0x01, 0x02, 0x03, 0x10, 0x11,
+                                           0x12, 0x13, 0x14, 0x15, 0x16, 0x17}};
+  for (const uint8_t code : known) {
     ok(kindIsKnown(code), "defined kind is known");
     // The enumerator's VALUE is the wire byte. This is the assertion that the
     // old 0..9 ordinal enum could not have passed.
@@ -94,9 +103,9 @@ void testKindIsAWireCode() {
 
   section("§6.4.2 every other code folds to INFO, and 0x18 has no name");
   for (unsigned c = 0; c <= 0xff; ++c) {
-    const uint8_t code = (uint8_t)c;
+    const auto code = static_cast<uint8_t>(c);
     bool isKnown = false;
-    for (size_t i = 0; i < sizeof(known); ++i) if (known[i] == code) isKnown = true;
+    for (const uint8_t k : known) if (k == code) isKnown = true;
     if (isKnown) continue;
     ok(!kindIsKnown(code), "undefined kind is not known");
     ok(kindFromCode(code) == NotifyKind::Info, "undefined kind renders as INFO");
@@ -107,27 +116,23 @@ void testKindIsAWireCode() {
   ok(kindFromCode(0x18) == NotifyKind::Info, "0x18 renders as INFO");
 
   section("§6.4 tier 0 is NOT APPLICABLE, not Prime");
-  ok(tierName(0) == 0, "tier 0 has no name");
+  ok(tierName(0) == nullptr, "tier 0 has no name");
   okStr(tierName(1), "Prime", "tier 1 is Prime");
   okStr(tierName(2), "Tier 1", "tier 2 is Tier 1");
   okStr(tierName(3), "Tier 2", "tier 3 is Tier 2");
   okStr(tierName(4), "Tier 3", "tier 4 is Tier 3");
-  ok(tierName(5) == 0, "tier 5 has no name");
-  ok(tierName(255) == 0, "tier 255 has no name");
+  ok(tierName(5) == nullptr, "tier 5 has no name");
+  ok(tierName(255) == nullptr, "tier 255 has no name");
 }
 
 // -------------------------------------------------------------------------
 // §18 golden bytes -> Notification, the exact path link_client takes.
 // -------------------------------------------------------------------------
 
-int boundVectors = 0;
-
 void testGoldenEventsBindToCards() {
   section("§18 all ten EVENT vectors decode and bind to a renderable card");
 
-  for (size_t i = 0; i < gv::EVENT_COUNT; ++i) {
-    const gv::ExpEvent &e = gv::EVENT_VECTORS[i];
-
+  for (const gv::ExpEvent &e : gv::EVENT_VECTORS) {
     tsb::InboundFrame f;
     const tsb::DecodeResult r = tsb::decodeInbound(e.frame, e.size, f);
     ok(r == tsb::DecodeResult::Ok, e.name);
@@ -135,7 +140,7 @@ void testGoldenEventsBindToCards() {
 
     Notification n;
     notificationFromEvent(f.as.event, f.header.flags, n);
-    ++boundVectors;
+    ++totals().boundVectors;
 
     okEq(n.seq, e.seq, e.name);
     okEq(n.ts, e.ts, e.name);
@@ -165,8 +170,7 @@ void testGoldenEventsBindToCards() {
   // Spot-check the fields the renderer composes sentences from, against the
   // prose of §6.4.1 rather than against the table above.
   section("§6.4.1 the per-kind numeric meanings arrive intact");
-  for (size_t i = 0; i < gv::EVENT_COUNT; ++i) {
-    const gv::ExpEvent &e = gv::EVENT_VECTORS[i];
+  for (const gv::ExpEvent &e : gv::EVENT_VECTORS) {
     tsb::InboundFrame f;
     if (tsb::decodeInbound(e.frame, e.size, f) != tsb::DecodeResult::Ok) continue;
     Notification n;
@@ -207,21 +211,21 @@ void testGoldenEventsBindToCards() {
 void testUnknownKindStillDraws() {
   section("§6.4.2 an unknown kind renders as INFO from actor/text, not dropped");
 
-  const uint8_t probes[] = {0x18, 0x19, 0x04, 0x3f, 0x7f, 0xff};
-  for (size_t i = 0; i < sizeof(probes); ++i) {
-    uint8_t frame[176];
-    memcpy(frame, gv::EVENT_FOLLOW, sizeof(frame));
-    frame[8 + 20] = probes[i];   // payload +20 is `kind`; hchk covers only the header
+  const std::array<uint8_t, 6> probes = {{0x18, 0x19, 0x04, 0x3f, 0x7f, 0xff}};
+  for (const uint8_t probe : probes) {
+    std::array<uint8_t, sizeof(gv::EVENT_FOLLOW)> frame;
+    memcpy(frame.data(), gv::EVENT_FOLLOW, frame.size());
+    frame[8 + 20] = probe;   // payload +20 is `kind`; hchk covers only the header
 
     tsb::InboundFrame f;
-    const tsb::DecodeResult r = tsb::decodeInbound(frame, sizeof(frame), f);
+    const tsb::DecodeResult r = tsb::decodeInbound(frame.data(), frame.size(), f);
     ok(r == tsb::DecodeResult::Ok, "unknown kind is not a decode error");
     if (r != tsb::DecodeResult::Ok) continue;
 
     Notification n;
     notificationFromEvent(f.as.event, f.header.flags, n);
     ok(n.kind == NotifyKind::Info, "unknown kind renders as INFO");
-    okEq(n.wireKind, probes[i], "the raw code is kept for the log line");
+    okEq(n.wireKind, probe, "the raw code is kept for the log line");
     okStr(n.actor, gv::EVENT_FOLLOW_ACTOR, "actor is preserved for the headline");
     okEq(n.seq, 0x77, "sequence accounting still applies to an unknown kind");
   }
@@ -232,14 +236,14 @@ void testUnknownKindStillDraws() {
 void testReservedBytesAreNotTouched() {
   section("§8.1 a newer relay's reserved1/reserved2 survive the binding");
 
-  uint8_t frame[176];
-  memcpy(frame, gv::EVENT_BITS, sizeof(frame));
+  std::array<uint8_t, sizeof(gv::EVENT_BITS)> frame;
+  memcpy(frame.data(), gv::EVENT_BITS, frame.size());
   frame[8 + 12] = 'E';  frame[8 + 13] = 'U';
   frame[8 + 14] = 'R';  frame[8 + 15] = 0x00;
   frame[8 + 23] = 2;
 
   tsb::InboundFrame f;
-  ok(tsb::decodeInbound(frame, sizeof(frame), f) == tsb::DecodeResult::Ok,
+  ok(tsb::decodeInbound(frame.data(), frame.size(), f) == tsb::DecodeResult::Ok,
      "non-zero reserved bytes are not a frame error");
 
   Notification n;
@@ -369,11 +373,15 @@ void testBaselineRules() {
 
   // Explicit §10.2 device cases. Cross-language replay is tested by the socket
   // suite and golden stream below; copying the relay predicate is not parity.
-  struct BaselineCase { uint32_t previous, latest; bool resumes; };
-  const BaselineCase cases[] = {
+  struct BaselineCase {
+    uint32_t previous;
+    uint32_t latest;
+    bool resumes;
+  };
+  const std::array<BaselineCase, 7> cases = {{
     {0, 0, false}, {0, 127, false}, {117, 127, true}, {127, 127, true},
     {128, 127, false}, {0xffffffffu, 0xffffffffu, true}, {0xffffffffu, 1, false}
-  };
+  }};
   for (const auto &c : cases) {
     NotifyQueue<8> probe;
     probe.greet(c.previous, 0x1111);
@@ -408,8 +416,7 @@ void testBaselineFromGoldenWelcome() {
   okEq(r.lastSeq(), 117, "resuming at 117");
 
   int enqueued = 0;
-  for (size_t i = 0; i < gv::EVENT_COUNT; ++i) {
-    const gv::ExpEvent &e = gv::EVENT_VECTORS[i];
+  for (const gv::ExpEvent &e : gv::EVENT_VECTORS) {
     tsb::InboundFrame ef;
     if (tsb::decodeInbound(e.frame, e.size, ef) != tsb::DecodeResult::Ok) continue;
     Notification n;
@@ -421,8 +428,7 @@ void testBaselineFromGoldenWelcome() {
   ok(!r.gapOpen(), "no gap was opened");
 
   // Replaying the same burst again changes nothing.
-  for (size_t i = 0; i < gv::EVENT_COUNT; ++i) {
-    const gv::ExpEvent &e = gv::EVENT_VECTORS[i];
+  for (const gv::ExpEvent &e : gv::EVENT_VECTORS) {
     tsb::InboundFrame ef;
     if (tsb::decodeInbound(e.frame, e.size, ef) != tsb::DecodeResult::Ok) continue;
     Notification n;
@@ -436,8 +442,7 @@ void testBaselineFromGoldenWelcome() {
 void testStatsCarriesFollowersAndSubs() {
   section("§6.5 STATS.followers and STATS.subs reach the caller");
 
-  for (size_t i = 0; i < gv::STATS_COUNT; ++i) {
-    const gv::ExpStats &s = gv::STATS_VECTORS[i];
+  for (const gv::ExpStats &s : gv::STATS_VECTORS) {
     tsb::InboundFrame f;
     ok(tsb::decodeInbound(s.frame, s.size, f) == tsb::DecodeResult::Ok, s.name);
     okEq(f.as.stats.followers, s.followers, "followers");
@@ -469,11 +474,12 @@ int main() {
   testBaselineFromGoldenWelcome();
   testStatsCarriesFollowersAndSubs();
 
-  printf("\n%d EVENT vectors bound to cards\n", boundVectors);
-  if (boundVectors != 10) {
-    ++failures;
+  Totals &t = totals();
+  printf("\n%d EVENT vectors bound to cards\n", t.boundVectors);
+  if (t.boundVectors != 10) {
+    ++t.failures;
     printf("FAIL: expected all 10 EVENT vectors to bind\n");
   }
-  printf("%d checks, %d failures\n", checks, failures);
-  return failures == 0 ? 0 : 1;
+  printf("%d checks, %d failures\n", t.checks, t.failures);
+  return t.failures == 0 ? 0 : 1;
 }

@@ -40,52 +40,67 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <array>
+
 using namespace tsb;
 
 // ---------------------------------------------------------------------------
 // Minimal harness
 // ---------------------------------------------------------------------------
 
-static int g_failures = 0;
-static int g_checks = 0;
-static const char *g_case = "";
+// All mutable suite state sits behind one accessor, so nothing at namespace
+// scope is writable.
+struct Harness {
+  int failures = 0;
+  int checks = 0;
+  const char *caseName = "";
+  // Vectors asserted in both directions, counted so the summary cannot lie.
+  int vectorsDecoded = 0;
+  int vectorsEncoded = 0;
+};
+static Harness &harness() {
+  static Harness h;
+  return h;
+}
+static void setCase(const char *name) { harness().caseName = name; }
 
 #define CHECK(cond)                                                            \
   do {                                                                         \
-    ++g_checks;                                                                \
+    ++harness().checks;                                                        \
     if (!(cond)) {                                                             \
-      ++g_failures;                                                            \
-      printf("  FAIL  %s:%d  %s\n", g_case, __LINE__, #cond);                  \
+      ++harness().failures;                                                    \
+      printf("  FAIL  %s:%d  %s\n", harness().caseName, __LINE__, #cond);      \
     }                                                                          \
   } while (0)
 
 #define CHECK_U32(got, want)                                                   \
   do {                                                                         \
-    ++g_checks;                                                                \
-    unsigned long g_ = (unsigned long)(got), w_ = (unsigned long)(want);       \
+    ++harness().checks;                                                        \
+    const unsigned long g_ = (unsigned long)(got);                             \
+    const unsigned long w_ = (unsigned long)(want);                            \
     if (g_ != w_) {                                                            \
-      ++g_failures;                                                            \
-      printf("  FAIL  %s:%d  %s: got %lu (0x%lx), want %lu (0x%lx)\n", g_case, \
-             __LINE__, #got, g_, g_, w_, w_);                                  \
+      ++harness().failures;                                                    \
+      printf("  FAIL  %s:%d  %s: got %lu (0x%lx), want %lu (0x%lx)\n",         \
+             harness().caseName, __LINE__, #got, g_, g_, w_, w_);              \
     }                                                                          \
   } while (0)
 
 #define CHECK_STR(got, want)                                                   \
   do {                                                                         \
-    ++g_checks;                                                                \
+    ++harness().checks;                                                        \
     if (strcmp((got), (want)) != 0) {                                          \
-      ++g_failures;                                                            \
-      printf("  FAIL  %s:%d  %s: got \"%s\", want \"%s\"\n", g_case, __LINE__, \
-             #got, (got), (want));                                             \
+      ++harness().failures;                                                    \
+      printf("  FAIL  %s:%d  %s: got \"%s\", want \"%s\"\n",                   \
+             harness().caseName, __LINE__, #got, (got), (want));               \
     }                                                                          \
   } while (0)
 
 static void checkBytes(const uint8_t *got, const uint8_t *want, size_t n, int line) {
-  ++g_checks;
+  ++harness().checks;
   for (size_t i = 0; i < n; ++i) {
     if (got[i] != want[i]) {
-      ++g_failures;
-      printf("  FAIL  %s:%d  byte %u of %u: got %02x, want %02x\n", g_case, line,
+      ++harness().failures;
+      printf("  FAIL  %s:%d  byte %u of %u: got %02x, want %02x\n", harness().caseName, line,
              (unsigned)i, (unsigned)n, got[i], want[i]);
       return;
     }
@@ -94,13 +109,11 @@ static void checkBytes(const uint8_t *got, const uint8_t *want, size_t n, int li
 #define CHECK_BYTES(got, want, n) checkBytes((got), (want), (n), __LINE__)
 
 static void testCase(const char *name) {
-  g_case = name;
+  setCase(name);
   printf("- %s\n", name);
 }
 
-// Vectors asserted in both directions, counted so the summary cannot lie.
-static int g_vectorsDecoded = 0;
-static int g_vectorsEncoded = 0;
+using FrameBuf = std::array<uint8_t, MAX_FRAME>;
 
 // ---------------------------------------------------------------------------
 // Relay-side payload builders, written from the §6 field tables. The device
@@ -177,9 +190,8 @@ static void buildByePayload(uint8_t *p, const gv::ExpBye &e) {
 static void test_all_frames_are_valid() {
   testCase("all 20 golden frames: magic, version, hchk, length, direction");
   CHECK_U32(gv::ALL_COUNT, 20);
-  for (size_t i = 0; i < gv::ALL_COUNT; ++i) {
-    const gv::ExpFrame &v = gv::ALL_VECTORS[i];
-    g_case = v.name;
+  for (const gv::ExpFrame &v : gv::ALL_VECTORS) {
+    setCase(v.name);
     CHECK(v.frame[0] == MAGIC0);
     CHECK(v.frame[1] == MAGIC1);
     CHECK(v.frame[2] == VERSION);
@@ -200,7 +212,7 @@ static void test_all_frames_are_valid() {
     // Direction partition (§6): every type is on exactly one side.
     CHECK(typeIsInbound(v.type) != typeIsOutbound(v.type));
   }
-  g_case = "";
+  setCase("");
 }
 
 // ---------------------------------------------------------------------------
@@ -210,9 +222,8 @@ static void test_all_frames_are_valid() {
 static void test_hello_vectors() {
   testCase("V1, V2 HELLO: decode to fields and encode to bytes");
   CHECK_U32(gv::HELLO_COUNT, 2);
-  for (size_t i = 0; i < gv::HELLO_COUNT; ++i) {
-    const gv::ExpHello &e = gv::HELLO_VECTORS[i];
-    g_case = e.name;
+  for (const gv::ExpHello &e : gv::HELLO_VECTORS) {
+    setCase(e.name);
 
     // decode-to-fields
     TsbHello h;
@@ -224,7 +235,7 @@ static void test_hello_vectors() {
     CHECK_STR(h.device_id, e.device_id);
     CHECK_STR(h.fw_version, e.fw_version);
     CHECK_U32(h.rx_max >= MIN_RX_MAX, 1);   // §6.1: MUST be >= 256
-    ++g_vectorsDecoded;
+    ++harness().vectorsDecoded;
 
     // A device-to-relay type arriving AT the device is §4.3 WrongDirection,
     // never corruption and never a reason to close.
@@ -234,15 +245,15 @@ static void test_hello_vectors() {
     // encode-to-bytes, from buildHello() plus the vector's own last_seq/caps.
     TsbHello built;
     buildHello(built, e.last_seq, e.caps, e.device_id, e.fw_version);
-    uint8_t out[MAX_FRAME];
-    memset(out, 0xee, sizeof(out));
-    EncodeResult n = encodeHello(out, sizeof(out), built);
+    FrameBuf out;
+    out.fill(0xee);
+    EncodeResult n = encodeHello(out.data(), out.size(), built);
     CHECK(n.ok());
     CHECK_U32(n.size, e.size);
-    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
-    ++g_vectorsEncoded;
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out.data(), e.frame, e.size);
+    ++harness().vectorsEncoded;
   }
-  g_case = "";
+  setCase("");
 }
 
 // ---------------------------------------------------------------------------
@@ -252,9 +263,8 @@ static void test_hello_vectors() {
 static void test_welcome_vectors() {
   testCase("V3 WELCOME: decode to fields and encode to bytes");
   CHECK_U32(gv::WELCOME_COUNT, 1);
-  for (size_t i = 0; i < gv::WELCOME_COUNT; ++i) {
-    const gv::ExpWelcome &e = gv::WELCOME_VECTORS[i];
-    g_case = e.name;
+  for (const gv::ExpWelcome &e : gv::WELCOME_VECTORS) {
+    setCase(e.name);
 
     InboundFrame f;
     CHECK(decodeInbound(e.frame, e.size, f) == DecodeResult::Ok);
@@ -268,19 +278,19 @@ static void test_welcome_vectors() {
     CHECK_U32(w.idle_timeout_s, e.idle_timeout_s);
     CHECK_U32(w.replay_window, e.replay_window);
     CHECK_U32(w.caps, e.caps);
-    ++g_vectorsDecoded;
+    ++harness().vectorsDecoded;
 
-    uint8_t pay[LEN_WELCOME];
-    buildWelcomePayload(pay, e);
-    uint8_t out[MAX_FRAME];
-    memset(out, 0xee, sizeof(out));
-    EncodeResult n = encodeFrame(out, sizeof(out), e.type, e.flags, pay, LEN_WELCOME);
+    std::array<uint8_t, LEN_WELCOME> pay;
+    buildWelcomePayload(pay.data(), e);
+    FrameBuf out;
+    out.fill(0xee);
+    EncodeResult n = encodeFrame(out.data(), out.size(), e.type, e.flags, pay.data(), pay.size());
     CHECK(n.ok());
     CHECK_U32(n.size, e.size);
-    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
-    ++g_vectorsEncoded;
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out.data(), e.frame, e.size);
+    ++harness().vectorsEncoded;
   }
-  g_case = "";
+  setCase("");
 }
 
 // ---------------------------------------------------------------------------
@@ -291,9 +301,8 @@ static void test_event_vectors() {
   testCase("V6-V15 EVENT: decode to fields and encode to bytes, all ten kinds");
   CHECK_U32(gv::EVENT_COUNT, 10);
   uint32_t kindsSeen = 0;
-  for (size_t i = 0; i < gv::EVENT_COUNT; ++i) {
-    const gv::ExpEvent &e = gv::EVENT_VECTORS[i];
-    g_case = e.name;
+  for (const gv::ExpEvent &e : gv::EVENT_VECTORS) {
+    setCase(e.name);
 
     InboundFrame f;
     CHECK(decodeInbound(e.frame, e.size, f) == DecodeResult::Ok);
@@ -321,28 +330,28 @@ static void test_event_vectors() {
       CHECK_U32(ev.reserved1[b], e.frame[HEADER_SIZE + 12 + b]);
     }
     CHECK_U32(e.frame[HEADER_SIZE + 23], 0);
-    ++g_vectorsDecoded;
+    ++harness().vectorsDecoded;
 
     if (e.kind < 32) kindsSeen |= (1u << e.kind);
 
-    uint8_t pay[LEN_EVENT];
-    buildEventPayload(pay, e);
-    uint8_t out[MAX_FRAME];
-    memset(out, 0xee, sizeof(out));
-    EncodeResult n = encodeFrame(out, sizeof(out), e.type, e.flags, pay, LEN_EVENT);
+    std::array<uint8_t, LEN_EVENT> pay;
+    buildEventPayload(pay.data(), e);
+    FrameBuf out;
+    out.fill(0xee);
+    EncodeResult n = encodeFrame(out.data(), out.size(), e.type, e.flags, pay.data(), pay.size());
     CHECK(n.ok());
     CHECK_U32(n.size, e.size);
-    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
-    ++g_vectorsEncoded;
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out.data(), e.frame, e.size);
+    ++harness().vectorsEncoded;
   }
-  g_case = "V6-V15 EVENT";
+  setCase("V6-V15 EVENT");
   // §18: the ten event vectors are exactly the ten kinds a v3 relay can emit.
   const uint32_t want = (1u << K_INFO) | (1u << K_STREAM_START) | (1u << K_STREAM_END)
                       | (1u << K_FOLLOW) | (1u << K_SUB) | (1u << K_GIFT)
                       | (1u << K_RAID) | (1u << K_CHAT) | (1u << K_BITS);
   // Nine distinct codes over ten vectors: CHAT appears twice (V12, V13).
   CHECK_U32(kindsSeen, want);
-  g_case = "";
+  setCase("");
 }
 
 // ---------------------------------------------------------------------------
@@ -352,9 +361,8 @@ static void test_event_vectors() {
 static void test_stats_vectors() {
   testCase("V4, V5 STATS: decode to fields and encode to bytes");
   CHECK_U32(gv::STATS_COUNT, 2);
-  for (size_t i = 0; i < gv::STATS_COUNT; ++i) {
-    const gv::ExpStats &e = gv::STATS_VECTORS[i];
-    g_case = e.name;
+  for (const gv::ExpStats &e : gv::STATS_VECTORS) {
+    setCase(e.name);
 
     InboundFrame f;
     CHECK(decodeInbound(e.frame, e.size, f) == DecodeResult::Ok);
@@ -370,24 +378,24 @@ static void test_stats_vectors() {
     CHECK_U32(s.chat_rate, e.chat_rate);
     CHECK_U32(s.live, e.live);
     CHECK_U32(s.sflags, e.sflags);
-    ++g_vectorsDecoded;
+    ++harness().vectorsDecoded;
 
-    uint8_t pay[LEN_STATS];
-    buildStatsPayload(pay, e);
-    uint8_t out[MAX_FRAME];
-    memset(out, 0xee, sizeof(out));
-    EncodeResult n = encodeFrame(out, sizeof(out), e.type, e.flags, pay, LEN_STATS);
+    std::array<uint8_t, LEN_STATS> pay;
+    buildStatsPayload(pay.data(), e);
+    FrameBuf out;
+    out.fill(0xee);
+    EncodeResult n = encodeFrame(out.data(), out.size(), e.type, e.flags, pay.data(), pay.size());
     CHECK(n.ok());
     CHECK_U32(n.size, e.size);
-    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
-    ++g_vectorsEncoded;
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out.data(), e.frame, e.size);
+    ++harness().vectorsEncoded;
   }
   // §6.5: msg_total survives a stream ending; the two vectors say so in bytes.
-  g_case = "V4/V5 STATS";
+  setCase("V4/V5 STATS");
   CHECK_U32(gv::STATS_VECTORS[0].msg_total, gv::STATS_VECTORS[1].msg_total);
   CHECK_U32(gv::STATS_VECTORS[1].live, 0);
   CHECK_U32(gv::STATS_VECTORS[1].uptime_s, 0);
-  g_case = "";
+  setCase("");
 }
 
 // ---------------------------------------------------------------------------
@@ -397,14 +405,13 @@ static void test_stats_vectors() {
 static void test_token_vectors() {
   testCase("V16-V19 PING / PONG / ACK: decode to fields and encode to bytes");
   CHECK_U32(gv::TOKEN_COUNT, 4);
-  for (size_t i = 0; i < gv::TOKEN_COUNT; ++i) {
-    const gv::ExpToken &e = gv::TOKEN_VECTORS[i];
-    g_case = e.name;
+  for (const gv::ExpToken &e : gv::TOKEN_VECTORS) {
+    setCase(e.name);
 
     TsbToken t;
     CHECK(decodeToken(e.frame + HEADER_SIZE, e.length, t) == DecodeResult::Ok);
     CHECK_U32(t.value, e.token);
-    ++g_vectorsDecoded;
+    ++harness().vectorsDecoded;
 
     InboundFrame f;
     DecodeResult r = decodeInbound(e.frame, e.size, f);
@@ -415,30 +422,30 @@ static void test_token_vectors() {
       CHECK(r == DecodeResult::WrongDirection);
     }
 
-    uint8_t out[MAX_FRAME];
-    memset(out, 0xee, sizeof(out));
+    FrameBuf out;
+    out.fill(0xee);
     EncodeResult n;
     switch (e.type) {
-      case T_PING_DEVICE: n = encodePing(out, sizeof(out), e.token); break;
-      case T_PONG_DEVICE: n = encodePong(out, sizeof(out), e.token); break;
-      case T_ACK:         n = encodeAck (out, sizeof(out), e.token); break;
+      case T_PING_DEVICE: n = encodePing(out.data(), out.size(), e.token); break;
+      case T_PONG_DEVICE: n = encodePong(out.data(), out.size(), e.token); break;
+      case T_ACK:         n = encodeAck (out.data(), out.size(), e.token); break;
       default: {
-        uint8_t pay[LEN_TOKEN];
-        putU32(pay, e.token);
-        n = encodeFrame(out, sizeof(out), e.type, e.flags, pay, LEN_TOKEN);
+        std::array<uint8_t, LEN_TOKEN> pay;
+        putU32(pay.data(), e.token);
+        n = encodeFrame(out.data(), out.size(), e.type, e.flags, pay.data(), pay.size());
         break;
       }
     }
     CHECK(n.ok());
     CHECK_U32(n.size, e.size);
-    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
-    ++g_vectorsEncoded;
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out.data(), e.frame, e.size);
+    ++harness().vectorsEncoded;
   }
   // §6.3: a PONG echoes the PING's token byte for byte. V16 and V17 are that
   // pair, so the four payload bytes must be identical.
-  g_case = "V16/V17 ping-pong token echo";
+  setCase("V16/V17 ping-pong token echo");
   CHECK_BYTES(gv::PING_DEVICE + HEADER_SIZE, gv::PONG_RELAY + HEADER_SIZE, LEN_TOKEN);
-  g_case = "";
+  setCase("");
 }
 
 // ---------------------------------------------------------------------------
@@ -448,9 +455,8 @@ static void test_token_vectors() {
 static void test_bye_vector() {
   testCase("V20 BYE: decode to fields and encode to bytes");
   CHECK_U32(gv::BYE_COUNT, 1);
-  for (size_t i = 0; i < gv::BYE_COUNT; ++i) {
-    const gv::ExpBye &e = gv::BYE_VECTORS[i];
-    g_case = e.name;
+  for (const gv::ExpBye &e : gv::BYE_VECTORS) {
+    setCase(e.name);
 
     InboundFrame f;
     CHECK(decodeInbound(e.frame, e.size, f) == DecodeResult::Ok);
@@ -462,19 +468,19 @@ static void test_bye_vector() {
     CHECK_U32(b.reserved0, e.reserved0);
     CHECK_STR(b.reason, e.reason);
     CHECK_U32(b.code, BYE_UNSUPPORTED_VERSION);
-    ++g_vectorsDecoded;
+    ++harness().vectorsDecoded;
 
-    uint8_t pay[LEN_BYE];
-    buildByePayload(pay, e);
-    uint8_t out[MAX_FRAME];
-    memset(out, 0xee, sizeof(out));
-    EncodeResult n = encodeFrame(out, sizeof(out), e.type, e.flags, pay, LEN_BYE);
+    std::array<uint8_t, LEN_BYE> pay;
+    buildByePayload(pay.data(), e);
+    FrameBuf out;
+    out.fill(0xee);
+    EncodeResult n = encodeFrame(out.data(), out.size(), e.type, e.flags, pay.data(), pay.size());
     CHECK(n.ok());
     CHECK_U32(n.size, e.size);
-    if (n.ok() && n.size == e.size) CHECK_BYTES(out, e.frame, e.size);
-    ++g_vectorsEncoded;
+    if (n.ok() && n.size == e.size) CHECK_BYTES(out.data(), e.frame, e.size);
+    ++harness().vectorsEncoded;
   }
-  g_case = "";
+  setCase("");
 }
 
 // ---------------------------------------------------------------------------
@@ -487,18 +493,18 @@ static void test_reserved_bytes_are_carried_not_blanked() {
   // A v4 frame as a v3 device would see it: the held-open bytes carry a real
   // ISO 4217 code and a real exponent. A v3 receiver MUST ignore them, which
   // means MUST NOT act on them — and equally MUST NOT erase them.
-  uint8_t frame[sizeof(gv::EVENT_SUB)];
-  memcpy(frame, gv::EVENT_SUB, sizeof(frame));
+  std::array<uint8_t, sizeof(gv::EVENT_SUB)> frame;
+  memcpy(frame.data(), gv::EVENT_SUB, frame.size());
   frame[HEADER_SIZE + 12] = 'E';
   frame[HEADER_SIZE + 13] = 'U';
   frame[HEADER_SIZE + 14] = 'R';
   frame[HEADER_SIZE + 15] = 0x00;
   frame[HEADER_SIZE + 23] = 2;
   // The payload is not covered by hchk (§3.1), so the header is untouched.
-  CHECK(headerIsValid(frame));
+  CHECK(headerIsValid(frame.data()));
 
   InboundFrame f;
-  CHECK(decodeInbound(frame, sizeof(frame), f) == DecodeResult::Ok);
+  CHECK(decodeInbound(frame.data(), frame.size(), f) == DecodeResult::Ok);
   CHECK_U32(f.as.event.reserved1[0], 'E');
   CHECK_U32(f.as.event.reserved1[1], 'U');
   CHECK_U32(f.as.event.reserved1[2], 'R');
@@ -510,15 +516,15 @@ static void test_reserved_bytes_are_carried_not_blanked() {
 
   // Bytes that are not a plausible currency code are carried just the same:
   // a v3 device has no opinion about what a v4 put there.
-  uint8_t junk[sizeof(gv::EVENT_FOLLOW)];
-  memcpy(junk, gv::EVENT_FOLLOW, sizeof(junk));
+  std::array<uint8_t, sizeof(gv::EVENT_FOLLOW)> junk;
+  memcpy(junk.data(), gv::EVENT_FOLLOW, junk.size());
   junk[HEADER_SIZE + 12] = 0xff;
   junk[HEADER_SIZE + 13] = 0x01;
   junk[HEADER_SIZE + 14] = 0x7a;
   junk[HEADER_SIZE + 15] = 0x40;
   junk[HEADER_SIZE + 23] = 0xfe;
   InboundFrame g;
-  CHECK(decodeInbound(junk, sizeof(junk), g) == DecodeResult::Ok);
+  CHECK(decodeInbound(junk.data(), junk.size(), g) == DecodeResult::Ok);
   CHECK_U32(g.as.event.reserved1[0], 0xff);
   CHECK_U32(g.as.event.reserved1[1], 0x01);
   CHECK_U32(g.as.event.reserved1[2], 0x7a);
@@ -532,15 +538,15 @@ static void test_reserved_bytes_are_carried_not_blanked() {
 
 static void test_payload_level_problems() {
   testCase("§4.3 unknown type, wrong direction, short payload, invalid field");
-  uint8_t out[MAX_FRAME];
+  FrameBuf out;
   InboundFrame f;
 
   // A type a newer relay added: UnknownType, never a close.
-  uint8_t pay[16];
-  memset(pay, 0x5a, sizeof(pay));
-  EncodeResult n = encodeFrame(out, sizeof(out), 0x2f, 0, pay, sizeof(pay));
+  std::array<uint8_t, 16> pay;
+  pay.fill(0x5a);
+  EncodeResult n = encodeFrame(out.data(), out.size(), 0x2f, 0, pay.data(), pay.size());
   CHECK(n.ok() && n.size == 24);
-  CHECK(decodeInbound(out, n.size, f) == DecodeResult::UnknownType);
+  CHECK(decodeInbound(out.data(), n.size, f) == DecodeResult::UnknownType);
 
   // A device-to-relay type arriving at the device: WrongDirection.
   CHECK(decodeInbound(gv::HELLO_FRESH_BOOT, sizeof(gv::HELLO_FRESH_BOOT), f)
@@ -549,105 +555,105 @@ static void test_payload_level_problems() {
         == DecodeResult::WrongDirection);
 
   // length < base: ShortPayload. Build a 16-byte STATS.
-  n = encodeFrame(out, sizeof(out), T_STATS, 0, gv::STATS_LIVE + HEADER_SIZE, 16);
-  CHECK(decodeInbound(out, n.size, f) == DecodeResult::ShortPayload);
+  n = encodeFrame(out.data(), out.size(), T_STATS, 0, gv::STATS_LIVE + HEADER_SIZE, 16);
+  CHECK(decodeInbound(out.data(), n.size, f) == DecodeResult::ShortPayload);
 
   // length == 0 for a type whose base is non-zero: ShortPayload.
-  n = encodeFrame(out, sizeof(out), T_EVENT, 0, 0, 0);
+  n = encodeFrame(out.data(), out.size(), T_EVENT, 0, nullptr, 0);
   CHECK(n.ok() && n.size == 8);
-  CHECK(decodeInbound(out, n.size, f) == DecodeResult::ShortPayload);
+  CHECK(decodeInbound(out.data(), n.size, f) == DecodeResult::ShortPayload);
 
   // EVENT.seq == 0 is fatal to the frame (§6.4), not to the link.
-  uint8_t ev[sizeof(gv::EVENT_FOLLOW)];
-  memcpy(ev, gv::EVENT_FOLLOW, sizeof(ev));
-  memset(ev + HEADER_SIZE, 0, 4);
-  CHECK(decodeInbound(ev, sizeof(ev), f) == DecodeResult::InvalidField);
+  std::array<uint8_t, sizeof(gv::EVENT_FOLLOW)> ev;
+  memcpy(ev.data(), gv::EVENT_FOLLOW, ev.size());
+  memset(ev.data() + HEADER_SIZE, 0, 4);
+  CHECK(decodeInbound(ev.data(), ev.size(), f) == DecodeResult::InvalidField);
 }
 
 static void test_receiver_normalisations() {
   testCase("§6.4, §6.5 receiver normalisations: tier, ttl_ds, live, unknown kind");
-  uint8_t ev[sizeof(gv::EVENT_SUB)];
+  std::array<uint8_t, sizeof(gv::EVENT_SUB)> ev;
   InboundFrame f;
 
   // tier > 4 renders no tier, and MUST NOT be passed through as Prime.
-  memcpy(ev, gv::EVENT_SUB, sizeof(ev));
+  memcpy(ev.data(), gv::EVENT_SUB, ev.size());
   ev[HEADER_SIZE + 21] = 200;
-  CHECK(decodeInbound(ev, sizeof(ev), f) == DecodeResult::Ok);
+  CHECK(decodeInbound(ev.data(), ev.size(), f) == DecodeResult::Ok);
   CHECK_U32(f.as.event.tier, TIER_NONE);
 
   // ttl_ds above 6000 is clamped, not honoured and not zeroed.
-  memcpy(ev, gv::EVENT_SUB, sizeof(ev));
+  memcpy(ev.data(), gv::EVENT_SUB, ev.size());
   ev[HEADER_SIZE + 18] = 0xff;
   ev[HEADER_SIZE + 19] = 0xff;
-  CHECK(decodeInbound(ev, sizeof(ev), f) == DecodeResult::Ok);
+  CHECK(decodeInbound(ev.data(), ev.size(), f) == DecodeResult::Ok);
   CHECK_U32(f.as.event.ttl_ds, TTL_DS_MAX);
 
-  const uint16_t ttlBoundaries[] = {5999, 6000, 6001};
+  const std::array<uint16_t, 3> ttlBoundaries = {{5999, 6000, 6001}};
   for (uint16_t ttl : ttlBoundaries) {
     ev[HEADER_SIZE + 18] = ttl & 0xff;
     ev[HEADER_SIZE + 19] = ttl >> 8;
-    CHECK(decodeInbound(ev, sizeof(ev), f) == DecodeResult::Ok);
+    CHECK(decodeInbound(ev.data(), ev.size(), f) == DecodeResult::Ok);
     CHECK_U32(f.as.event.ttl_ds, ttl > TTL_DS_MAX ? TTL_DS_MAX : ttl);
   }
 
   // ttl_ds == 0 stays 0: §6.4 says that means "use the receiver's per-kind
   // default", which is a renderer decision, not a codec one.
-  memcpy(ev, gv::EVENT_SUB, sizeof(ev));
+  memcpy(ev.data(), gv::EVENT_SUB, ev.size());
   ev[HEADER_SIZE + 18] = 0;
   ev[HEADER_SIZE + 19] = 0;
-  CHECK(decodeInbound(ev, sizeof(ev), f) == DecodeResult::Ok);
+  CHECK(decodeInbound(ev.data(), ev.size(), f) == DecodeResult::Ok);
   CHECK_U32(f.as.event.ttl_ds, 0);
 
   // An unknown kind decodes fine: §6.4.2 says render as INFO, never drop.
-  memcpy(ev, gv::EVENT_SUB, sizeof(ev));
+  memcpy(ev.data(), gv::EVENT_SUB, ev.size());
   ev[HEADER_SIZE + 20] = 0x19;           // a v4 HYPE_TRAIN, say
-  CHECK(decodeInbound(ev, sizeof(ev), f) == DecodeResult::Ok);
+  CHECK(decodeInbound(ev.data(), ev.size(), f) == DecodeResult::Ok);
   CHECK_U32(f.as.event.kind, 0x19);
   CHECK_STR(f.as.event.actor, gv::EVENT_VECTORS[2].actor);
 
   // 0x18 is permanently reserved but is still just an unknown kind on the wire.
-  memcpy(ev, gv::EVENT_SUB, sizeof(ev));
+  memcpy(ev.data(), gv::EVENT_SUB, ev.size());
   ev[HEADER_SIZE + 20] = 0x18;
-  CHECK(decodeInbound(ev, sizeof(ev), f) == DecodeResult::Ok);
+  CHECK(decodeInbound(ev.data(), ev.size(), f) == DecodeResult::Ok);
   CHECK_U32(f.as.event.kind, 0x18);
 
   // Unknown eflags bits are ignored, never rejected.
-  memcpy(ev, gv::EVENT_SUB, sizeof(ev));
+  memcpy(ev.data(), gv::EVENT_SUB, ev.size());
   ev[HEADER_SIZE + 22] = 0xff;
-  CHECK(decodeInbound(ev, sizeof(ev), f) == DecodeResult::Ok);
+  CHECK(decodeInbound(ev.data(), ev.size(), f) == DecodeResult::Ok);
   CHECK_U32(f.as.event.eflags, 0xff);
 
   // STATS.live: any non-zero value MUST be treated as live.
-  uint8_t st[sizeof(gv::STATS_OFFLINE)];
-  memcpy(st, gv::STATS_OFFLINE, sizeof(st));
+  std::array<uint8_t, sizeof(gv::STATS_OFFLINE)> st;
+  memcpy(st.data(), gv::STATS_OFFLINE, st.size());
   st[HEADER_SIZE + 30] = 0x7f;
-  CHECK(decodeInbound(st, sizeof(st), f) == DecodeResult::Ok);
+  CHECK(decodeInbound(st.data(), st.size(), f) == DecodeResult::Ok);
   CHECK_U32(f.as.stats.live, 1);
 }
 
 static void test_unknown_flag_bits_and_versions() {
   testCase("§3.2, §7 unknown flag bits are ignored; version is not a framing error");
-  uint8_t frame[sizeof(gv::EVENT_RAID_REPLAYED)];
-  memcpy(frame, gv::EVENT_RAID_REPLAYED, sizeof(frame));
+  std::array<uint8_t, sizeof(gv::EVENT_RAID_REPLAYED)> frame;
+  memcpy(frame.data(), gv::EVENT_RAID_REPLAYED, frame.size());
   CHECK_U32(frame[6], FLAG_REPLAY);
 
   // Set every reserved flag bit. §3.2: ignore, never reject.
   frame[6] = 0xff;
-  frame[7] = headerCheck(frame);
+  frame[7] = headerCheck(frame.data());
   InboundFrame f;
-  CHECK(headerIsValid(frame));
-  CHECK(decodeInbound(frame, sizeof(frame), f) == DecodeResult::Ok);
+  CHECK(headerIsValid(frame.data()));
+  CHECK(decodeInbound(frame.data(), frame.size(), f) == DecodeResult::Ok);
   CHECK_U32(f.header.flags, 0xff);
   CHECK_U32(f.header.flags & FLAG_REPLAY, FLAG_REPLAY);
 
   // §4.2: version is deliberately NOT a header validity condition. That is the
   // mechanism that lets a peer read a BYE from a peer it cannot speak to.
-  uint8_t bye[sizeof(gv::BYE_VERSION_MISMATCH)];
-  memcpy(bye, gv::BYE_VERSION_MISMATCH, sizeof(bye));
+  std::array<uint8_t, sizeof(gv::BYE_VERSION_MISMATCH)> bye;
+  memcpy(bye.data(), gv::BYE_VERSION_MISMATCH, bye.size());
   bye[2] = 0x09;                       // a version this device does not speak
-  bye[7] = headerCheck(bye);
-  CHECK(headerIsValid(bye));
-  CHECK(decodeInbound(bye, sizeof(bye), f) == DecodeResult::Ok);
+  bye[7] = headerCheck(bye.data());
+  CHECK(headerIsValid(bye.data()));
+  CHECK(decodeInbound(bye.data(), bye.size(), f) == DecodeResult::Ok);
   CHECK_U32(f.header.version, 0x09);   // surfaced to the session layer, not eaten
   CHECK_U32(f.as.bye.code, BYE_UNSUPPORTED_VERSION);
 }
@@ -659,16 +665,16 @@ static void test_unknown_flag_bits_and_versions() {
 
 static void test_forward_compatible_longer_payload() {
   testCase("§16 a longer EVENT from a newer relay decodes; the tail is ignored");
-  uint8_t out[MAX_FRAME];
-  uint8_t pay[LEN_EVENT + 40];
-  memcpy(pay, gv::EVENT_BITS + HEADER_SIZE, LEN_EVENT);
-  memset(pay + LEN_EVENT, 0xa5, 40);      // a v4 appendix
-  EncodeResult n = encodeFrame(out, sizeof(out), T_EVENT, 0, pay, sizeof(pay));
+  FrameBuf out;
+  std::array<uint8_t, LEN_EVENT + 40> pay;
+  memcpy(pay.data(), gv::EVENT_BITS + HEADER_SIZE, LEN_EVENT);
+  memset(pay.data() + LEN_EVENT, 0xa5, 40);      // a v4 appendix
+  EncodeResult n = encodeFrame(out.data(), out.size(), T_EVENT, 0, pay.data(), pay.size());
   CHECK(n.ok());
-    CHECK_U32(n.size, HEADER_SIZE + sizeof(pay));
+  CHECK_U32(n.size, HEADER_SIZE + pay.size());
 
   InboundFrame f;
-  CHECK(decodeInbound(out, n.size, f) == DecodeResult::Ok);
+  CHECK(decodeInbound(out.data(), n.size, f) == DecodeResult::Ok);
   const gv::ExpEvent &e = gv::EVENT_VECTORS[5];   // V11 event_bits
   CHECK_U32(f.as.event.seq, e.seq);
   CHECK_U32(f.as.event.value, e.value);
@@ -684,18 +690,22 @@ static void test_forward_compatible_longer_payload() {
 static void test_bounds() {
   testCase("bounds: every short buffer is refused, never over-read");
   InboundFrame f;
-  for (size_t i = 0; i < gv::ALL_COUNT; ++i) {
-    const gv::ExpFrame &v = gv::ALL_VECTORS[i];
-    g_case = v.name;
+  for (const gv::ExpFrame &v : gv::ALL_VECTORS) {
+    setCase(v.name);
     for (size_t n = 0; n < v.size; ++n) {
       DecodeResult r = decodeInbound(v.frame, n, f);
       CHECK(r == DecodeResult::Truncated);
     }
-    CHECK(decodeInbound(0, v.size, f) == DecodeResult::Truncated);
+    CHECK(decodeInbound(nullptr, v.size, f) == DecodeResult::Truncated);
   }
-  g_case = "bounds";
+  setCase("bounds");
 
-  TsbEvent ev; TsbStats st; TsbWelcome we; TsbBye by; TsbToken tk; TsbHello he;
+  TsbEvent ev;
+  TsbStats st;
+  TsbWelcome we;
+  TsbBye by;
+  TsbToken tk;
+  TsbHello he;
   for (size_t n = 0; n < LEN_EVENT; ++n)
     CHECK(decodeEvent(gv::EVENT_SUB + HEADER_SIZE, n, ev) == DecodeResult::ShortPayload);
   for (size_t n = 0; n < LEN_STATS; ++n)
@@ -710,7 +720,7 @@ static void test_bounds() {
     CHECK(decodeHello(gv::HELLO_FRESH_BOOT + HEADER_SIZE, n, he) == DecodeResult::ShortPayload);
 
   // Encoders refuse a destination that is one byte short rather than writing.
-  uint8_t small[MAX_FRAME];
+  FrameBuf small;
   TsbHello h;
   buildHello(h, 1, CAP_ACK, "roundlcd-01", "1.0.0");
   TsbHello sanitized;
@@ -718,13 +728,13 @@ static void test_bounds() {
   CHECK(strcmp(sanitized.device_id, "board___") == 0);
   CHECK(strcmp(sanitized.fw_version, "v___") == 0);
   CHECK(encodeHello(nullptr, 0, sanitized).err == EncodeError::Argument);
-  CHECK(encodeHello(small, HEADER_SIZE + LEN_HELLO - 1, h).err == EncodeError::Capacity);
-  CHECK(encodeHello(small, HEADER_SIZE + LEN_HELLO, h).size == HEADER_SIZE + LEN_HELLO);
-  CHECK(encodePing(small, 11, 1).err == EncodeError::Capacity);
-  CHECK(encodeFrame(small, sizeof(small), 0x00, 0, 0, 0).err == EncodeError::Argument);
-  CHECK(encodeFrame(small, sizeof(small), T_ACK, 0, 0, 4).err == EncodeError::Argument);
-  CHECK(encodeFrame(small, sizeof(small), T_ACK, 0, small, MAX_PAYLOAD + 1).err == EncodeError::Argument);
-  g_case = "";
+  CHECK(encodeHello(small.data(), HEADER_SIZE + LEN_HELLO - 1, h).err == EncodeError::Capacity);
+  CHECK(encodeHello(small.data(), HEADER_SIZE + LEN_HELLO, h).size == HEADER_SIZE + LEN_HELLO);
+  CHECK(encodePing(small.data(), 11, 1).err == EncodeError::Capacity);
+  CHECK(encodeFrame(small.data(), small.size(), 0x00, 0, nullptr, 0).err == EncodeError::Argument);
+  CHECK(encodeFrame(small.data(), small.size(), T_ACK, 0, nullptr, 4).err == EncodeError::Argument);
+  CHECK(encodeFrame(small.data(), small.size(), T_ACK, 0, small.data(), MAX_PAYLOAD + 1).err == EncodeError::Argument);
+  setCase("");
 }
 
 // ---------------------------------------------------------------------------
@@ -733,59 +743,59 @@ static void test_bounds() {
 
 static void test_strings() {
   testCase("§9.1 an unterminated wire field is terminated by US, not by them");
-  uint8_t field[48];
-  memset(field, 'A', sizeof(field));       // 48 content bytes, no NUL anywhere
-  char dst[48];
-  copyWireString(dst, field, sizeof(dst));
-  CHECK_U32(strlen(dst), 47);
+  std::array<uint8_t, 48> field;
+  field.fill('A');                         // 48 content bytes, no NUL anywhere
+  std::array<char, 48> dst;
+  copyWireString(dst.data(), field.data(), dst.size());
+  CHECK_U32(strlen(dst.data()), 47);
   CHECK_U32(dst[47], 0);
 
   testCase("§9.2 sender truncation cuts on a code-point boundary and marks it");
-  char out48[48];
-  CHECK(packWireString(out48, sizeof(out48), "short") == false);
-  CHECK_STR(out48, "short");
-  for (size_t i = strlen("short"); i < sizeof(out48); ++i) CHECK_U32(out48[i], 0);
+  std::array<char, 48> out48;
+  CHECK(packWireString(out48.data(), out48.size(), "short") == false);
+  CHECK_STR(out48.data(), "short");
+  for (size_t i = strlen("short"); i < out48.size(); ++i) CHECK_U32(out48[i], 0);
 
   // Exactly 47 content bytes fits untruncated.
-  char fits[48];
-  memset(fits, 0, sizeof(fits));
-  char src47[48];
-  memset(src47, 'x', 47);
+  std::array<char, 48> fits;
+  fits.fill(0);
+  std::array<char, 48> src47;
+  src47.fill('x');
   src47[47] = 0;
-  CHECK(packWireString(fits, sizeof(fits), src47) == false);
-  CHECK_U32(strlen(fits), 47);
+  CHECK(packWireString(fits.data(), fits.size(), src47.data()) == false);
+  CHECK_U32(strlen(fits.data()), 47);
 
   // 48 content bytes does not: cut to 44 + "..." = 47, and report truncation.
-  char src48[49];
-  memset(src48, 'x', 48);
+  std::array<char, 49> src48;
+  src48.fill('x');
   src48[48] = 0;
-  CHECK(packWireString(fits, sizeof(fits), src48) == true);
-  CHECK_U32(strlen(fits), 47);
-  CHECK_STR(fits + 44, "...");
+  CHECK(packWireString(fits.data(), fits.size(), src48.data()) == true);
+  CHECK_U32(strlen(fits.data()), 47);
+  CHECK_STR(fits.data() + 44, "...");
 
   // A value of exactly `cap` bytes is emitted unchanged, multi-byte or not:
   // "ą" is c4 85, so "aaa" + two of them is 7 bytes against a cap of 7.
-  char exact[8];
-  CHECK(packWireString(exact, sizeof(exact), "aaa\xc4\x85\xc4\x85") == false);
-  CHECK_U32(strlen(exact), 7);
-  CHECK_STR(exact, "aaa\xc4\x85\xc4\x85");
+  std::array<char, 8> exact;
+  CHECK(packWireString(exact.data(), exact.size(), "aaa\xc4\x85\xc4\x85") == false);
+  CHECK_U32(strlen(exact.data()), 7);
+  CHECK_STR(exact.data(), "aaa\xc4\x85\xc4\x85");
   CHECK_U32(exact[7], 0);
 
   // A multi-byte code point is never cut in half. Four "ą" is 8 bytes against a
   // cap of 6, so cut starts at 3 — the middle of the second "ą" — and the
   // walk-back of §9.2 step 2 moves it to 2. The result is 5 bytes, SHORTER than
   // the cap, which §9.2 explicitly allows.
-  char utf[7];
-  CHECK(packWireString(utf, sizeof(utf), "\xc4\x85\xc4\x85\xc4\x85\xc4\x85") == true);
-  CHECK_U32(strlen(utf), 5);
-  CHECK_STR(utf, "\xc4\x85...");
+  std::array<char, 7> utf;
+  CHECK(packWireString(utf.data(), utf.size(), "\xc4\x85\xc4\x85\xc4\x85\xc4\x85") == true);
+  CHECK_U32(strlen(utf.data()), 5);
+  CHECK_STR(utf.data(), "\xc4\x85...");
   CHECK_U32(utf[6], 0);
 
   // The last byte of the field is always NUL, whatever happened.
-  char tiny[4];
-  CHECK(packWireString(tiny, sizeof(tiny), "abcdefgh") == true);
+  std::array<char, 4> tiny;
+  CHECK(packWireString(tiny.data(), tiny.size(), "abcdefgh") == true);
   CHECK_U32(tiny[3], 0);
-  CHECK_U32(strlen(tiny), 3);
+  CHECK_U32(strlen(tiny.data()), 3);
 
   testCase("§9.2 V13's truncated strings are what a sender would have produced");
   // V13 marks both fields truncated, and both end in "...".
@@ -810,29 +820,34 @@ struct Collected {
   uint8_t  type;
   uint16_t length;
   uint8_t  flags;
-  uint8_t  payload[MAX_PAYLOAD];
+  std::array<uint8_t, MAX_PAYLOAD> payload;
 };
+
+// Records the reader's current frame into out[got] if there is room, then
+// consumes it. Returns the new frame count, which keeps counting past `cap`.
+static size_t takeFrame(FrameReader &r, Collected *out, size_t cap, size_t got) {
+  if (got < cap) {
+    out[got].type   = r.header().type;
+    out[got].length = r.payloadLength();
+    out[got].flags  = r.header().flags;
+    memcpy(out[got].payload.data(), r.payload(), r.payloadLength());
+  }
+  r.consumeFrame();
+  return got + 1;
+}
 
 // Feeds `src` through `r` in chunks of `chunk` bytes, collecting every frame.
 static size_t drive(FrameReader &r, const uint8_t *src, size_t n, size_t chunk,
                     Collected *out, size_t cap) {
-  size_t got = 0, off = 0;
+  size_t got = 0;
+  size_t off = 0;
   while (off < n && !r.isFatal()) {
     size_t take = n - off;
     if (take > chunk) take = chunk;
     size_t used = 0;
     while (used < take && !r.isFatal()) {
       used += r.feed(src + off + used, take - used);
-      if (r.hasFrame()) {
-        if (got < cap) {
-          out[got].type   = r.header().type;
-          out[got].length = r.payloadLength();
-          out[got].flags  = r.header().flags;
-          memcpy(out[got].payload, r.payload(), r.payloadLength());
-        }
-        ++got;
-        r.consumeFrame();
-      }
+      if (r.hasFrame()) got = takeFrame(r, out, cap, got);
       if (used == 0) break;          // reader took nothing: avoid spinning
     }
     off += take;
@@ -843,19 +858,19 @@ static size_t drive(FrameReader &r, const uint8_t *src, size_t n, size_t chunk,
 static void test_reader_streams_all_vectors() {
   testCase("§4.1 all 20 frames back to back, at every chunk size from 1 to 64");
 
-  uint8_t stream[4096];
+  std::array<uint8_t, 4096> stream;
   size_t total = 0;
-  for (size_t i = 0; i < gv::ALL_COUNT; ++i) {
-    memcpy(stream + total, gv::ALL_VECTORS[i].frame, gv::ALL_VECTORS[i].size);
-    total += gv::ALL_VECTORS[i].size;
+  for (const gv::ExpFrame &v : gv::ALL_VECTORS) {
+    memcpy(stream.data() + total, v.frame, v.size);
+    total += v.size;
   }
   CHECK_U32(total, 2096);
 
-  static const size_t chunks[] = { 1, 2, 3, 5, 7, 8, 9, 16, 31, 64, 256, 4096 };
-  for (size_t c = 0; c < sizeof(chunks) / sizeof(chunks[0]); ++c) {
+  static const std::array<size_t, 12> chunks = {{ 1, 2, 3, 5, 7, 8, 9, 16, 31, 64, 256, 4096 }};
+  for (const size_t chunk : chunks) {
     FrameReader r;
-    Collected got[32];
-    size_t n = drive(r, stream, total, chunks[c], got, 32);
+    std::array<Collected, 32> got;
+    size_t n = drive(r, stream.data(), total, chunk, got.data(), got.size());
     CHECK_U32(n, gv::ALL_COUNT);
     CHECK(!r.isFatal());
     if (n != gv::ALL_COUNT) continue;
@@ -867,7 +882,7 @@ static void test_reader_streams_all_vectors() {
       // The §4.1 trap: a payload assembled from `length - 8` fresh bytes plus
       // eight stale ones renders leftovers from the previous frame instead of
       // crashing. Comparing the whole payload is what catches it.
-      CHECK_BYTES(got[i].payload, v.frame + HEADER_SIZE, v.length);
+      CHECK_BYTES(got[i].payload.data(), v.frame + HEADER_SIZE, v.length);
     }
     CHECK_U32(r.counters().framesDecoded, gv::ALL_COUNT);
     CHECK_U32(r.counters().bytesReceived, total);
@@ -877,40 +892,40 @@ static void test_reader_streams_all_vectors() {
 
 static void test_reader_resynchronises() {
   testCase("§4.4 garbage between frames costs bytes, never the connection");
-  uint8_t stream[1024];
+  std::array<uint8_t, 1024> stream;
   size_t n = 0;
   // Leading junk, including bare magic bytes that do not start a frame.
-  static const uint8_t junk[] = { 0x7b, 0x22, 0xa7, 0xa7, 0x53, 0x00, 0xff, 0x0a };
-  memcpy(stream + n, junk, sizeof(junk)); n += sizeof(junk);
-  memcpy(stream + n, gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); n += sizeof(gv::STATS_LIVE);
-  memcpy(stream + n, junk, sizeof(junk)); n += sizeof(junk);
-  memcpy(stream + n, gv::EVENT_FOLLOW, sizeof(gv::EVENT_FOLLOW)); n += sizeof(gv::EVENT_FOLLOW);
+  static const std::array<uint8_t, 8> junk = {{ 0x7b, 0x22, 0xa7, 0xa7, 0x53, 0x00, 0xff, 0x0a }};
+  memcpy(stream.data() + n, junk.data(), junk.size()); n += junk.size();
+  memcpy(stream.data() + n, gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); n += sizeof(gv::STATS_LIVE);
+  memcpy(stream.data() + n, junk.data(), junk.size()); n += junk.size();
+  memcpy(stream.data() + n, gv::EVENT_FOLLOW, sizeof(gv::EVENT_FOLLOW)); n += sizeof(gv::EVENT_FOLLOW);
   // A truncated frame head, then a good frame: the reader must find the good one.
-  memcpy(stream + n, gv::WELCOME, 5); n += 5;
-  memcpy(stream + n, gv::PING_RELAY, sizeof(gv::PING_RELAY)); n += sizeof(gv::PING_RELAY);
+  memcpy(stream.data() + n, gv::WELCOME, 5); n += 5;
+  memcpy(stream.data() + n, gv::PING_RELAY, sizeof(gv::PING_RELAY)); n += sizeof(gv::PING_RELAY);
 
   for (size_t chunk = 1; chunk <= 64; chunk *= 2) {
     FrameReader r;
-    Collected got[8];
-    size_t frames = drive(r, stream, n, chunk, got, 8);
+    std::array<Collected, 8> got;
+    size_t frames = drive(r, stream.data(), n, chunk, got.data(), got.size());
     CHECK_U32(frames, 3);
-    CHECK_U32(r.counters().resyncEvents, 2 * sizeof(junk) + 5);
+    CHECK_U32(r.counters().resyncEvents, 2 * junk.size() + 5);
     CHECK(!r.isFatal());
     if (frames == 3) {
       CHECK_U32(got[0].type, T_STATS);
       CHECK_U32(got[1].type, T_EVENT);
       CHECK_U32(got[2].type, T_PING_RELAY);
-      CHECK_BYTES(got[1].payload, gv::EVENT_FOLLOW + HEADER_SIZE, LEN_EVENT);
+      CHECK_BYTES(got[1].payload.data(), gv::EVENT_FOLLOW + HEADER_SIZE, LEN_EVENT);
     }
   }
 
   testCase("§4.5 a stream of pure garbage blows the budget and is declared fatal");
   {
     FrameReader r;
-    uint8_t g[8192];
-    memset(g, 0x00, sizeof(g));            // never MAGIC0: discardedBytes path
-    Collected c[2];
-    size_t frames = drive(r, g, sizeof(g), 64, c, 2);
+    std::array<uint8_t, 8192> g;
+    g.fill(0x00);                          // never MAGIC0: discardedBytes path
+    std::array<Collected, 2> c;
+    size_t frames = drive(r, g.data(), g.size(), 64, c.data(), c.size());
     CHECK_U32(frames, 0);
     CHECK(r.isFatal());
     CHECK(r.counters().discardedBytes >= RESYNC_MAX_BYTES);
@@ -919,13 +934,13 @@ static void test_reader_resynchronises() {
     // 16 windows that start with MAGIC0 but are not valid headers: the
     // rejectedCandidates half of the budget (§4.5).
     FrameReader r;
-    uint8_t g[8 * 40];
-    for (size_t i = 0; i < sizeof(g); i += 8) {
+    std::array<uint8_t, 8 * 40> g;
+    for (size_t i = 0; i < g.size(); i += 8) {
       g[i] = MAGIC0; g[i+1] = MAGIC1; g[i+2] = 0x03; g[i+3] = 0x21;
       g[i+4] = 0xa8; g[i+5] = 0x00; g[i+6] = 0x00; g[i+7] = 0x00;  // bad hchk
     }
-    Collected c[2];
-    size_t frames = drive(r, g, sizeof(g), 64, c, 2);
+    std::array<Collected, 2> c;
+    size_t frames = drive(r, g.data(), g.size(), 64, c.data(), c.size());
     CHECK_U32(frames, 0);
     CHECK(r.isFatal());
     CHECK(r.counters().rejectedCandidates >= 1);
@@ -934,15 +949,15 @@ static void test_reader_resynchronises() {
   testCase("§4.5 a good frame resets the budget, so sparse noise never accumulates");
   {
     FrameReader r;
-    uint8_t s[4096];
+    std::array<uint8_t, 4096> s;
     size_t n2 = 0;
     for (int rep = 0; rep < 12; ++rep) {
-      memset(s + n2, 0x11, 300); n2 += 300;             // 300 discarded bytes
-      memcpy(s + n2, gv::PING_RELAY, sizeof(gv::PING_RELAY));
+      memset(s.data() + n2, 0x11, 300); n2 += 300;      // 300 discarded bytes
+      memcpy(s.data() + n2, gv::PING_RELAY, sizeof(gv::PING_RELAY));
       n2 += sizeof(gv::PING_RELAY);
     }
-    Collected c[16];
-    size_t frames = drive(r, s, n2, 37, c, 16);
+    std::array<Collected, 16> c;
+    size_t frames = drive(r, s.data(), n2, 37, c.data(), c.size());
     CHECK_U32(frames, 12);                               // 3600 bytes of noise
     CHECK(!r.isFatal());                                 // but never 4096 in a row
     CHECK_U32(r.counters().discardedBytesTotal, 3600);
@@ -954,16 +969,16 @@ static void test_reader_every_lead_byte() {
   testCase("every byte value is a safe lead byte for the reader");
   for (unsigned b = 0; b < 256; ++b) {
     FrameReader r;
-    uint8_t s[1 + sizeof(gv::STATS_LIVE)];
+    std::array<uint8_t, 1 + sizeof(gv::STATS_LIVE)> s;
     s[0] = (uint8_t)b;
-    memcpy(s + 1, gv::STATS_LIVE, sizeof(gv::STATS_LIVE));
-    Collected c[4];
-    size_t frames = drive(r, s, sizeof(s), 1, c, 4);
+    memcpy(s.data() + 1, gv::STATS_LIVE, sizeof(gv::STATS_LIVE));
+    std::array<Collected, 4> c;
+    size_t frames = drive(r, s.data(), s.size(), 1, c.data(), c.size());
     CHECK_U32(frames, 1);
     CHECK(!r.isFatal());
     if (frames == 1) {
       CHECK_U32(c[0].type, T_STATS);
-      CHECK_BYTES(c[0].payload, gv::STATS_LIVE + HEADER_SIZE, LEN_STATS);
+      CHECK_BYTES(c[0].payload.data(), gv::STATS_LIVE + HEADER_SIZE, LEN_STATS);
     }
   }
 }
@@ -971,21 +986,21 @@ static void test_reader_every_lead_byte() {
 static void test_reader_counters() {
   testCase("§4.3 counters: a skipped frame is counted and the link survives");
   FrameReader r;
-  uint8_t s[512];
+  std::array<uint8_t, 512> s;
   size_t n = 0;
-  uint8_t unknown[MAX_FRAME];
-  uint8_t pay[8];
-  memset(pay, 0, sizeof(pay));
-  EncodeResult un = encodeFrame(unknown, sizeof(unknown), 0x2e, 0, pay, sizeof(pay));
-  memcpy(s + n, unknown, un.size); n += un.size;
-  memcpy(s + n, gv::HELLO_FRESH_BOOT, sizeof(gv::HELLO_FRESH_BOOT));
+  FrameBuf unknown;
+  std::array<uint8_t, 8> pay;
+  pay.fill(0);
+  EncodeResult un = encodeFrame(unknown.data(), unknown.size(), 0x2e, 0, pay.data(), pay.size());
+  memcpy(s.data() + n, unknown.data(), un.size); n += un.size;
+  memcpy(s.data() + n, gv::HELLO_FRESH_BOOT, sizeof(gv::HELLO_FRESH_BOOT));
   n += sizeof(gv::HELLO_FRESH_BOOT);
-  memcpy(s + n, gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); n += sizeof(gv::STATS_LIVE);
+  memcpy(s.data() + n, gv::STATS_LIVE, sizeof(gv::STATS_LIVE)); n += sizeof(gv::STATS_LIVE);
 
   size_t off = 0;
   int ok = 0;
   while (off < n && !r.isFatal()) {
-    off += r.feed(s + off, n - off);
+    off += r.feed(s.data() + off, n - off);
     if (r.hasFrame()) {
       InboundFrame f;
       DecodeResult d = decodeInboundPayload(r.header(), r.payload(), r.payloadLength(), f);
@@ -1014,8 +1029,8 @@ static void test_counters_survive_reconnect() {
   CHECK_U32(r.counters().framesDropped, 1);
 
   // A half-read frame plus a dent in the §4.5 budget, then a reconnect.
-  static const uint8_t junk[] = { 0x00, 0xff };
-  r.feed(junk, sizeof(junk));
+  static const std::array<uint8_t, 2> junk = {{ 0x00, 0xff }};
+  r.feed(junk.data(), junk.size());
   r.feed(gv::STATS_LIVE, 5);
   CHECK(r.counters().discardedBytes > 0);
   r.reset(false);
@@ -1025,7 +1040,7 @@ static void test_counters_survive_reconnect() {
   CHECK_U32(r.counters().bytesReceived, sizeof(gv::STATS_LIVE));
   CHECK_U32(r.counters().bytesSent, 2 * (HEADER_SIZE + LEN_TOKEN));
   CHECK_U32(r.counters().framesDropped, 1);
-  CHECK_U32(r.counters().discardedBytesTotal, sizeof(junk));
+  CHECK_U32(r.counters().discardedBytesTotal, junk.size());
 
   // The half frame was dropped: the next whole frame decodes cleanly.
   r.feed(gv::STATS_LIVE, sizeof(gv::STATS_LIVE));
@@ -1063,13 +1078,13 @@ int main() {
   test_reader_counters();
   test_counters_survive_reconnect();
 
-  g_case = "coverage";
+  setCase("coverage");
   // Every one of the twenty vectors must have been asserted in both directions.
-  CHECK_U32(g_vectorsDecoded, 20);
-  CHECK_U32(g_vectorsEncoded, 20);
+  CHECK_U32(harness().vectorsDecoded, 20);
+  CHECK_U32(harness().vectorsEncoded, 20);
 
   printf("\n%d vectors decoded to fields, %d vectors encoded to bytes\n",
-         g_vectorsDecoded, g_vectorsEncoded);
-  printf("%d checks, %d failures\n", g_checks, g_failures);
-  return g_failures == 0 ? 0 : 1;
+         harness().vectorsDecoded, harness().vectorsEncoded);
+  printf("%d checks, %d failures\n", harness().checks, harness().failures);
+  return harness().failures == 0 ? 0 : 1;
 }

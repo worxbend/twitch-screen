@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <array>
 #include <deque>
 #include <vector>
 #include "link_client.h"
@@ -23,21 +24,34 @@ constexpr uint32_t RETRY_CAP_MS = 30 * SECOND_MS;   // BACKOFF_MAX_MS: ramp cap 
 constexpr uint32_t BYE_FLOOR_MS = 60 * SECOND_MS;   // retry_after_s carried by the unknown-code BYE frame
 static_assert(BYE_FLOOR_MS > RETRY_CAP_MS, "BYE floor must exceed the ordinary ramp cap");
 static_assert(BYE_FLOOR_MS / SECOND_MS <= 0xff, "BYE floor must fit retry_after_s low byte");
-int checks = 0, failures = 0;
+// Mutable suite state lives behind accessors so no namespace-scope variable is
+// writable; the link hooks are plain function pointers and must reach it.
+struct Tally {
+  int checks = 0;
+  int failures = 0;
+};
+Tally &tally() {
+  static Tally t;
+  return t;
+}
 void check(bool pass, const char *what) {
-  ++checks;
-  if (!pass) { ++failures; printf("FAIL: %s\n", what); }
+  ++tally().checks;
+  if (!pass) { ++tally().failures; printf("FAIL: %s\n", what); }
 }
 struct FakeTransport : LinkTransport {
   uint32_t time = 0;
-  bool wifi = true, edge = false, closed = false, writeBlocked = false, available = true;
+  bool wifi = true;
+  bool edge = false;
+  bool closed = false;
+  bool writeBlocked = false;
+  bool available = true;
   Connect connecting = Connect::Ready;
   size_t writeChunk = 256;
   int attempts = 0;
   std::deque<uint8_t> inbound;
   std::vector<uint8_t> outbound;
-  void begin() override {}
-  void poll() override {}
+  void begin() override { /* nothing to set up: the fake has no hardware */ }
+  void poll() override { /* the test drives time and bytes directly */ }
   uint32_t now() const override { return time; }
   uint32_t jitter(uint32_t) override { return 0; }
   bool wifiConnected() const override { return wifi; }
@@ -57,23 +71,34 @@ struct FakeTransport : LinkTransport {
     outbound.insert(outbound.end(), data, data + n);
     return (int)n;
   }
-  void log(const char *) override {}
+  void log(const char *) override { /* link diagnostics are not asserted here */ }
   const char *deviceId() const override { return "test-device"; }
   const char *firmwareVersion() const override { return "test"; }
   void add(const uint8_t *data, size_t n) { inbound.insert(inbound.end(), data, data + n); }
 };
-NotifyQueue<8> queue;
-int welcomes = 0, stats = 0;
-uint32_t welcomedCaps = 0;
-bool refuse = false;
-void welcome(const LinkWelcome &w) { ++welcomes; welcomedCaps = w.caps; queue.greet(w.latestSeq, w.sessionId); }
-bool notify(const Notification &n) { return !refuse && queue.offer(n) != NotifyQueue<8>::Offer::Refused; }
-bool capacity() { return queue.size() < 8; }
-void statistic(const StreamStats &) { ++stats; }
-uint32_t lastSeq() { return queue.lastSeq(); }
+struct AppState {
+  NotifyQueue<8> queue;
+  int welcomes = 0;
+  int stats = 0;
+  uint32_t welcomedCaps = 0;
+  bool refuse = false;
+};
+AppState &app() {
+  static AppState state;
+  return state;
+}
+void welcome(const LinkWelcome &w) {
+  ++app().welcomes; app().welcomedCaps = w.caps; app().queue.greet(w.latestSeq, w.sessionId);
+}
+bool notify(const Notification &n) {
+  return !app().refuse && app().queue.offer(n) != NotifyQueue<8>::Offer::Refused;
+}
+bool capacity() { return app().queue.size() < 8; }
+void statistic(const StreamStats &) { ++app().stats; }
+uint32_t lastSeq() { return app().queue.lastSeq(); }
 const LinkHooks hooks = {welcome, notify, capacity, statistic, lastSeq};
 void reset(FakeTransport &t) {
-  queue = NotifyQueue<8>(); welcomes = stats = 0; refuse = false;
+  app() = AppState();
   linkInit(&hooks, t);
 }
 void pump(FakeTransport &t, unsigned count = 4) {
@@ -136,7 +161,8 @@ void testProlongedOutage() {
   t.wifi = false; pump(t, 1);
   check(!linkIsUp() && t.closed, "WiFi loss without latched edge tears down streaming");
   const int attempts = t.attempts; t.outbound.clear();
-  bool stayedDown = true, noAttempts = true;
+  bool stayedDown = true;
+  bool noAttempts = true;
   // 120 s outage in 1 s steps; pump() returning at all proves linkLoop keeps returning.
   for (int s = 0; s < 120; ++s) {
     t.time += SECOND_MS; pump(t, 3);
@@ -155,22 +181,22 @@ void testProlongedOutage() {
   pump(t, 3);
   check(t.attempts == attempts + 1, "no duplicate attempt while connecting");
   check(t.outbound.size() >= tsb::HEADER_SIZE && t.outbound[3] == tsb::T_HELLO, "HELLO re-sent after outage");
-  const int welcomesBefore = welcomes; greet(t);
-  check(linkIsUp() && welcomes == welcomesBefore + 1 && t.attempts == attempts + 1,
+  const int welcomesBefore = app().welcomes; greet(t);
+  check(linkIsUp() && app().welcomes == welcomesBefore + 1 && t.attempts == attempts + 1,
         "recovered session reaches streaming on the same attempt");
 }
 void testWritesAndAck() {
   FakeTransport t; reset(t); t.writeChunk = 3; greet(t); pump(t, 30);
-  uint8_t expected[tsb::HEADER_SIZE + tsb::LEN_HELLO];
+  std::array<uint8_t, tsb::HEADER_SIZE + tsb::LEN_HELLO> expected;
   tsb::TsbHello hello;
   tsb::buildHello(hello, 0, tsb::CAP_ACK | tsb::CAP_CHAT | tsb::CAP_GENERIC,
                   t.deviceId(), t.firmwareVersion());
-  tsb::encodeHello(expected, sizeof(expected), hello);
-  check(t.outbound.size() == sizeof(expected) &&
-        memcmp(t.outbound.data(), expected, sizeof(expected)) == 0,
+  tsb::encodeHello(expected.data(), expected.size(), hello);
+  check(t.outbound.size() == expected.size() &&
+        memcmp(t.outbound.data(), expected.data(), expected.size()) == 0,
         "partial writes retain every byte of exactly one complete HELLO");
   const size_t before = t.outbound.size();
-  event(t, queue.lastSeq() + 1); pump(t, 20);
+  event(t, app().queue.lastSeq() + 1); pump(t, 20);
   check(t.outbound.size() == before, "ACK held until coalescing interval");
   t.time += ACK_COALESCE_MS; pump(t, 10);
   check(t.outbound.size() == before + 12, "one ACK acknowledges accepted EVENT");
@@ -180,29 +206,29 @@ void testWritesAndAck() {
 }
 void testBurst() {
   FakeTransport t; reset(t); greet(t);
-  const uint32_t baseline = queue.lastSeq();
+  const uint32_t baseline = app().queue.lastSeq();
   for (uint32_t i = 1; i <= 30; ++i) event(t, baseline + i);
   pump(t, 100);
-  check(queue.size() == 8 && queue.refused() == 0, "burst pauses at eight queued notifications");
+  check(app().queue.size() == 8 && app().queue.refused() == 0, "burst pauses at eight queued notifications");
   Notification n; unsigned shown = 0;
-  while (shown < 30 && queue.take(n)) {
+  while (shown < 30 && app().queue.take(n)) {
     ++shown; check(n.seq == baseline + shown, "burst preserves event ordering"); pump(t, 10);
   }
-  check(shown == 30 && queue.lastSeq() == baseline + 30, "entire burst drains without reconnect or high-water gap");
+  check(shown == 30 && app().queue.lastSeq() == baseline + 30, "entire burst drains without reconnect or high-water gap");
   check(linkIsUp(), "burst leaves session connected");
 }
 void testPausedQueueTimersAndWrongVersion() {
   FakeTransport t; reset(t); greet(t);
-  const uint32_t baseline = queue.lastSeq();
+  const uint32_t baseline = app().queue.lastSeq();
   for (uint32_t seq = baseline + 1; seq <= baseline + 9; ++seq) event(t, seq);
   pump(t, 40);
   size_t before = t.outbound.size();
   for (int i = 0; i < 4; ++i) { t.time += PING_INTERVAL_MS + SECOND_MS; pump(t); }
-  check(linkIsUp() && queue.size() == 8 && queue.lastSeq() == baseline + 8,
+  check(linkIsUp() && app().queue.size() == 8 && app().queue.lastSeq() == baseline + 8,
         "full queue pauses >heartbeat timeout without changing high-water mark");
   check(t.outbound.size() >= before + 48, "periodic outbound heartbeats continue while input paused");
-  Notification n; queue.take(n); pump(t);
-  check(queue.lastSeq() == baseline + 9, "paused EVENT resumes immediately after display capacity returns");
+  Notification n; app().queue.take(n); pump(t);
+  check(app().queue.lastSeq() == baseline + 9, "paused EVENT resumes immediately after display capacity returns");
 
   FakeTransport wrong; reset(wrong); greet(wrong);
   for (int i = 0; i < 8; ++i) event(wrong, baseline + i + 1);
@@ -215,16 +241,16 @@ void testPausedQueueTimersAndWrongVersion() {
 }
 void testSessionBoundaries() {
   FakeTransport t; reset(t); greet(t);
-  check(welcomedCaps == (tsb::CAP_ACK | tsb::CAP_CHAT | tsb::CAP_GENERIC),
+  check(app().welcomedCaps == (tsb::CAP_ACK | tsb::CAP_CHAT | tsb::CAP_GENERIC),
         "WELCOME cannot enable unadvertised capabilities");
-  event(t, queue.lastSeq() + 1); pump(t);
-  const uint32_t baseline = queue.lastSeq();
+  event(t, app().queue.lastSeq() + 1); pump(t);
+  const uint32_t baseline = app().queue.lastSeq();
   t.add(gv::WELCOME, sizeof(gv::WELCOME)); pump(t);
-  check(!linkIsUp() && welcomes == 1 && queue.lastSeq() == baseline,
+  check(!linkIsUp() && app().welcomes == 1 && app().queue.lastSeq() == baseline,
         "duplicate WELCOME closes without rewinding application baseline");
 
   FakeTransport paused; reset(paused); greet(paused);
-  for (unsigned i = 1; i <= 9; ++i) event(paused, queue.lastSeq() + i);
+  for (unsigned i = 1; i <= 9; ++i) event(paused, app().queue.lastSeq() + i);
   pump(paused, 40);
   paused.time += DEFAULT_PAUSE_LIMIT_MS; pump(paused, 1);
   check(paused.closed && !linkIsUp(), "full-queue pause expires after twice relay idle timeout");
@@ -240,10 +266,10 @@ void testSessionBoundaries() {
 void testHeartbeatCapsAndBye() {
   FakeTransport t; reset(t); greet(t);
   const size_t before = t.outbound.size();
-  uint8_t ping[12]; tsb::encodePing(ping, sizeof(ping), 0x12345678);
+  std::array<uint8_t, 12> ping; tsb::encodePing(ping.data(), ping.size(), 0x12345678);
   ping[3] = tsb::T_PING_RELAY; ping[6] = tsb::FLAG_REPLAY;
-  ping[7] = tsb::headerCheck(ping);
-  t.add(ping, sizeof(ping)); pump(t);
+  ping[7] = tsb::headerCheck(ping.data());
+  t.add(ping.data(), ping.size()); pump(t);
   check(t.outbound.size() == before + 12 &&
         t.outbound[before + 3] == tsb::T_PONG_DEVICE &&
         t.outbound[before + 8] == 0x78,
@@ -256,7 +282,7 @@ void testHeartbeatCapsAndBye() {
   welcomeBytes[28] &= ~tsb::CAP_ACK;
   noAck.add(welcomeBytes.data(), welcomeBytes.size()); pump(noAck);
   const size_t sent = noAck.outbound.size();
-  event(noAck, queue.lastSeq() + 1); pump(noAck); noAck.time += ACK_COALESCE_MS + 1; pump(noAck);
+  event(noAck, app().queue.lastSeq() + 1); pump(noAck); noAck.time += ACK_COALESCE_MS + 1; pump(noAck);
   check(noAck.outbound.size() == sent, "no ACK is emitted without negotiated CAP_ACK");
 
   FakeTransport bye; reset(bye); greet(bye);
@@ -324,11 +350,11 @@ void testStableRecoveryAndWrap() {
   check(wrap.attempts == attempts + 1, "retry deadline is wrap-safe");
 }
 void testRefusalAndInvalidHandshake() {
-  FakeTransport t; reset(t); greet(t); refuse = true;
-  uint32_t seq = queue.lastSeq(); event(t, seq + 1); event(t, seq + 2); pump(t);
-  check(t.closed && queue.lastSeq() == seq, "actual refusal closes before later EVENT can advance mark");
+  FakeTransport t; reset(t); greet(t); app().refuse = true;
+  uint32_t seq = app().queue.lastSeq(); event(t, seq + 1); event(t, seq + 2); pump(t);
+  check(t.closed && app().queue.lastSeq() == seq, "actual refusal closes before later EVENT can advance mark");
   FakeTransport bad; reset(bad); pump(bad); bad.add(gv::EVENT_STREAM_START, sizeof(gv::EVENT_STREAM_START)); pump(bad);
-  check(bad.closed && welcomes == 0, "EVENT before WELCOME is fatal");
+  check(bad.closed && app().welcomes == 0, "EVENT before WELCOME is fatal");
 }
 }
 int main() {
@@ -336,6 +362,6 @@ int main() {
   testBurst(); testRefusalAndInvalidHandshake();
   testHeartbeatCapsAndBye(); testReplacedAndVersionByeJumpToCap(); testStableRecoveryAndWrap();
   testPausedQueueTimersAndWrongVersion(); testSessionBoundaries();
-  printf("%d checks, %d failures\n", checks, failures);
-  return failures != 0;
+  printf("%d checks, %d failures\n", tally().checks, tally().failures);
+  return tally().failures != 0;
 }
