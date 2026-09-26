@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check both implementations against the normative TSB/3 vectors.
 
-Usage: check_protocol_vectors.py [PROTOCOL.md]   (defaults to the firmware specification)
+Usage: check_protocol_vectors.py
 """
 
 from pathlib import Path
@@ -23,13 +23,30 @@ def decode_hex(number, block, origin):
         raise ValueError(f"V{number}: malformed hex block in {origin}: {error}") from error
 
 
+def fenced_blocks(section):
+    """Yield (number, hex) for the first fenced block after each `### V<n>.` heading."""
+    number, block = None, None
+    for line in section.splitlines():
+        if block is not None:
+            if line == "```":
+                yield number, "\n".join(block)
+                number, block = None, None
+            else:
+                block.append(line)
+        elif line.startswith("### V"):
+            digits, dot, _ = line[len("### V"):].partition(".")
+            number = digits if dot and digits.isdigit() else None
+        elif line == "```" and number is not None:
+            block = []
+
+
 def spec_vectors(spec=SPEC):
     source = spec.read_text(encoding="utf-8")
     start, end = "<!-- tsb3-golden-vectors:start -->", "<!-- tsb3-golden-vectors:end -->"
     if source.count(start) != 1 or source.count(end) != 1 or source.index(start) >= source.index(end):
         raise ValueError("PROTOCOL.md must contain one ordered pair of tsb3-golden-vectors anchors")
     section = source.split(start, 1)[1].split(end, 1)[0]
-    blocks = re.findall(r"^### V(\d+)\..*?\n```\n(.*?)```", section, re.M | re.S)
+    blocks = list(fenced_blocks(section))
     vectors = {int(number): decode_hex(number, block, spec.name) for number, block in blocks}
     if len(blocks) != 20 or set(vectors) != set(range(1, 21)):
         raise ValueError("Expected exactly V1–V20 in the specification")
@@ -45,12 +62,7 @@ def relay_vectors(source=RELAY_VECTORS):
     }
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    if len(argv) > 1:
-        raise SystemExit("usage: check_protocol_vectors.py [PROTOCOL.md]")
-    spec = Path(argv[0]) if argv else SPEC
-
+def main(spec=SPEC):
     expected = spec_vectors(spec)
     with tempfile.TemporaryDirectory() as directory:
         generated = Path(directory) / "vectors.h"
@@ -70,8 +82,12 @@ def main(argv=None):
     print("All 20 TSB/3 vectors match the specification, relay and firmware.")
 
 
-if __name__ == "__main__":
+def run(spec=SPEC):
     try:
-        main()
+        main(spec)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         raise SystemExit(f"Protocol vector check failed: {error}") from None
+
+
+if __name__ == "__main__":
+    run()

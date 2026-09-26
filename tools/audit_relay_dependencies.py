@@ -32,8 +32,9 @@ def coordinates(references):
         if not match:
             raise AuditError(f"Unrecognized Mill reference: {reference!r}")
         path = match[1]
-        layout = re.fullmatch(
-            r".+/https/(?:repo1\.maven\.org|repo\.maven\.apache\.org)/maven2/(.+)", path
+        cache, _, repository = path.rpartition("/https/")
+        layout = cache and re.fullmatch(
+            r"(?:repo1\.maven\.org|repo\.maven\.apache\.org)/maven2/(.+)", repository
         )
         if not layout:
             raise AuditError(f"Unrecognized Maven repository path: {path!r}")

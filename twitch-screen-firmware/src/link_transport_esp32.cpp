@@ -34,9 +34,9 @@ TaskHandle_t closeTask = nullptr;
 void closeWorker(void *) {
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    const int fd = closingFd.load(std::memory_order_acquire);
+    const int fd = closingFd.load();
     if (fd >= 0) ::close(fd);
-    closingFd.store(-1, std::memory_order_release);
+    closingFd.store(-1);
   }
 }
 
@@ -69,7 +69,7 @@ class Esp32Transport : public LinkTransport {
                   (unsigned long long)ESP.getEfuseMac());
     WiFi.onEvent([](WiFiEvent_t event) {
       if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
-        wifiDisconnected.store(true, std::memory_order_release);
+        wifiDisconnected.store(true);
     });
     WiFi.mode(WIFI_STA);
     // One owner retries association; do not race Arduino auto-reconnect.
@@ -87,10 +87,10 @@ class Esp32Transport : public LinkTransport {
   uint32_t jitter(uint32_t limit) override { return limit ? esp_random() % limit : 0; }
   bool wifiConnected() const override { return WiFi.status() == WL_CONNECTED; }
   bool takeWifiDisconnect() override {
-    return wifiDisconnected.exchange(false, std::memory_order_acq_rel);
+    return wifiDisconnected.exchange(false);
   }
   bool readyForConnect() const override {
-    return closeTask && closingFd.load(std::memory_order_acquire) < 0;
+    return closeTask && closingFd.load() < 0;
   }
   bool startConnect() override {
     if (!readyForConnect()) return false;
@@ -143,8 +143,8 @@ class Esp32Transport : public LinkTransport {
   void close() override {
     if (fd_ >= 0) {
       // startConnect forbids acquiring another descriptor until this slot is
-      // released. Ownership crosses only at release/acquire atomic operations.
-      closingFd.store(fd_, std::memory_order_release);
+      // released. Ownership crosses only at sequentially consistent atomics.
+      closingFd.store(fd_);
       if (closeTask) xTaskNotifyGive(closeTask);
       else log("[link] close worker unavailable; descriptor retained\n");
     }
@@ -165,8 +165,10 @@ class Esp32Transport : public LinkTransport {
     return (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) ? 0 : -1;
   }
   void log(const char *line) override {
-    const size_t size = strlen(line);
-    if (Serial.availableForWrite() >= (int)size) Serial.write((const uint8_t *)line, size);
+    const int room = Serial.availableForWrite();
+    if (room <= 0) return;
+    const size_t size = strnlen(line, (size_t)room + 1);
+    if (size <= (size_t)room) Serial.write((const uint8_t *)line, size);
   }
   const char *deviceId() const override { return deviceId_; }
   const char *firmwareVersion() const override { return FIRMWARE_VERSION; }

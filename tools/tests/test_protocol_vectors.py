@@ -110,12 +110,12 @@ class ProtocolVectorsTest(unittest.TestCase):
         for expected, text in cases.items():
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
                 path = self.write_spec(directory, text)
-                result = subprocess.run([sys.executable, str(ROOT / "tools/check_protocol_vectors.py"), str(path)],
-                                        capture_output=True, text=True, timeout=30)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Protocol vector check failed", result.stderr)
-                self.assertIn(expected, result.stderr)
-                self.assertNotIn("Traceback", result.stderr)
+                with self.assertRaises(SystemExit) as failure:
+                    vectors.run(path)
+                message = str(failure.exception.code)
+                self.assertIn("Protocol vector check failed", message)
+                self.assertIn(expected, message)
+                self.assertTrue(failure.exception.__suppress_context__)
 
     def test_check_script_passes_on_real_tree(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools/check_protocol_vectors.py")],

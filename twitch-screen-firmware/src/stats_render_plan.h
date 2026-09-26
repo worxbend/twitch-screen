@@ -37,9 +37,7 @@ struct StatsShown {
 };
 
 inline void initChipTexts(ChipTexts &t) {
-  strcpy(t.chat, "0");
-  strcpy(t.foll, "0");
-  strcpy(t.subs, "0");
+  t = ChipTexts{"0", "0", "0"};
 }
 
 // Matches what the build functions put on screen: "0" chips and an empty gauge.
@@ -94,9 +92,9 @@ inline StatsRenderPlan planStatsRender(const StatsShown &shown, const StreamStat
 inline void commitStatsPlan(StatsShown &shown, const StatsRenderPlan &plan) {
   if (plan.group == StatsGroup::None) return;
   ChipTexts &chips = plan.group == StatsGroup::Live ? shown.live : shown.offline;
-  if (plan.chat) strcpy(chips.chat, plan.text.chat);
-  if (plan.foll) strcpy(chips.foll, plan.text.foll);
-  if (plan.subs) strcpy(chips.subs, plan.text.subs);
+  if (plan.chat) memcpy(chips.chat, plan.text.chat, sizeof(chips.chat));
+  if (plan.foll) memcpy(chips.foll, plan.text.foll, sizeof(chips.foll));
+  if (plan.subs) memcpy(chips.subs, plan.text.subs, sizeof(chips.subs));
   if (plan.viewers) shown.viewers = plan.viewersValue;
   if (plan.arc) shown.arc = plan.arcValue;
 }

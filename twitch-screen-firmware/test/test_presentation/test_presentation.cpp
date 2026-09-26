@@ -37,7 +37,7 @@ int main() {
     {1000000000, "1.0B"}, {1099999999, "1.0B"}, {1100000000, "1.1B"}, {0xffffffffu, "4.2B"}};
   for (const auto &c : cases) {
     char text[16]; formatCount(text, sizeof(text), c.value);
-    check(strcmp(text, c.text) == 0 && strlen(text) <= 4, "bounded compact count");
+    check(strcmp(text, c.text) == 0 && strnlen(text, sizeof(text)) <= 4, "bounded compact count");
   }
   for (unsigned code = 0; code <= 255; ++code) {
     const auto kind = kindFromCode(static_cast<uint8_t>(code));
@@ -52,7 +52,8 @@ int main() {
   check(readableChatColor(0x00ff00) == 0x00ff00, "bright chatter color is retained");
   tsb::TsbEvent e = {}; e.kind = 0x16; e.seq = 1;
   e.eflags = tsb::EF_CHAT_COLOUR_PRESENT | tsb::EF_ANONYMOUS;
-  strcpy(e.actor, "actor\n\t\x1b"); strcpy(e.text, "hello\rworld");
+  snprintf(e.actor, sizeof(e.actor), "actor\n\t\x1b");
+  snprintf(e.text, sizeof(e.text), "hello\rworld");
   Notification n; notificationFromEvent(e, 0, n);
   check(n.anonymous && n.chatColorPresent, "wire flags become presentation booleans");
   check(strcmp(n.actor, "actor   ") == 0, "actor controls cannot forge diagnostics or layout");

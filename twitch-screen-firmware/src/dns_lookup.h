@@ -10,26 +10,26 @@ class DnsLookup {
   enum class State : uint8_t { Idle, Pending, Ready, Failed };
 
   uint32_t begin() {
-    const uint32_t token = (request_.load(std::memory_order_acquire) & ~STATE_MASK) +
+    const uint32_t token = (request_.load() & ~STATE_MASK) +
                           GENERATION_STEP + static_cast<uint32_t>(State::Pending);
-    request_.store(token, std::memory_order_release);
+    request_.store(token);
     return token;
   }
-  void cancel() { request_.fetch_and(~STATE_MASK, std::memory_order_acq_rel); }
+  void cancel() { request_.fetch_and(~STATE_MASK); }
   bool matches(uint32_t token) const {
-    return request_.load(std::memory_order_acquire) == token;
+    return request_.load() == token;
   }
   void complete(uint32_t token, bool found, uint32_t address = 0) {
     if (!matches(token)) return;
-    if (found) address_.store(address, std::memory_order_relaxed);
+    if (found) address_.store(address);
     const uint32_t result = (token & ~STATE_MASK) |
         static_cast<uint32_t>(found ? State::Ready : State::Failed);
-    request_.compare_exchange_strong(token, result, std::memory_order_release);
+    request_.compare_exchange_strong(token, result);
   }
   State state() const {
-    return static_cast<State>(request_.load(std::memory_order_acquire) & STATE_MASK);
+    return static_cast<State>(request_.load() & STATE_MASK);
   }
-  uint32_t address() const { return address_.load(std::memory_order_relaxed); }
+  uint32_t address() const { return address_.load(); }
 
  private:
   static constexpr uint32_t STATE_MASK = 3;

@@ -141,7 +141,7 @@ bool packWireString(char *field, size_t width, const char *src) {
   if (src == nullptr || width == 1) return false;
 
   const size_t cap = width - 1;
-  const size_t len = strlen(src);
+  const size_t len = strnlen(src, width);  // only len <= cap matters
   if (len <= cap) {
     memcpy(field, src, len);
     return false;

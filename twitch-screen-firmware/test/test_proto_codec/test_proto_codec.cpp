@@ -115,8 +115,7 @@ static void putU32(uint8_t *p, uint32_t v) {
 // §9: fixed width, NUL padded, at most width-1 content bytes.
 static void putStr(uint8_t *p, size_t width, const char *s) {
   memset(p, 0, width);
-  size_t n = strlen(s);
-  if (n > width - 1) n = width - 1;
+  const size_t n = strnlen(s, width - 1);
   memcpy(p, s, n);
 }
 
