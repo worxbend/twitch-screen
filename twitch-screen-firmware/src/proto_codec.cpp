@@ -147,7 +147,7 @@ bool packWireString(char *field, size_t width, const char *src) {
     return false;
   }
   // §9.2, exactly: cut back to a code-point boundary, then append "...".
-  const uint8_t *b = (const uint8_t *)src;
+  const auto *b = reinterpret_cast<const uint8_t *>(src);
   size_t cut = (cap >= 3) ? (cap - 3) : 0;
   while (cut > 0 && (b[cut] & 0xc0) == 0x80) {
     --cut;
@@ -300,26 +300,25 @@ EncodeResult encodeFrame(uint8_t *out, size_t capacity, uint8_t type, uint8_t fl
 }
 
 EncodeResult encodeHello(uint8_t *out, size_t capacity, const TsbHello &h) {
-  uint8_t p[LEN_HELLO];
-  memset(p, 0, sizeof(p));
-  wrU32(p + 0, h.last_seq);
-  wrU32(p + 4, h.caps);
-  wrU16(p + 8, h.rx_max);
-  wrU16(p + 10, h.reserved0);
+  std::array<uint8_t, LEN_HELLO> p = {};
+  wrU32(p.data() + 0, h.last_seq);
+  wrU32(p.data() + 4, h.caps);
+  wrU16(p.data() + 8, h.rx_max);
+  wrU16(p.data() + 10, h.reserved0);
   // The struct's own fields are already NUL-padded to their full width by
   // buildHello()/packWireString(); copy the whole field, then guarantee the
   // final byte of each is NUL on the wire (§9).
-  memcpy(p + 12, h.device_id,  sizeof(h.device_id));
-  memcpy(p + 44, h.fw_version, sizeof(h.fw_version));
+  memcpy(p.data() + 12, h.device_id,  sizeof(h.device_id));
+  memcpy(p.data() + 44, h.fw_version, sizeof(h.fw_version));
   p[12 + sizeof(h.device_id) - 1]  = 0;
   p[44 + sizeof(h.fw_version) - 1] = 0;
-  return encodeFrame(out, capacity, T_HELLO, 0, p, LEN_HELLO);
+  return encodeFrame(out, capacity, T_HELLO, 0, p.data(), LEN_HELLO);
 }
 
 static EncodeResult encodeU32Frame(uint8_t *out, size_t capacity, uint8_t type, uint32_t v) {
-  uint8_t p[LEN_TOKEN];
-  wrU32(p, v);
-  return encodeFrame(out, capacity, type, 0, p, LEN_TOKEN);
+  std::array<uint8_t, LEN_TOKEN> p;
+  wrU32(p.data(), v);
+  return encodeFrame(out, capacity, type, 0, p.data(), LEN_TOKEN);
 }
 
 EncodeResult encodePing(uint8_t *out, size_t capacity, uint32_t token) {
@@ -366,7 +365,7 @@ void FrameReader::reset(bool alsoCounters) {
   header_.type = 0;
   header_.length = 0;
   header_.flags = 0;
-  memset(hdr_, 0, sizeof(hdr_));
+  hdr_.fill(0);
   if (alsoCounters) {
     memset(&counters_, 0, sizeof(counters_));
   } else {
@@ -395,96 +394,97 @@ void FrameReader::discard(uint32_t n) {
 // MAGIC0 are then dropped immediately rather than waiting for the window to
 // refill — same outcome, same discard accounting, far fewer stalls.
 void FrameReader::shiftWindow() {
-  memmove(hdr_, hdr_ + 1, HEADER_SIZE - 1);
+  memmove(hdr_.data(), hdr_.data() + 1, HEADER_SIZE - 1);
   held_ = HEADER_SIZE - 1;
   discard(1);
   while (held_ > 0 && hdr_[0] != MAGIC0) {
-    memmove(hdr_, hdr_ + 1, (size_t)held_ - 1);
+    memmove(hdr_.data(), hdr_.data() + 1, (size_t)held_ - 1);
     --held_;
     discard(1);
   }
   if (held_ == 0) state_ = Hunt;
 }
 
+size_t FrameReader::feedHunt(uint8_t b) {
+  if (b == MAGIC0) {
+    hdr_[0] = b;
+    held_ = 1;
+    state_ = Header;
+  } else {
+    discard(1);
+    if (budgetBlown()) state_ = Fatal;
+  }
+  return 1;
+}
+
+size_t FrameReader::feedHeader(const uint8_t *src, size_t avail) {
+  const size_t want = HEADER_SIZE - (size_t)held_;
+  const size_t take = avail < want ? avail : want;
+  if (take == 0) return 0;               // need more bytes than we were given
+  memcpy(hdr_.data() + held_, src, take);
+  held_ = (uint16_t)(held_ + take);
+  if (held_ == HEADER_SIZE) headerComplete();
+  return take;
+}
+
+void FrameReader::headerComplete() {
+  if (decodeHeader(hdr_.data(), HEADER_SIZE, header_) != DecodeResult::Ok) {
+    if (hdr_[0] == MAGIC0) ++counters_.rejectedCandidates;
+    shiftWindow();
+    if (budgetBlown()) state_ = Fatal;
+    return;
+  }
+  have_ = 0;                              // §4.1: MUST reset before BODY
+  need_ = header_.length;
+  if (need_ > (uint16_t)rx_.size()) {
+    // Unreachable between two v3 peers (length <= 248 is a header validity
+    // condition), kept so a future larger frame is skipped rather than
+    // overrunning rx_.
+    skipRemaining_ = need_;
+    state_ = Skip;
+  } else if (need_ == 0) {
+    state_ = Ready;
+  } else {
+    state_ = Body;
+  }
+}
+
+size_t FrameReader::feedBody(const uint8_t *src, size_t avail) {
+  auto take = static_cast<size_t>(need_ - have_);
+  if (take > avail) take = avail;
+  memcpy(rx_.data() + have_, src, take);
+  have_ = (uint16_t)(have_ + take);
+  if (have_ == need_) state_ = Ready;
+  return take;
+}
+
+size_t FrameReader::feedSkip(size_t avail) {
+  auto take = static_cast<size_t>(skipRemaining_);
+  if (take > avail) take = avail;
+  skipRemaining_ -= (uint32_t)take;
+  if (skipRemaining_ == 0) {
+    ++counters_.framesOversizeSkipped;
+    resetBudget();                        // §4.5: a skipped frame was framed
+    held_ = 0;
+    state_ = Hunt;
+  }
+  return take;
+}
+
 size_t FrameReader::feed(const uint8_t *src, size_t n) {
   if (src == nullptr) return 0;
   size_t i = 0;
   while (i < n) {
-    if (state_ == Ready || state_ == Fatal) break;
-
+    size_t used = 0;
     switch (state_) {
-      case Hunt: {
-        const uint8_t b = src[i++];
-        if (b == MAGIC0) {
-          hdr_[0] = b;
-          held_ = 1;
-          state_ = Header;
-        } else {
-          discard(1);
-          if (budgetBlown()) state_ = Fatal;
-        }
-        break;
-      }
-
-      case Header: {
-        const size_t want = HEADER_SIZE - (size_t)held_;
-        size_t take = n - i;
-        if (take > want) take = want;
-        if (take == 0) return i;             // need more bytes than we were given
-        memcpy(hdr_ + held_, src + i, take);
-        held_ = (uint16_t)(held_ + take);
-        i += take;
-        if (held_ < HEADER_SIZE) break;      // still incomplete
-
-        if (decodeHeader(hdr_, HEADER_SIZE, header_) == DecodeResult::Ok) {
-          have_ = 0;                          // §4.1: MUST reset before BODY
-          need_ = header_.length;
-          if (need_ > (uint16_t)sizeof(rx_)) {
-            // Unreachable between two v3 peers (length <= 248 is a header
-            // validity condition), kept so a future larger frame is skipped
-            // rather than overrunning rx_.
-            skipRemaining_ = need_;
-            state_ = Skip;
-          } else if (need_ == 0) {
-            state_ = Ready;
-          } else {
-            state_ = Body;
-          }
-        } else {
-          if (hdr_[0] == MAGIC0) ++counters_.rejectedCandidates;
-          shiftWindow();
-          if (budgetBlown()) state_ = Fatal;
-        }
-        break;
-      }
-
-      case Body: {
-        size_t take = (size_t)(need_ - have_);
-        if (take > n - i) take = n - i;
-        memcpy(rx_ + have_, src + i, take);
-        have_ = (uint16_t)(have_ + take);
-        i += take;
-        if (have_ == need_) state_ = Ready;
-        break;
-      }
-
-      case Skip: {
-        size_t take = (size_t)skipRemaining_;
-        if (take > n - i) take = n - i;
-        i += take;
-        skipRemaining_ -= (uint32_t)take;
-        if (skipRemaining_ == 0) {
-          ++counters_.framesOversizeSkipped;
-          resetBudget();                      // §4.5: a skipped frame was framed
-          held_ = 0;
-          state_ = Hunt;
-        }
-        break;
-      }
-
-      default:
-        break;
+      case Hunt:   used = feedHunt(src[i]); break;
+      case Header: used = feedHeader(src + i, n - i); break;
+      case Body:   used = feedBody(src + i, n - i); break;
+      case Skip:   used = feedSkip(n - i); break;
+      default:     return i;              // Ready or Fatal
     }
+    if (used == 0) return i;
+    i += used;
   }
   return i;
 }

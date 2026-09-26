@@ -8,7 +8,7 @@
 class LinkTransport {
  public:
   enum class Connect : uint8_t { Pending, Ready, Failed };
-  virtual ~LinkTransport() {}
+  virtual ~LinkTransport() = default;
   virtual void begin() = 0;
   virtual void poll() = 0;
   virtual uint32_t now() const = 0;

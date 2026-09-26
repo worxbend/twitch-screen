@@ -12,7 +12,7 @@ static_assert(sizeof(Notification::text) == sizeof(tsb::TsbEvent::text),
 
 inline void replaceDisplayControls(char *text) {
   for (; *text; ++text) {
-    const unsigned char value = (unsigned char)*text;
+    const auto value = static_cast<unsigned char>(*text);
     if (value < 0x20 || value == 0x7f) *text = ' ';
   }
 }

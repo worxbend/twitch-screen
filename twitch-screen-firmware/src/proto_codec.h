@@ -19,6 +19,7 @@
 // directions, in headers and payloads alike. The encoders and decoders below
 // serialise explicitly, so they are correct on a big-endian host too.
 //
+#include <array>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -414,7 +415,7 @@ struct Counters {
 //         reader.consumeFrame();
 //       }
 //     }
-//     if (reader.isFatal()) { /* §4.5: close, log, back off */ }
+//     if (reader.isFatal()) closeLogAndBackOff();   // §4.5
 // ---------------------------------------------------------------------------
 
 class FrameReader {
@@ -435,7 +436,7 @@ class FrameReader {
 
   // Valid only while hasFrame().
   const TsbHeader &header()       const { return header_; }
-  const uint8_t   *payload()      const { return rx_; }
+  const uint8_t   *payload()      const { return rx_.data(); }
   uint16_t         payloadLength()const { return need_; }
 
   // Releases the pending frame and returns to HUNT. Resets the resync budget:
@@ -460,12 +461,18 @@ class FrameReader {
   bool budgetBlown() const;
   void shiftWindow();
   void resetBudget();
+  size_t feedHunt(uint8_t b);
+  size_t feedHeader(const uint8_t *src, size_t avail);
+  void headerComplete();
+  size_t feedBody(const uint8_t *src, size_t avail);
+  size_t feedSkip(size_t avail);
 
   State     state_;
-  uint8_t   hdr_[HEADER_SIZE];
+  std::array<uint8_t, HEADER_SIZE> hdr_;
   uint16_t  held_;                        // bytes held in hdr_
-  alignas(4) uint8_t rx_[MAX_PAYLOAD];    // payload
-  uint16_t  have_, need_;                 // bytes held in / required for rx_
+  alignas(4) std::array<uint8_t, MAX_PAYLOAD> rx_;   // payload
+  uint16_t  have_;                        // bytes held in rx_
+  uint16_t  need_;                        // bytes required for rx_
   uint32_t  skipRemaining_;
   TsbHeader header_;
   Counters  counters_;

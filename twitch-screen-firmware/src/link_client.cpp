@@ -1,6 +1,7 @@
 #include "link_client.h"
 
 #include <stdarg.h>
+#include <array>
 #include <stdio.h>
 #include <string.h>
 #include "notification_wire.h"
@@ -74,11 +75,13 @@ struct LinkSession {
   uint32_t skippedSinceLog = 0;
 
   // A fixed byte FIFO preserves frame order across short/nonblocking writes.
-  uint8_t tx[256];
-  size_t txSize = 0, txOffset = 0;
+  std::array<uint8_t, 256> tx;
+  size_t txSize = 0;
+  size_t txOffset = 0;
   uint32_t txStartedAt = 0;
-  uint8_t rxChunk[128];
-  size_t rxOffset = 0, rxSize = 0;
+  std::array<uint8_t, 128> rxChunk;
+  size_t rxOffset = 0;
+  size_t rxSize = 0;
   bool eventPaused = false;
   uint32_t eventPausedAt = 0;
   uint32_t pauseLimitMs = 2u * EXPECTED_RELAY_IDLE_S * 1000u;
@@ -88,27 +91,27 @@ struct LinkSession {
   uint32_t lastAckAt     = 0;
   bool     ackPending    = false;
 
-  void logf(const char *format, ...) {
-    char line[240];
+  __attribute__((format(printf, 2, 3))) void logf(const char *format, ...) {
+    std::array<char, 240> line;
     va_list args;
     va_start(args, format);
-    vsnprintf(line, sizeof(line), format, args);
+    vsnprintf(line.data(), line.size(), format, args);
     va_end(args);
-    io->log(line);
+    io->log(line.data());
   }
 
   // Enqueue whole frames only. Partial writes remain in this bounded FIFO.
   bool writeFrame(const uint8_t *buf, size_t n) {
-    if (n > sizeof(tx) - txSize) {
+    if (n > tx.size() - txSize) {
       reader.noteDropped();
       return false;
     }
     if (txSize == 0) { txStartedAt = io->now(); txOffset = 0; }
-    if (txOffset + txSize + n > sizeof(tx)) {
-      memmove(tx, tx + txOffset, txSize);
+    if (txOffset + txSize + n > tx.size()) {
+      memmove(tx.data(), tx.data() + txOffset, txSize);
       txOffset = 0;
     }
-    memcpy(tx + txOffset + txSize, buf, n);
+    memcpy(tx.data() + txOffset + txSize, buf, n);
     txSize += n;
     return true;
   }
@@ -127,9 +130,9 @@ struct LinkSession {
   // sharing an id do not evict each other at 1 s.
   void scheduleRetry(uint32_t floorMs, bool forceMax) {
     if (failures < FAILURES_SATURATE) ++failures;
-    uint32_t backoff = forceMax
-        ? BACKOFF_MAX_MS
-        : (BACKOFF_BASE_MS << (failures > BACKOFF_MAX_SHIFT + 1 ? BACKOFF_MAX_SHIFT : (uint8_t)(failures - 1)));
+    uint8_t shift = BACKOFF_MAX_SHIFT;
+    if (failures <= BACKOFF_MAX_SHIFT + 1) shift = static_cast<uint8_t>(failures - 1);
+    uint32_t backoff = forceMax ? BACKOFF_MAX_MS : (BACKOFF_BASE_MS << shift);
     if (backoff > BACKOFF_MAX_MS) backoff = BACKOFF_MAX_MS;   // caps the ramp only
     if (backoff < floorMs) backoff = floorMs;   // §6.7: a minimum, never capped
     backoff += io->jitter(backoff / 4 + 1);   // jitter
@@ -160,7 +163,10 @@ struct LinkSession {
       logCounters();
     }
     io->close();
-    txSize = txOffset = rxSize = rxOffset = 0;
+    txSize = 0;
+    txOffset = 0;
+    rxSize = 0;
+    rxOffset = 0;
     eventPaused = false;
     state = State::Idle;
     // Drops any half-assembled frame and the §4.5 budget. The §14 lifetime
@@ -176,26 +182,26 @@ struct LinkSession {
   void sendHello() {
     tsb::TsbHello h;
     tsb::buildHello(h, hooks->getLastSeq(), DEVICE_CAPS, io->deviceId(), io->firmwareVersion());
-    uint8_t frame[tsb::HEADER_SIZE + tsb::LEN_HELLO];
-    const tsb::EncodeResult n = tsb::encodeHello(frame, sizeof(frame), h);
-    if (!sendEncoded(frame, n, "hello write failed")) return;
+    std::array<uint8_t, tsb::HEADER_SIZE + tsb::LEN_HELLO> frame;
+    const tsb::EncodeResult n = tsb::encodeHello(frame.data(), frame.size(), h);
+    if (!sendEncoded(frame.data(), n, "hello write failed")) return;
     logf("[link] hello sent, last_seq=%lu caps=0x%02lx\n",
                   (unsigned long)h.last_seq, (unsigned long)DEVICE_CAPS);
   }
 
   void sendPing() {
-    uint8_t frame[tsb::HEADER_SIZE + tsb::LEN_TOKEN];
+    std::array<uint8_t, tsb::HEADER_SIZE + tsb::LEN_TOKEN> frame;
     const tsb::EncodeResult n =
-        tsb::encodePing(frame, sizeof(frame), io->now() / 1000);
-    sendEncoded(frame, n, "ping write failed");
+        tsb::encodePing(frame.data(), frame.size(), io->now() / 1000);
+    sendEncoded(frame.data(), n, "ping write failed");
   }
 
   // §6.3 — a PONG echoes the token byte for byte and must go out as soon as the
   // reader returns, never coalesced behind other work.
   void sendPong(uint32_t token) {
-    uint8_t frame[tsb::HEADER_SIZE + tsb::LEN_TOKEN];
-    const tsb::EncodeResult n = tsb::encodePong(frame, sizeof(frame), token);
-    sendEncoded(frame, n, "pong write failed");
+    std::array<uint8_t, tsb::HEADER_SIZE + tsb::LEN_TOKEN> frame;
+    const tsb::EncodeResult n = tsb::encodePong(frame.data(), frame.size(), token);
+    sendEncoded(frame.data(), n, "pong write failed");
   }
 
   // §6.6 — informational, rate limited, coalesced to the highest seq the app has
@@ -210,9 +216,9 @@ struct LinkSession {
     lastAckAt = now;
     if (seq == 0 || seq == lastAckedSeq) return;
 
-    uint8_t frame[tsb::HEADER_SIZE + tsb::LEN_TOKEN];
-    const tsb::EncodeResult n = tsb::encodeAck(frame, sizeof(frame), seq);
-    if (!sendEncoded(frame, n, "ack write failed")) return;
+    std::array<uint8_t, tsb::HEADER_SIZE + tsb::LEN_TOKEN> frame;
+    const tsb::EncodeResult n = tsb::encodeAck(frame.data(), frame.size(), seq);
+    if (!sendEncoded(frame.data(), n, "ack write failed")) return;
     lastAckedSeq = seq;
   }
 
@@ -277,7 +283,7 @@ struct LinkSession {
     ackPending = true;   // ACK reports whatever the app actually enqueued (§10.5)
   }
 
-  void handleStats(const tsb::TsbStats &st) {
+  void handleStats(const tsb::TsbStats &st) const {
     StreamStats s;
     s.viewers         = st.viewers;
     s.msgTotal        = st.msg_total;
@@ -295,13 +301,13 @@ struct LinkSession {
   // §6.7 — BYE is advisory and always the last frame on the connection. Log it,
   // close, do not answer.
   void handleBye(const tsb::TsbBye &b) {
-    char reason[sizeof(b.reason)];
-    memcpy(reason, b.reason, sizeof(reason));
-    reason[sizeof(reason) - 1] = '\0';
-    replaceDisplayControls(reason);
+    std::array<char, sizeof(b.reason)> reason;
+    memcpy(reason.data(), b.reason, reason.size());
+    reason.back() = '\0';
+    replaceDisplayControls(reason.data());
     logf("[link] BYE code=%u detail=%u retry_after=%us reason=\"%s\"\n",
                   (unsigned)b.code, (unsigned)b.detail,
-                  (unsigned)b.retry_after_s, reason);
+                  (unsigned)b.retry_after_s, reason.data());
     const uint32_t floorMs = (uint32_t)b.retry_after_s * 1000UL;
     const bool forceMax = (b.code == tsb::BYE_UNSUPPORTED_VERSION ||
                    b.code == tsb::BYE_REPLACED);
@@ -391,7 +397,7 @@ struct LinkSession {
         if (state == State::Idle || eventPaused) return;
       }
       if (rxOffset == rxSize) {
-        const int n = io->read(rxChunk, sizeof(rxChunk));
+        const int n = io->read(rxChunk.data(), rxChunk.size());
         if (n < 0) { teardown("peer closed/read failed"); return; }
         if (n == 0) return;
         rxOffset = 0;
@@ -399,7 +405,7 @@ struct LinkSession {
       }
       size_t want = rxSize - rxOffset;
       if (want > budget) want = budget;
-      const size_t used = reader.feed(rxChunk + rxOffset, want);
+      const size_t used = reader.feed(rxChunk.data() + rxOffset, want);
       rxOffset += used;
       budget -= used;
       if (reader.isFatal()) { teardown("framing violation"); return; }
@@ -413,7 +419,7 @@ struct LinkSession {
       teardown("write timeout");
       return;
     }
-    const int written = io->write(tx + txOffset, txSize);
+    const int written = io->write(tx.data() + txOffset, txSize);
     if (written < 0) { teardown("write failed"); return; }
     if (written == 0) return;
     reader.noteSent((uint32_t)written);
@@ -439,7 +445,9 @@ struct LinkSession {
       reader.reset(false);
       effectiveCaps = 0;
       ackPending = false;
-      connectedAt = lastRxAt = lastPingAt = io->now();
+      connectedAt = io->now();
+      lastRxAt = connectedAt;
+      lastPingAt = connectedAt;
       logf("[link] connected\n");
       sendHello();
     } else if (io->now() - connectedAt >= CONNECT_TIMEOUT_MS) {
@@ -452,6 +460,25 @@ struct LinkSession {
     hooks = h;
     io = &transport;
     io->begin();
+  }
+
+  // True when a session deadline expired and the link was torn down.
+  bool checkTimeouts(uint32_t now) {
+    if (state == State::Connect && now - connectedAt > WELCOME_TIMEOUT_MS) {
+      teardown("welcome timeout");
+      return true;
+    }
+    // Backpressure can hide peer heartbeats, but cannot keep a dead peer online
+    // forever. The original pause timestamp survives repeated loop iterations.
+    if (eventPaused && now - eventPausedAt >= pauseLimitMs) {
+      teardown("notification pause timeout");
+      return true;
+    }
+    if (!eventPaused && now - lastRxAt > RX_TIMEOUT_MS) {
+      teardown("heartbeat timeout");
+      return true;
+    }
+    return false;
   }
 
   bool isUp() const { return state == State::Streaming; }
@@ -478,20 +505,7 @@ struct LinkSession {
     if (state == State::Idle) return;
 
     const uint32_t now = io->now();
-    if (state == State::Connect && now - connectedAt > WELCOME_TIMEOUT_MS) {
-      teardown("welcome timeout");
-      return;
-    }
-    // Backpressure can hide peer heartbeats, but cannot keep a dead peer online
-    // forever. The original pause timestamp survives repeated loop iterations.
-    if (eventPaused && now - eventPausedAt >= pauseLimitMs) {
-      teardown("notification pause timeout");
-      return;
-    }
-    if (!eventPaused && now - lastRxAt > RX_TIMEOUT_MS) {
-      teardown("heartbeat timeout");
-      return;
-    }
+    if (checkTimeouts(now)) return;
     if (state == State::Streaming && now - streamingAt >= STABLE_STREAM_MS)
       failures = 0;
     if (now - lastPingAt > PING_INTERVAL_MS) {

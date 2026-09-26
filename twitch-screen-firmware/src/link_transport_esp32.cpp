@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <array>
 #include <atomic>
 #include <errno.h>
 #include <esp_system.h>
@@ -34,19 +35,19 @@ TaskHandle_t closeTask = nullptr;
 void closeWorker(void *) {
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    const int fd = closingFd.load();
-    if (fd >= 0) ::close(fd);
+    const int closing = closingFd.load();
+    if (closing >= 0) ::close(closing);
     closingFd.store(-1);
   }
 }
 
 void dnsResult(const char *, const ip_addr_t *address, void *context) {
-  const uint32_t request = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(context));
+  const auto request = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(context));
   const bool found = address && IP_IS_V4(address);
   dnsLookup.complete(request, found, found ? ip4_addr_get_u32(ip_2_ip4(address)) : 0);
 }
 void startDns(void *context) {
-  const uint32_t request = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(context));
+  const auto request = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(context));
   if (!dnsLookup.matches(request)) return;
   ip_addr_t address;
   const err_t result = dns_gethostbyname_addrtype(
@@ -64,8 +65,8 @@ class Esp32Transport : public LinkTransport {
       log("[link] close worker allocation failed; connections disabled\n");
     }
     const char *configured = DEVICE_ID;
-    if (configured[0] != '\0') snprintf(deviceId_, sizeof(deviceId_), "%s", configured);
-    else snprintf(deviceId_, sizeof(deviceId_), "lcd-%012llx",
+    if (configured[0] != '\0') snprintf(deviceId_.data(), deviceId_.size(), "%s", configured);
+    else snprintf(deviceId_.data(), deviceId_.size(), "lcd-%012llx",
                   (unsigned long long)ESP.getEfuseMac());
     WiFi.onEvent([](WiFiEvent_t event) {
       if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
@@ -128,7 +129,8 @@ class Esp32Transport : public LinkTransport {
       }
     }
     if (fd_ < 0) return Connect::Failed;
-    fd_set writable, failed;
+    fd_set writable;
+    fd_set failed;
     FD_ZERO(&writable); FD_ZERO(&failed);
     FD_SET(fd_, &writable); FD_SET(fd_, &failed);
     timeval immediate = {0, 0};
@@ -170,13 +172,13 @@ class Esp32Transport : public LinkTransport {
     const size_t size = strnlen(line, (size_t)room + 1);
     if (size <= (size_t)room) Serial.write((const uint8_t *)line, size);
   }
-  const char *deviceId() const override { return deviceId_; }
+  const char *deviceId() const override { return deviceId_.data(); }
   const char *firmwareVersion() const override { return FIRMWARE_VERSION; }
  private:
   int fd_ = -1;
   bool resolving_ = false;
   uint32_t wifiAttemptAt_ = 0;
-  char deviceId_[32] = {};
+  std::array<char, 32> deviceId_ = {};
 };
 Esp32Transport transport;
 } // namespace

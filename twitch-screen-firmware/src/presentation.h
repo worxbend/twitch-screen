@@ -13,9 +13,15 @@ inline void formatCount(char *out, size_t size, uint32_t value) {
     snprintf(out, size, "%lu", (unsigned long)value);
     return;
   }
-  const uint32_t unit = value >= 1000000000u ? 1000000000u :
-                        value >= 1000000u ? 1000000u : 1000u;
-  const char suffix = unit == 1000000000u ? 'B' : unit == 1000000u ? 'M' : 'K';
+  uint32_t unit = 1000u;
+  char suffix = 'K';
+  if (value >= 1000000000u) {
+    unit = 1000000000u;
+    suffix = 'B';
+  } else if (value >= 1000000u) {
+    unit = 1000000u;
+    suffix = 'M';
+  }
   if (value / unit < 10)
     snprintf(out, size, "%c.%c%c", (int)('0' + value / unit),
              (int)('0' + (value % unit) / (unit / 10)), suffix);

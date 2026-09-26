@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <array>
 
 #include "notification.h"
 
@@ -31,11 +32,6 @@ class NotifyQueue {
  public:
   enum class Greet : uint8_t { Rebaselined, Resumed };
   enum class Offer : uint8_t { Enqueued, Duplicate, Refused };
-
-  NotifyQueue()
-      : head_(0), count_(0), lastSeq_(0), sessionId_(0),
-        sessionKnown_(false), sessionChanged_(false), gapOpen_(false),
-        shown_(0), refused_(0) {}
 
   // §6.1 / §6.6: the highest seq successfully ENQUEUED FOR DISPLAY. This exact
   // value goes out in HELLO.last_seq and in ACK.seq.
@@ -107,14 +103,14 @@ class NotifyQueue {
   }
 
  private:
-  Notification buf_[CAP];
-  size_t   head_;
-  size_t   count_;
-  uint32_t lastSeq_;
-  uint32_t sessionId_;
-  bool     sessionKnown_;
-  bool     sessionChanged_;
-  bool     gapOpen_;
-  uint32_t shown_;
-  uint32_t refused_;
+  std::array<Notification, CAP> buf_;
+  size_t   head_ = 0;
+  size_t   count_ = 0;
+  uint32_t lastSeq_ = 0;
+  uint32_t sessionId_ = 0;
+  bool     sessionKnown_ = false;
+  bool     sessionChanged_ = false;
+  bool     gapOpen_ = false;
+  uint32_t shown_ = 0;
+  uint32_t refused_ = 0;
 };

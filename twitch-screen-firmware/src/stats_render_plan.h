@@ -50,7 +50,9 @@ inline void initStatsShown(StatsShown &shown) {
 
 struct StatsRenderPlan {
   StatsGroup group;
-  bool chat, foll, subs;  // chips of `group` to write
+  bool chat;              // chips of `group` to write
+  bool foll;
+  bool subs;
   ChipTexts text;         // valid where the matching flag is set
   bool viewers;           // Live only
   uint32_t viewersValue;
