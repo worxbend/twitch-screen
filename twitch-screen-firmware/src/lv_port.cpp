@@ -1,6 +1,7 @@
 #include "lv_port.h"
 
 #include <Arduino.h>
+#include <array>
 #include <esp_task_wdt.h>
 #include "app_log.h"
 #include "ui_common.h"
@@ -17,7 +18,7 @@ uint32_t lastTickAt = 0;
 TFT_eSPI tft;
 
 // Static so they never end up on a task stack.
-alignas(LV_DRAW_BUF_ALIGN) uint8_t drawBuf[DRAW_BYTES];
+alignas(LV_DRAW_BUF_ALIGN) std::array<uint8_t, DRAW_BYTES> drawBuf;
 
 void flushCb(lv_display_t *disp, const lv_area_t *area, uint8_t *pxMap) {
   uint32_t w = area->x2 - area->x1 + 1;
@@ -50,11 +51,11 @@ void lvPortInit() {
   // Render straight into the swapped format so flush needs no byte juggling.
   lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565_SWAPPED);
   lv_display_set_flush_cb(disp, flushCb);
-  lv_display_set_buffers(disp, drawBuf, nullptr, sizeof(drawBuf),
+  lv_display_set_buffers(disp, drawBuf.data(), nullptr, drawBuf.size(),
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
-  appLog("[display] synchronous RGB565 buffer=%u B\n", (unsigned)sizeof(drawBuf));
+  appLog("[display] synchronous RGB565 buffer=%u B\n", (unsigned)drawBuf.size());
 }
 
 void lvPortPump() {

@@ -1,6 +1,7 @@
 #include "ui_notify.h"
 
 #include <lvgl.h>
+#include <array>
 #include <stdio.h>
 #include <string.h>
 
@@ -38,13 +39,17 @@ lv_obj_t *titleLabel = nullptr;
 lv_obj_t *bodyLabel = nullptr;
 lv_obj_t *seqLabel = nullptr;
 
-bool busy = false;
-Entrance cardEntrance = Entrance::Slide;  // decided once per card in uiNotifyShow
-uint32_t holdMs = HOLD_DEFAULT_MS;   // how long the current card stays up
+// The card currently on screen (or leaving it).
+struct CardState {
+  bool busy = false;
+  Entrance entrance = Entrance::Slide;  // decided once per card in uiNotifyShow
+  uint32_t holdMs = HOLD_DEFAULT_MS;    // how long the current card stays up
+};
+CardState card;
 
-void animY(void *var, int32_t v) { lv_obj_set_y((lv_obj_t *)var, v); }
+void animY(void *var, int32_t v) { lv_obj_set_y(static_cast<lv_obj_t *>(var), v); }
 void animOpa(void *var, int32_t v) {
-  lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
+  lv_obj_set_style_opa(static_cast<lv_obj_t *>(var), static_cast<lv_opa_t>(v), 0);
 }
 
 void animate(lv_obj_t *obj, lv_anim_exec_xcb_t cb, int32_t from, int32_t to,
@@ -62,14 +67,14 @@ void animate(lv_obj_t *obj, lv_anim_exec_xcb_t cb, int32_t from, int32_t to,
 
 void hideReady(lv_anim_t *) {
   lv_obj_set_hidden(overlay, true);
-  busy = false;
+  card.busy = false;
   uiIdleSetCovered(false);
 }
 
 void hideStart() {
   lv_anim_delete(ring, animOpa);  // stop the severe-card ring pulse, if any
   lv_obj_set_style_opa(ring, LV_OPA_COVER, 0);
-  if (cardEntrance == Entrance::None) { hideReady(nullptr); return; }  // replay leaves at once
+  if (card.entrance == Entrance::None) { hideReady(nullptr); return; }  // replay leaves at once
   uiIdleSetCovered(false);
   animate(overlay, animY, 0, PANEL, SLIDE_OUT_MS, lv_anim_path_ease_in, hideReady);
 }
@@ -79,7 +84,7 @@ void holdTimerCb(lv_timer_t *t) {
   hideStart();
 }
 
-void showReady(lv_anim_t *) { lv_timer_create(holdTimerCb, holdMs, nullptr); }
+void showReady(lv_anim_t *) { lv_timer_create(holdTimerCb, card.holdMs, nullptr); }
 
 // Slide the card in. Only WARNING/ALERT keep the accent ring breathing while it
 // is up (ringPulses, K-118); routine rings stay static at full opacity. Reached
@@ -90,7 +95,7 @@ void slideIn() {
   lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
   animate(overlay, animY, PANEL, 0, SLIDE_IN_MS, lv_anim_path_ease_out, showReady);
 
-  if (ringPulses(cardEntrance)) {
+  if (ringPulses(card.entrance)) {
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, ring);
@@ -143,8 +148,8 @@ void composeBody(char *buf, size_t cap, const Notification &n) {
   }
 
   const char *tier = tierName(n.tier);
-  const unsigned long v = (unsigned long)n.value;
-  char dur[16];
+  const auto v = static_cast<unsigned long>(n.value);
+  std::array<char, 16> dur;
 
   switch (n.kind) {
     case NotifyKind::StreamStart:
@@ -153,8 +158,8 @@ void composeBody(char *buf, size_t cap, const Notification &n) {
       buf[0] = '\0';
       break;
     case NotifyKind::StreamEnd:
-      formatDuration(dur, sizeof(dur), n.value);   // §6.4.1: duration in seconds
-      snprintf(buf, cap, "streamed for %s", dur);
+      formatDuration(dur.data(), dur.size(), n.value);   // §6.4.1: duration in seconds
+      snprintf(buf, cap, "streamed for %s", dur.data());
       break;
     case NotifyKind::Sub:
       if (tier && n.months > 1)      snprintf(buf, cap, "%s - %u months", tier, (unsigned)n.months);
@@ -281,7 +286,7 @@ void uiNotifyInit() {
   lv_obj_set_hidden(flash, true);
 }
 
-bool uiNotifyBusy() { return busy; }
+bool uiNotifyBusy() { return card.busy; }
 
 namespace {
 void applyKindPresentation(const Notification &n) {
@@ -308,16 +313,16 @@ void applyTexts(const Notification &n) {
     lv_obj_set_style_text_color(titleLabel, lv_color_white(), 0);
   }
 
-  char body[96];
-  composeBody(body, sizeof(body), n);
-  lv_label_set_text(bodyLabel, body);
+  std::array<char, 96> body;
+  composeBody(body.data(), body.size(), n);
+  lv_label_set_text(bodyLabel, body.data());
 
   lv_label_set_text_fmt(seqLabel, "#%lu", (unsigned long)n.seq);
 
 }
 
 void playEntrance(const Notification &n) {
-  switch (cardEntrance) {
+  switch (card.entrance) {
     case Entrance::None:
       // Replay displays immediately, with no slide, flash, or perpetual ring pulse.
       lv_obj_set_y(overlay, 0);
@@ -351,11 +356,11 @@ void playEntrance(const Notification &n) {
 }  // namespace
 
 void uiNotifyShow(const Notification &n) {
-  if (busy || !overlay) return;
-  busy = true;
-  cardEntrance = entranceFor(n.replay, n.kind);
+  if (card.busy || !overlay) return;
+  card.busy = true;
+  card.entrance = entranceFor(n.replay, n.kind);
   uiIdleSetCovered(true);
-  holdMs = holdMsFor(n);
+  card.holdMs = holdMsFor(n);
   applyKindPresentation(n);
   applyTexts(n);
   playEntrance(n);

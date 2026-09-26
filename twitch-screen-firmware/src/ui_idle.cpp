@@ -1,6 +1,7 @@
 #include "ui_idle.h"
 
 #include <Arduino.h>
+#include <array>
 #include <lvgl.h>
 
 #include "assets/twitch_glitch.h"
@@ -47,8 +48,13 @@ lv_obj_t *offChipSubs = nullptr;
 lv_obj_t *connectGroup = nullptr;
 lv_obj_t *connLabel = nullptr;
 
-bool linkUp = false;
-bool covered = false;
+// The three inputs that decide which screen is up (visibleStatsGroup).
+struct ScreenState {
+  bool linkUp = false;
+  bool covered = false;
+  bool live = false;
+};
+ScreenState screen;
 lv_timer_t *dotsTimer = nullptr;
 lv_timer_t *uptimeTimer = nullptr;
 lv_obj_t *connectSpinner = nullptr;
@@ -60,9 +66,9 @@ char uptimeText[16] = {};
 static_assert(sizeof(twitch_glitch_48) == 48u * 48u * sizeof(uint16_t), "48px asset size");
 static_assert(sizeof(twitch_glitch_84) == 84u * 84u * sizeof(uint16_t), "84px asset size");
 
-lv_image_dsc_t glitch48, glitch84;
+lv_image_dsc_t glitch48;
+lv_image_dsc_t glitch84;
 
-bool curLive = false;
 // What the panel shows; every STATS is planned against it (stats_render_plan.h).
 StatsShown shown;
 
@@ -70,9 +76,12 @@ StatsShown shown;
 // STATS only arrives every 5 s, so the label would step in 5 s jumps. Anchor
 // the value against millis() on receipt and re-anchor on every STATS, which
 // makes it tick once a second without ever drifting away from the relay.
-uint32_t uptimeBase = 0;
-uint32_t uptimeAnchorMs = 0;
-bool uptimeValid = false;
+struct UptimeClock {
+  uint32_t base = 0;
+  uint32_t anchorMs = 0;
+  bool valid = false;
+};
+UptimeClock uptime;
 
 void initDsc(lv_image_dsc_t *d, const uint16_t *data, int size) {
   memset(d, 0, sizeof(*d));
@@ -102,7 +111,7 @@ lv_obj_t *makeLabel(lv_obj_t *parent, const lv_font_t *font, lv_color_t color,
 }
 
 void pulseAnim(void *var, int32_t v) {
-  lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
+  lv_obj_set_style_opa(static_cast<lv_obj_t *>(var), static_cast<lv_opa_t>(v), 0);
 }
 
 void startPulse(lv_obj_t *obj, lv_opa_t lo, lv_opa_t hi, uint32_t ms) {
@@ -119,18 +128,18 @@ void startPulse(lv_obj_t *obj, lv_opa_t lo, lv_opa_t hi, uint32_t ms) {
 }
 
 void viewersAnim(void *var, int32_t v) {
-  char text[8];
-  formatCount(text, sizeof(text), v < 0 ? 0u : (uint32_t)v);
-  setStaticLabel(static_cast<lv_obj_t *>(var), viewersText, text);
+  std::array<char, sizeof(viewersText)> text;
+  formatCount(text.data(), text.size(), v < 0 ? 0u : (uint32_t)v);
+  setStaticLabel(static_cast<lv_obj_t *>(var), viewersText, text.data());
 }
 
 // `from` is the previously shown value (-1 = unknown), the count-up origin.
 void setViewers(int64_t from, uint32_t v) {
   lv_anim_delete(viewersValue, viewersAnim);
   if (v >= VIEWER_ANIM_MAX) {
-    char text[8];
-    formatCount(text, sizeof(text), v);
-    setStaticLabel(viewersValue, viewersText, text);
+    std::array<char, sizeof(viewersText)> text;
+    formatCount(text.data(), text.size(), v);
+    setStaticLabel(viewersValue, viewersText, text.data());
     return;
   }
   lv_anim_t a;
@@ -149,15 +158,15 @@ void formatUptime(char *buf, size_t n, uint32_t sec) {
 }
 
 void renderUptime() {
-  if (!uptimeValid) return;
-  const uint32_t sec = uptimeBase + (millis() - uptimeAnchorMs) / 1000;
-  char buf[16];
-  formatUptime(buf, sizeof(buf), sec);
-  setStaticLabel(uptimeLabel, uptimeText, buf);
+  if (!uptime.valid) return;
+  const uint32_t sec = uptime.base + (millis() - uptime.anchorMs) / 1000;
+  std::array<char, sizeof(uptimeText)> buf;
+  formatUptime(buf.data(), buf.size(), sec);
+  setStaticLabel(uptimeLabel, uptimeText, buf.data());
 }
 
 void uptimeTickCb(lv_timer_t *) {
-  if (!curLive || !linkUp || covered) return;
+  if (!screen.live || !screen.linkUp || screen.covered) return;
   renderUptime();
 }
 
@@ -289,13 +298,14 @@ lv_obj_t *makeGroup(lv_obj_t *scr) {
 }
 
 void spinAnim(void *var, int32_t v) {
-  lv_arc_set_rotation((lv_obj_t *)var, v);
+  lv_arc_set_rotation(static_cast<lv_obj_t *>(var), v);
 }
 
 void dotsCb(lv_timer_t *) {
-  static uint8_t n = 0;
-  n = (n + 1) % 4;
-  static const char *const labels[] = {"CONNECTING", "CONNECTING.", "CONNECTING..", "CONNECTING..."};
+  static const std::array<const char *, 4> labels = {
+      {"CONNECTING", "CONNECTING.", "CONNECTING..", "CONNECTING..."}};
+  static size_t n = 0;
+  n = (n + 1) % labels.size();
   lv_label_set_text_static(connLabel, labels[n]);
 }
 
@@ -330,7 +340,7 @@ void buildConnect(lv_obj_t *scr) {
 // Applies the plan for the cached STATS: only the visible group, only the
 // fields whose shown text or value changed.
 void renderVisibleStats() {
-  const StatsRenderPlan plan = planStatsRender(shown, latestStats, linkUp, covered);
+  const StatsRenderPlan plan = planStatsRender(shown, latestStats, screen.linkUp, screen.covered);
   if (plan.group == StatsGroup::None) return;
   const bool live = plan.group == StatsGroup::Live;
   const int64_t previousViewers = shown.viewers;
@@ -358,8 +368,8 @@ void startSpinner() {
 }
 
 void applyVisibility() {
-  const StatsGroup group = visibleStatsGroup(linkUp, covered, curLive);
-  const bool connecting = !covered && !linkUp;
+  const StatsGroup group = visibleStatsGroup(screen.linkUp, screen.covered, screen.live);
+  const bool connecting = !screen.covered && !screen.linkUp;
   const bool live = group == StatsGroup::Live;
   lv_obj_set_hidden(connectGroup, !connecting);
   lv_obj_set_hidden(liveGroup, !live);
@@ -402,24 +412,24 @@ void uiIdleBuild() {
 
 void uiIdleSetStats(const StreamStats &s) {
   latestStats = s;
-  const bool changed = curLive != (s.live != 0);
-  curLive = s.live != 0;
-  uptimeValid = curLive;
-  uptimeBase = (s.streamStartedAt != 0 && s.serverTime >= s.streamStartedAt)
-                   ? (s.serverTime - s.streamStartedAt) : s.uptimeSec;
-  uptimeAnchorMs = millis();
+  const bool changed = screen.live != (s.live != 0);
+  screen.live = s.live != 0;
+  uptime.valid = screen.live;
+  uptime.base = (s.streamStartedAt != 0 && s.serverTime >= s.streamStartedAt)
+                    ? (s.serverTime - s.streamStartedAt) : s.uptimeSec;
+  uptime.anchorMs = millis();
   if (changed) applyVisibility();
   else renderVisibleStats();
 }
 
 void uiIdleSetOnline(bool online) {
-  if (!connectGroup || online == linkUp) return;
-  linkUp = online;
+  if (!connectGroup || online == screen.linkUp) return;
+  screen.linkUp = online;
   applyVisibility();
 }
 
 void uiIdleSetCovered(bool value) {
-  if (!connectGroup || covered == value) return;
-  covered = value;
+  if (!connectGroup || screen.covered == value) return;
+  screen.covered = value;
   applyVisibility();
 }
