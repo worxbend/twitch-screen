@@ -3,7 +3,8 @@
 # ---------------------------------------------------------------------------
 # Build: Mill produces one self-contained jar.
 # ---------------------------------------------------------------------------
-FROM eclipse-temurin:25-jdk@sha256:97014c4b396021f9ddb7d592a7dbedb0c4e4215c29e03dc01c393558aefb71c2 AS build
+# Pinned by digest only: eclipse-temurin:25-jdk. Refresh the digest when bumping the JDK.
+FROM eclipse-temurin@sha256:97014c4b396021f9ddb7d592a7dbedb0c4e4215c29e03dc01c393558aefb71c2 AS build
 
 # The Mill launcher downloads its verified executable on a clean image.
 RUN apt-get update \
@@ -24,16 +25,16 @@ RUN ./mill assembly
 # ---------------------------------------------------------------------------
 # Run: a JRE, the jar and nothing else.
 # ---------------------------------------------------------------------------
-FROM eclipse-temurin:25-jre@sha256:bb036ed6cfdc57e3da7c22634d15f1b840d2caf76183861c80e81ca4b5104abb
+# Pinned by digest only: eclipse-temurin:25-jre. Refresh the digest when bumping the JRE.
+FROM eclipse-temurin@sha256:bb036ed6cfdc57e3da7c22634d15f1b840d2caf76183861c80e81ca4b5104abb
 
 # curl is here for HEALTHCHECK; the image has no shell tooling otherwise.
+# Unprivileged user. Its only writable state is data/, which holds the Twitch token granted through /api/v1/twitch/authorize;
+# created below so a named volume mounted over it inherits the relay user's ownership.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Unprivileged. Its only writable state is data/, which holds the Twitch token granted through /api/v1/twitch/authorize;
-# created here so a named volume mounted over it inherits the relay user's ownership.
-RUN useradd --system --create-home --uid 10001 relay
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --create-home --uid 10001 relay
 USER relay
 WORKDIR /home/relay
 RUN mkdir -m 700 data

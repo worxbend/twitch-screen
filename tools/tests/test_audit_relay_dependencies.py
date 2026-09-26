@@ -68,11 +68,12 @@ class DependencyAuditTests(unittest.TestCase):
         allowed = {"package": "g:a", "version": "1", "advisory": "GHSA-old", "reviewed": "2026-09-25", "expires": "2026-10-25",
                    "owner": "maintainers", "reason": "Assessed configuration-only reachability"}
         findings = [("g:a", "1", "GHSA-old"), ("g:a", "1", "GHSA-new"), ("g:a", "2", "GHSA-old")]
-        self.assertEqual(audit.apply_exceptions(findings, [allowed], date(2026, 9, 25)), findings[1:])
+        reviewed, expires = date(2026, 9, 25), date(2026, 10, 25)
+        self.assertEqual(audit.apply_exceptions(findings, [allowed], reviewed), findings[1:])
         with self.assertRaises(audit.AuditError):
-            audit.apply_exceptions(findings, [allowed], date(2026, 10, 25))
+            audit.apply_exceptions(findings, [allowed], expires)
         with self.assertRaises(audit.AuditError):
-            audit.apply_exceptions([], [allowed], date(2026, 9, 25))
+            audit.apply_exceptions([], [allowed], reviewed)
 
 
 if __name__ == "__main__":

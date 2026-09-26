@@ -20,6 +20,8 @@ class DeviceLinkSuite extends munit.FunSuite:
   private val TrickledHandshakeBudget = 600.millis
   private val TrickleInterval = 200.millis
   private val HandshakeSchedulingMargin = 2.seconds
+  private val TestDeviceId = "roundlcd-01"
+  private val PolishChat = "świetny stream!"
   private def follow(name: String) = EventRequest(NotificationKind.Follow, actor = name, text = "", ttl = 30.seconds)
 
   private def chat(name: String, text: String) = EventRequest(NotificationKind.Chat, actor = name, text = text, ttl = 6.seconds)
@@ -43,7 +45,7 @@ class DeviceLinkSuite extends munit.FunSuite:
       val (hub, port) = TestRelay.start()
       hub.publish(follow("published before the device connected")).discard
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         val frames = device.receiveMany(2)
         assertEquals(frames.map(_.header.typeCode.known), List(Some(MessageType.Welcome), Some(MessageType.Stats)))
         assertEquals(welcomeOf(frames).map(_.latestSeq.value), Some(1L))
@@ -57,7 +59,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (_, port) = TestRelay.start(TestRelay.config.copy(replayBufferSize = 12))
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         val frames = device.receiveMany(2)
         assertEquals(welcomeOf(frames).map(_.replayWindow.value), Some(12))
         assertNotEquals(welcomeOf(frames).map(_.replayWindow.value), Some(ReplayWindow.Durable.value))
@@ -67,14 +69,14 @@ class DeviceLinkSuite extends munit.FunSuite:
       val (_, port) = TestRelay.start()
       withDevice(port): device =>
         // Bit 20 is reserved; §6.1 says unknown bits are ignored, never rejected, and never granted back.
-        device.hello("roundlcd-01", lastSeq = 0, caps = TestDevice.FullCaps | Capabilities.fromWire(0x00100000L))
+        device.hello(TestDeviceId, lastSeq = 0, caps = TestDevice.FullCaps | Capabilities.fromWire(0x00100000L))
         assertEquals(welcomeOf(device.receiveMany(2)).map(_.caps.value), Some(Capabilities.RelaySupported.value))
 
   test("a device that asked for nothing is granted nothing, and is served anyway"):
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0, caps = Capabilities.Empty)
+        device.hello(TestDeviceId, lastSeq = 0, caps = Capabilities.Empty)
         assertEquals(welcomeOf(device.receiveMany(2)).map(_.caps.value), Some(Capabilities.Empty.value))
         // §6.1: a missing capability degrades, never refuses. The follow still arrives.
         hub.publish(follow("newfriend")).discard
@@ -85,7 +87,7 @@ class DeviceLinkSuite extends munit.FunSuite:
       val (_, port) = TestRelay.start()
       def sessionId(): Long =
         withDevice(port): device =>
-          device.hello("roundlcd-01", lastSeq = 0)
+          device.hello(TestDeviceId, lastSeq = 0)
           welcomeOf(device.receiveMany(2)).map(_.sessionId.value).getOrElse(-1L)
       // §10.2: it changes once per relay process start, which is what tells a device its sequence space was reset.
       assertEquals(sessionId(), sessionId())
@@ -98,7 +100,7 @@ class DeviceLinkSuite extends munit.FunSuite:
       val (_, second) = TestRelay.start(sessionIdSource = () => 0xcafebabeL)
       def advertised(port: Int): Option[Long] =
         withDevice(port): device =>
-          device.hello("roundlcd-01", lastSeq = 0)
+          device.hello(TestDeviceId, lastSeq = 0)
           welcomeOf(device.receiveMany(2)).map(_.sessionId.value)
       val (a, b) = (advertised(first), advertised(second))
       assertEquals(a, Some(0x12345678L))
@@ -114,7 +116,7 @@ class DeviceLinkSuite extends munit.FunSuite:
       val (_, port) = TestRelay.start(sessionIdSource = () => source())
       def advertised(): Option[Long] =
         withDevice(port): device =>
-          device.hello("roundlcd-01", lastSeq = 0)
+          device.hello(TestDeviceId, lastSeq = 0)
           welcomeOf(device.receiveMany(2)).map(_.sessionId.value)
       // §6.2: opaque and drawn once per relay process, so every connection sees the same, u32-masked value.
       assertEquals(List(advertised(), advertised()), List(Some(1L), Some(1L)))
@@ -124,7 +126,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         hub.publish(EventRequest(NotificationKind.Raid, "streamfriend", "", 10.seconds, value = EventValue.clamp(128L))).discard
         val frame = device.receiveMany(1).head
@@ -136,10 +138,10 @@ class DeviceLinkSuite extends munit.FunSuite:
   test("a reconnecting device is replayed only what it missed, with the REPLAY flag set"):
     supervised:
       val (hub, port) = TestRelay.start()
-      withDevice(port)(_.hello("roundlcd-01", lastSeq = 0))
+      withDevice(port)(_.hello(TestDeviceId, lastSeq = 0))
       List("one", "two", "three").foreach(name => hub.publish(follow(name)).discard)
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 1)
+        device.hello(TestDeviceId, lastSeq = 1)
         val frames = device.receiveMany(4)
         val replayed = frames.filter(_.header.typeCode.known.contains(MessageType.Event))
         assertEquals(events(replayed).map(_.seq.value), List(2L, 3L))
@@ -152,7 +154,7 @@ class DeviceLinkSuite extends munit.FunSuite:
       val (hub, port) = TestRelay.start()
       List("one", "two").foreach(name => hub.publish(follow(name)).discard)
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 9_000)
+        device.hello(TestDeviceId, lastSeq = 9_000)
         assertEquals(device.receiveMany(2).map(_.header.typeCode.known), List(Some(MessageType.Welcome), Some(MessageType.Stats)))
         assertEquals(device.receiveWithin(QuiescenceBudget), None)
 
@@ -166,7 +168,7 @@ class DeviceLinkSuite extends munit.FunSuite:
       hub.publish(follow("newfriend")).discard // seq 2, durable
       (1 to 30).foreach(index => hub.publish(chat(s"chatter$index", "hi")).discard) // seqs 3…32, chat ring only
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 1)
+        device.hello(TestDeviceId, lastSeq = 1)
         val frames = device.receiveMany(2 + 1 + DeviceLinkConfig.ChatReplaySize)
         val replayed = events(frames)
         assert(replayed.exists(_.actor == "newfriend"), "the follow survived thirty chat lines")
@@ -183,7 +185,7 @@ class DeviceLinkSuite extends munit.FunSuite:
       (1 to 5).foreach(index => hub.publish(follow(s"follower$index")).discard) // seqs 2…6, the durable ring keeps the last four
       (1 to 20).foreach(index => hub.publish(chat(s"chatter$index", "hi")).discard) // seqs 7…26, the chat ring keeps the last sixteen
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 1)
+        device.hello(TestDeviceId, lastSeq = 1)
         val frames = device.receiveMany(1 + replay + DeviceLinkConfig.ChatReplaySize + 1)
         assertEquals(frames.size, 1 + replay + DeviceLinkConfig.ChatReplaySize + 1, "a dropped EVENT would have closed the link")
         assertEquals(frames.head.header.typeCode.known, Some(MessageType.Welcome))
@@ -198,7 +200,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0, caps = TestDevice.AsciiOnlyCaps)
+        device.hello(TestDeviceId, lastSeq = 0, caps = TestDevice.AsciiOnlyCaps)
         device.receiveMany(2).discard
         hub.publish(chat("sparkplug", "o7")).discard
         hub.publish(follow("newfriend")).discard
@@ -210,7 +212,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0, caps = TestDevice.NoGenericCaps)
+        device.hello(TestDeviceId, lastSeq = 0, caps = TestDevice.NoGenericCaps)
         device.receiveMany(2).discard
         hub.publish(EventRequest(NotificationKind.Info, actor = "relay", text = "hello", ttl = 30.seconds)).discard
         hub.publish(follow("newfriend")).discard
@@ -222,7 +224,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start(chat = ChatNotifications.Hide)
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0, caps = TestDevice.FullCaps)
+        device.hello(TestDeviceId, lastSeq = 0, caps = TestDevice.FullCaps)
         device.receiveMany(2).discard
         hub.publish(chat("sparkplug", "o7")).discard
         hub.publish(follow("newfriend")).discard
@@ -232,9 +234,9 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0, caps = TestDevice.AsciiOnlyCaps)
+        device.hello(TestDeviceId, lastSeq = 0, caps = TestDevice.AsciiOnlyCaps)
         device.receiveMany(2).discard
-        hub.publish(EventRequest(NotificationKind.Follow, "Paweł", "świetny stream!", 6.seconds)).discard
+        hub.publish(EventRequest(NotificationKind.Follow, "Paweł", PolishChat, 6.seconds)).discard
         val record = events(device.receiveMany(1)).head
         assertEquals((record.actor, record.text), ("Pawel", "swietny stream!"))
 
@@ -242,17 +244,17 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0, caps = TestDevice.FullCaps)
+        device.hello(TestDeviceId, lastSeq = 0, caps = TestDevice.FullCaps)
         device.receiveMany(2).discard
-        hub.publish(EventRequest(NotificationKind.Follow, "Paweł", "świetny stream!", 6.seconds)).discard
+        hub.publish(EventRequest(NotificationKind.Follow, "Paweł", PolishChat, 6.seconds)).discard
         val record = events(device.receiveMany(1)).head
-        assertEquals((record.actor, record.text), ("Paweł", "świetny stream!"))
+        assertEquals((record.actor, record.text), ("Paweł", PolishChat))
 
   test("an over-long chat line is truncated by the sender instead of tearing the link down"):
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         hub.publish(chat("chatter", "x" * 400)).discard
         val frame = device.receiveMany(1).head
@@ -269,7 +271,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (_, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         device.send(DeviceMessage.Ping(Token.fromWire(4210L)))
         assertEquals(device.receiveMessage(), Some(RelayMessage.Pong(Token.fromWire(4210L))))
@@ -278,7 +280,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         (1 to 300).foreach(_ => hub.broadcastStats(StreamStats.Unknown))
         device.send(DeviceMessage.Ping(Token.fromWire(99L)))
@@ -296,7 +298,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0, caps = Capabilities.Empty)
+        device.hello(TestDeviceId, lastSeq = 0, caps = Capabilities.Empty)
         device.receiveMany(2).discard
         device.send(DeviceMessage.Ack(SeqNo.fromWire(9L)))
         device.send(DeviceMessage.Ping(Token.fromWire(1L)))
@@ -307,16 +309,16 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (_, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
-        device.hello("roundlcd-01", lastSeq = 0, rxMax = 128)
+        device.hello(TestDeviceId, lastSeq = 0, rxMax = 128)
         assertEquals(byesOf(device.drain()).map(_.code), List(ByeCode.DuplicateHello))
 
   test("an ACK is recorded against the link and withholds nothing"):
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         hub.publish(follow("newfriend")).discard
         device.receiveMany(1).discard
@@ -329,7 +331,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         hub.publish(follow("newfriend")).discard
         device.receiveMany(1).discard
@@ -356,7 +358,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (_, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0, version = ProtocolVersion.fromWire(4.toByte))
+        device.hello(TestDeviceId, lastSeq = 0, version = ProtocolVersion.fromWire(4.toByte))
         val frames = device.drain()
         assertEquals(frames.size, 1, "a BYE and nothing else")
         // §6.7: stamped with the version byte of the frame that provoked it, so a v4 device can read the refusal.
@@ -386,7 +388,7 @@ class DeviceLinkSuite extends munit.FunSuite:
       val detaches = bus.subscribe("detach")
       val (_, port) = TestRelay.start(bus = bus)
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         // A well-framed v2 PING after WELCOME: the established-session site of the shared version refusal, not the handshake one.
         device.send(DeviceMessage.Ping(Token.fromWire(5L)), ProtocolVersion.fromWire(2.toByte))
@@ -408,7 +410,7 @@ class DeviceLinkSuite extends munit.FunSuite:
       withDevice(port): device =>
         val hello = Tsb3Encoder.toRelay(
           DeviceMessage.Hello(
-            deviceId = DeviceId("roundlcd-01").toOption.get,
+            deviceId = DeviceId(TestDeviceId).toOption.get,
             lastSeq = SeqNo.Zero,
             caps = TestDevice.FullCaps,
             rxMax = FrameSize.fromWire(Tsb3.MinRxMax),
@@ -446,7 +448,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (_, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0, rxMax = 128)
+        device.hello(TestDeviceId, lastSeq = 0, rxMax = 128)
         assertEquals(
           byesOf(device.drain()).map(bye => (bye.code, bye.detail.value)),
           List((ByeCode.InvalidParameter, Tsb3.Hello.RxMax))
@@ -456,16 +458,16 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (_, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         assertEquals(byesOf(device.drain()).map(_.code), List(ByeCode.DuplicateHello))
 
   test("§11.1 rule 3: a second HELLO too short to decode is still a DUPLICATE_HELLO, not a §4.3 skip"):
     supervised:
       val (_, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         device.sendBytes(WireBytes.header(typeCode = MessageType.Hello.code, length = 4) ++ new Array[Byte](4))
         assertEquals(byesOf(device.drain()).map(_.code), List(ByeCode.DuplicateHello))
@@ -474,7 +476,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         hub.broadcastStats(StreamStats.Unknown.copy(state = StreamState.Live))
         device.receiveMany(1).discard
@@ -488,7 +490,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         // §17 case 1: a type a newer device might send, inside the device→relay range so it is not a misroute.
         device.sendBytes(WireBytes.header(typeCode = 0x0f, length = 0))
@@ -503,7 +505,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         // §17 case 2: a three-byte PING where the base length is four.
         device.sendBytes(WireBytes.resized(Tsb3Encoder.toRelay(DeviceMessage.Ping(Token.fromWire(7L))), payloadLength = 3))
@@ -517,7 +519,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (_, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         // §17 case 8: `a7 53` twice over, as a PING token, followed by a real frame the reader must still find.
         device.send(DeviceMessage.Ping(Token.fromWire(0x53a753a7L)))
@@ -529,7 +531,7 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (_, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         // §17 case 9. §4.5's budget — 16 rejected candidates or 4096 discarded bytes — is what separates a
         // malformed stream from a malformed frame; without it this would be an unbreakable reconnect loop.
@@ -540,11 +542,11 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): first =>
-        first.hello("roundlcd-01", lastSeq = 0)
+        first.hello(TestDeviceId, lastSeq = 0)
         assertEquals(first.receiveMany(2).size, 2)
-        assertEquals(hub.links.map(_.device.value), List("roundlcd-01"))
+        assertEquals(hub.links.map(_.device.value), List(TestDeviceId))
         withDevice(port): second =>
-          second.hello("roundlcd-01", lastSeq = 0)
+          second.hello(TestDeviceId, lastSeq = 0)
           assertEquals(second.receiveMany(2).size, 2)
           // The half-open corpse is told, then closed: one physical screen is one row, not two, and the dead
           // connection's 128-frame outbound queue stops absorbing every broadcast.
@@ -555,18 +557,18 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): first =>
-        first.hello("roundlcd-01", lastSeq = 0)
+        first.hello(TestDeviceId, lastSeq = 0)
         assertEquals(first.receiveMany(2).size, 2)
         withDevice(port): second =>
           second.hello("roundlcd-02", lastSeq = 0)
           assertEquals(second.receiveMany(2).size, 2)
-          assertEquals(hub.links.map(_.device.value).sorted, List("roundlcd-01", "roundlcd-02"))
+          assertEquals(hub.links.map(_.device.value).sorted, List(TestDeviceId, "roundlcd-02"))
 
   test("§6.7 code 8: a relay shutting down says so instead of dropping the socket in silence"):
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         assertEquals(device.receiveMany(2).size, 2)
         assertEquals(hub.shutdown(), 1)
         assertEquals(byesOf(device.drain()).map(_.code), List(ByeCode.ServerShutdown))
@@ -576,10 +578,10 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         val link = hub.links.headOption
-        assertEquals(link.map(_.device.value), Some("roundlcd-01"))
+        assertEquals(link.map(_.device.value), Some(TestDeviceId))
         // §14: `8 + length` per frame. A HELLO is 68 bytes; a WELCOME is 32 and a STATS is 40.
         assertEquals(link.map(_.traffic.bytesReceived), Some(68L))
         assertEquals(link.map(_.traffic.bytesSent), Some(72L))
@@ -588,11 +590,11 @@ class DeviceLinkSuite extends munit.FunSuite:
     supervised:
       val (hub, port) = TestRelay.start()
       withDevice(port): device =>
-        device.hello("roundlcd-01", lastSeq = 0)
+        device.hello(TestDeviceId, lastSeq = 0)
         device.receiveMany(2).discard
         val connection = hub.links.head.connection
         hub.publish(follow("queued before disconnect")).discard
-        assertEquals(hub.disconnect(connection).map(_.device.value), Some("roundlcd-01"))
+        assertEquals(hub.disconnect(connection).map(_.device.value), Some(TestDeviceId))
         assertEquals(events(device.receiveMany(1)).map(_.actor), List("queued before disconnect"))
         assertEquals(device.receiveMessage().collect { case bye: RelayMessage.Bye => bye.code }, Some(ByeCode.ServerShutdown))
         assertEquals(device.receive(), None)

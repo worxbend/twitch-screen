@@ -19,6 +19,7 @@ import twitchscreen.relay.protocol.*
 
 class DeviceBackpressureSuite extends munit.FunSuite:
   private val clock = Clock.systemUTC()
+  private val Loopback = "127.0.0.1"
 
   test("reclaim storms are refused without replacing the current connection"):
     supervised:
@@ -51,9 +52,9 @@ class DeviceBackpressureSuite extends munit.FunSuite:
   test("pending handshakes count toward the listener session limit"):
     supervised:
       val (_, port) = TestRelay.start(TestRelay.config.copy(handshakeTimeout = 30.seconds))
-      val peers = (1 to DeviceLinkServer.MaxConnections).map(_ => useCloseableInScope(Socket("127.0.0.1", port)))
+      val peers = (1 to DeviceLinkServer.MaxConnections).map(_ => useCloseableInScope(Socket(Loopback, port)))
       assertEquals(peers.size, DeviceLinkServer.MaxConnections)
-      val refused = useCloseableInScope(Socket("127.0.0.1", port))
+      val refused = useCloseableInScope(Socket(Loopback, port))
       refused.setSoTimeout(5000)
       assertEquals(refused.getInputStream.read(), -1)
 
@@ -66,8 +67,8 @@ class DeviceBackpressureSuite extends munit.FunSuite:
       supervised:
         val (hub, port) = TestRelay.start(TestRelay.config.copy(handshakeTimeout = 30.seconds))
         assertEquals(hub.snapshot.connectionsRefused, 0L)
-        (1 to DeviceLinkServer.MaxConnections).foreach(_ => useCloseableInScope(Socket("127.0.0.1", port)).discard)
-        val refused = useCloseableInScope(Socket("127.0.0.1", port))
+        (1 to DeviceLinkServer.MaxConnections).foreach(_ => useCloseableInScope(Socket(Loopback, port)).discard)
+        val refused = useCloseableInScope(Socket(Loopback, port))
         refused.setSoTimeout(5000)
         assertEquals(refused.getInputStream.read(), -1)
         // The listener counts and logs before it closes the socket, so EOF above already orders both before this read.

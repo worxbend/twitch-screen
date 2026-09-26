@@ -95,6 +95,6 @@ private[relay] object DeviceLinkServer:
       case _: InterruptedException => true
       case _ =>
         val cause = error.getCause
-        if cause == null || (cause eq error) || depth >= MaxCauseDepth then false else isInterrupt(cause, depth + 1)
+        cause != null && (cause ne error) && depth < MaxCauseDepth && isInterrupt(cause, depth + 1)
 
     def unapply(error: Throwable): Option[Throwable] = Option.when(isInterrupt(error, 0))(error)

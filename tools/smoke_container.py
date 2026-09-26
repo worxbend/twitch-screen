@@ -34,6 +34,83 @@ def read_frame(connection):
     return header[3], read_exact(struct.unpack_from("<H", header, 4)[0])
 
 
+def http_client(base):
+    """Return request(path, credential, payload) -> (status, body), treating HTTP errors as responses."""
+    def request(path, credential=None, payload=None):
+        headers = {} if credential is None else {"Authorization": "Bearer " + credential}
+        data = None if payload is None else json.dumps(payload).encode()
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers, data=data), timeout=3) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as error:
+            return error.code, error.read()
+
+    return request
+
+
+def wait_until_healthy(request):
+    deadline = time.monotonic() + 90
+    while True:
+        try:
+            if request("/api/v1/health")[0] == 200:
+                return
+        except OSError:  # urllib.error.URLError is an OSError
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Container did not become healthy within 90 seconds")
+        time.sleep(0.5)
+
+
+def check_http(request, token):
+    for path in ("/api/v1/health", "/api/v1/stats", "/docs/"):
+        assert request(path)[0] == 200, path
+    for path in ("/api/v1/config", "/api/v1/devices", "/api/v1/status"):
+        for credential in (None, "incorrect"):
+            status, body = request(path, credential)
+            assert status == 401, (path, status)
+            assert isinstance(json.loads(body), dict), path
+        status, body = request(path, token)
+        assert status == 200, (path, status)
+        assert token.encode() not in body, "Management token leaked in response"
+
+
+def check_device_link(port, request, token, container):
+    hello = spec_vectors()[1]
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+        connection.sendall(hello)
+        kind, payload = read_frame(connection)
+        assert kind == 0x20 and len(payload) == 24, "Expected TSB/3 WELCOME"
+        kind, payload = read_frame(connection)
+        assert kind == 0x22 and len(payload) == 32, "Expected greeting STATS"
+        status, body = request("/api/v1/notifications", token,
+                               {"type": "info", "title": "Smoke", "body": "Container delivery"})
+        assert status == 200, (status, body)
+        expect_event(connection, json.loads(body)["seq"])
+        docker("kill", "--signal=TERM", container)
+        expect_shutdown_bye(connection)
+
+
+def expect_event(connection, sequence):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        kind, payload = read_frame(connection)
+        if kind == 0x21 and struct.unpack_from("<I", payload)[0] == sequence:
+            assert len(payload) == 168 and b"Container delivery" in payload, "Wrong EVENT payload"
+            return
+    raise AssertionError("Expected injected EVENT within five seconds")
+
+
+def expect_shutdown_bye(connection):
+    kind, payload = None, b""
+    deadline = time.monotonic() + 10
+    while kind != 0x25 and time.monotonic() < deadline:
+        kind, payload = read_frame(connection)
+    assert kind == 0x25 and struct.unpack_from("<H", payload)[0] == 8, "Expected SERVER_SHUTDOWN BYE"
+    assert connection.recv(1) == b"", "BYE must be the final frame"
+
+
 def main():
     image = sys.argv[1] if len(sys.argv) == 2 else "twitch-screen-relay:review"
     token = secrets.token_hex(32)
@@ -45,66 +122,10 @@ def main():
     )
     try:
         ports = json.loads(docker("inspect", "--format", "{{json .NetworkSettings.Ports}}", container))
-        base = "http://127.0.0.1:" + ports["8080/tcp"][0]["HostPort"]
-
-        def request(path, credential=None, payload=None):
-            headers = {} if credential is None else {"Authorization": "Bearer " + credential}
-            data = None if payload is None else json.dumps(payload).encode()
-            if data is not None:
-                headers["Content-Type"] = "application/json"
-            try:
-                with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers, data=data), timeout=3) as response:
-                    return response.status, response.read()
-            except urllib.error.HTTPError as error:
-                return error.code, error.read()
-
-        deadline = time.monotonic() + 90
-        while True:
-            try:
-                if request("/api/v1/health")[0] == 200:
-                    break
-            except (OSError, urllib.error.URLError):
-                pass
-            if time.monotonic() >= deadline:
-                raise RuntimeError("Container did not become healthy within 90 seconds")
-            time.sleep(0.5)
-
-        for path in ("/api/v1/health", "/api/v1/stats", "/docs/"):
-            assert request(path)[0] == 200, path
-        for path in ("/api/v1/config", "/api/v1/devices", "/api/v1/status"):
-            for credential in (None, "incorrect"):
-                status, body = request(path, credential)
-                assert status == 401, (path, status)
-                assert isinstance(json.loads(body), dict), path
-            status, body = request(path, token)
-            assert status == 200, (path, status)
-            assert token.encode() not in body, "Management token leaked in response"
-
-        hello = spec_vectors()[1]
-        with socket.create_connection(("127.0.0.1", int(ports["8099/tcp"][0]["HostPort"])), timeout=5) as connection:
-            connection.sendall(hello)
-            kind, payload = read_frame(connection)
-            assert kind == 0x20 and len(payload) == 24, "Expected TSB/3 WELCOME"
-            kind, payload = read_frame(connection)
-            assert kind == 0x22 and len(payload) == 32, "Expected greeting STATS"
-            status, body = request("/api/v1/notifications", token,
-                                   {"type": "info", "title": "Smoke", "body": "Container delivery"})
-            assert status == 200, (status, body)
-            sequence = json.loads(body)["seq"]
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                kind, payload = read_frame(connection)
-                if kind == 0x21 and struct.unpack_from("<I", payload)[0] == sequence:
-                    assert len(payload) == 168 and b"Container delivery" in payload, "Wrong EVENT payload"
-                    break
-            else:
-                raise AssertionError("Expected injected EVENT within five seconds")
-            docker("kill", "--signal=TERM", container)
-            deadline = time.monotonic() + 10
-            while kind != 0x25 and time.monotonic() < deadline:
-                kind, payload = read_frame(connection)
-            assert kind == 0x25 and struct.unpack_from("<H", payload)[0] == 8, "Expected SERVER_SHUTDOWN BYE"
-            assert connection.recv(1) == b"", "BYE must be the final frame"
+        request = http_client("http://127.0.0.1:" + ports["8080/tcp"][0]["HostPort"])
+        wait_until_healthy(request)
+        check_http(request, token)
+        check_device_link(int(ports["8099/tcp"][0]["HostPort"]), request, token, container)
         subprocess.run(["docker", "wait", container], check=True, timeout=15, stdout=subprocess.DEVNULL)
         print("Container smoke passed: public/protected HTTP, redaction, WELCOME, STATS, EVENT and shutdown BYE (512 MiB limit).")
     except Exception:

@@ -8,6 +8,7 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
   private val credential = OAuth2Credential("twitch", "user-token")
   private val subscriptions = EventSubWebhookApi.unscopedSubscriptions("123") ++ EventSubWebhookApi.scopedSubscriptions("123")
   private val Follow = TwitchScopes.Followers
+  private val ChannelUpdate = "channel.update"
 
   /** Stays a failure, not awaiting: health has always reported a missing broadcaster grant as a failed connection. */
   private val AwaitingGrant = ("eventsub-connection", EventSubOutcome.Failed("awaiting broadcaster authorization"))
@@ -62,13 +63,13 @@ class WebSocketRegistrationSuite extends munit.FunSuite:
   test("missing follow scope still registers unscoped stream subscriptions"):
     val harness = Harness()
     assertEquals(harness.step(token = Some("a"), missing = List(Follow)), WebSocketStep.Connected("a"))
-    assertEquals(harness.registered.toList, List("stream.online", "stream.offline", "channel.update"))
+    assertEquals(harness.registered.toList, List("stream.online", "stream.offline", ChannelUpdate))
     assertEquals(harness.connects, 1)
 
   test("a rejected registration reports it, registers all, requests restart and skips connect"):
-    val harness = Harness(rejected = Set("channel.update"))
+    val harness = Harness(rejected = Set(ChannelUpdate))
     assertEquals(harness.step(token = Some("a")), WebSocketStep.Restart)
-    assertEquals(harness.registered.toList, List("stream.online", "stream.offline", "channel.update", "channel.follow"))
+    assertEquals(harness.registered.toList, List("stream.online", "stream.offline", ChannelUpdate, "channel.follow"))
     assertEquals(harness.connects, 0)
     assertEquals(
       harness.log.toList,

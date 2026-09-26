@@ -63,8 +63,8 @@ private[device] object DeviceSession:
             refuse(sink, refusal)
           case Right(accepted) =>
             writeBudget.set(config.idleTimeout)
-            val io = SessionIo(socket, sink, counters, config, accepted.caps, accepted.text)
-            serve(reader, budget(config.idleTimeout), io, accepted.hello, remote, hub, clock)
+            val io = SessionIo(socket, remote, sink, counters, config, accepted.caps, accepted.text)
+            serve(reader, budget(config.idleTimeout), io, accepted.hello, hub, clock)
       finally
         // Closed here in the scope body rather than through a scope finalizer: a finalizer runs only once the scope
         // has joined its forks, and unblocking those forks is exactly what this close is for.
@@ -79,6 +79,7 @@ private[device] object DeviceSession:
 
   private final case class SessionIo(
       socket: Socket,
+      remote: String,
       sink: FrameSink,
       counters: LinkCounters,
       config: DeviceLinkConfig,
@@ -145,7 +146,6 @@ private[device] object DeviceSession:
       idle: FrameBudget,
       io: SessionIo,
       hello: DeviceMessage.Hello,
-      remote: String,
       hub: DeviceHub,
       clock: Clock
   )(using Ox): Unit =
@@ -274,18 +274,22 @@ private[device] object DeviceSession:
 
         case Right(_: DeviceMessage.Hello) => duplicateHello(sink, frame)
 
-        case Left(error) =>
-          error.disposition match
-            case ErrorDisposition.SkipFrame =>
-              // §4.3: well-framed but not usable. Discard the payload, count it, keep the link. The resync budget
-              // resets too, because the frame was correctly framed.
-              counters.recordSkipped(error)
-              if logger.isDebugEnabled then logger.debug(s"Skipping an inbound frame: ${error.describe}")
-              None
-            case ErrorDisposition.CloseLink | ErrorDisposition.Resynchronize =>
-              val refusal = Refusal(DisconnectReason.ProtocolViolation(error.describe), error.byeAdvice, frame.header.version)
-              refuse(sink, refusal)
-              Some(refusal.reason)
+        case Left(error) => rejectInbound(frame, error, io)
+
+  /** An inbound frame that did not decode: skipped (the link survives) or refused (the link closes), per the error's disposition. */
+  private def rejectInbound(frame: Frame, error: ProtocolError, io: SessionIo): Option[DisconnectReason] =
+    import io.*
+    error.disposition match
+      case ErrorDisposition.SkipFrame =>
+        // §4.3: well-framed but not usable. Discard the payload, count it, keep the link. The resync budget
+        // resets too, because the frame was correctly framed.
+        counters.recordSkipped(error)
+        if logger.isDebugEnabled then logger.debug(s"Skipping an inbound frame: ${error.describe}")
+        None
+      case ErrorDisposition.CloseLink | ErrorDisposition.Resynchronize =>
+        val refusal = Refusal(DisconnectReason.ProtocolViolation(error.describe), error.byeAdvice, frame.header.version)
+        refuse(sink, refusal)
+        Some(refusal.reason)
 
   private def versionRefusal(version: ProtocolVersion, config: DeviceLinkConfig, reason: DisconnectReason): Refusal =
     Refusal(reason, Some((ByeCode.UnsupportedVersion, ByeDetail.of(config.protocolVersion))), version, VersionMismatchBackoff)

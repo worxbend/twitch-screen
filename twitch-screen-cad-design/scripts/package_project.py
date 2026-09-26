@@ -8,6 +8,7 @@ from render_settings import PREVIEW_SIZE
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT/'output'
+MANIFEST = 'manifest.json'
 PREVIEWS = ['01_front_hero','02_rear_usb','03_side','04_front','05_section',
             '06_exploded','part_shell_interior','part_base','part_lcd_retainer','part_face_bezel']
 
@@ -44,12 +45,12 @@ body{font:17px/1.6 system-ui,sans-serif;background:#f4f2ec;color:#24272c;max-wid
     for folder in ('scripts','docs','refs','output'):
         paths += [p for p in (ROOT/folder).rglob('*') if p.is_file()
                   and '__pycache__' not in p.parts and p.suffix not in ('.pyc','.blend1','.FCBak','.FCStd1')
-                  and p.name != 'manifest.json']
+                  and p.name != MANIFEST]
     manifest = {'units':'millimetres','status':'nominal CAD verified; hardware measurements pending',
         'files':{str(p.relative_to(ROOT)):{'bytes':p.stat().st_size,
                   'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(paths)}}
-    (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2))
-    paths.append(OUT/'manifest.json')
+    (OUT/MANIFEST).write_text(json.dumps(manifest,indent=2))
+    paths.append(OUT/MANIFEST)
     archive = ROOT/'TwitchScreen-deliverables.zip'
     with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
         for path in paths:

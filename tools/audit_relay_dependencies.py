@@ -24,29 +24,31 @@ def coordinates(references):
     """Accept the pinned Mill/Coursier Maven Central layout, never skip a jar."""
     if not isinstance(references, list) or not 1 <= len(references) <= 2000:
         raise AuditError("Expected 1..2000 resolved runtime artifact references")
-    result = set()
-    for reference in references:
-        if not isinstance(reference, str):
-            raise AuditError("Artifact reference is not a string")
-        match = re.fullmatch(r"(?:qref|ref):v1:[0-9a-f]+:(/[^\n]+)", reference)
-        if not match:
-            raise AuditError(f"Unrecognized Mill reference: {reference!r}")
-        path = match[1]
-        cache, _, repository = path.rpartition("/https/")
-        layout = cache and re.fullmatch(
-            r"(?:repo1\.maven\.org|repo\.maven\.apache\.org)/maven2/(.+)", repository
-        )
-        if not layout:
-            raise AuditError(f"Unrecognized Maven repository path: {path!r}")
-        parts = layout[1].split("/")
-        if len(parts) < 4 or any(not re.fullmatch(r"[A-Za-z0-9_.+\-]+", p) or p in (".", "..") for p in parts):
-            raise AuditError(f"Invalid Maven path: {path!r}")
-        *group, artifact, version, filename = parts
-        stem = re.escape(f"{artifact}-{version}")
-        if not re.fullmatch(stem + r"(?:-[A-Za-z0-9_.+\-]+)?\.jar", filename):
-            raise AuditError(f"Artifact filename does not match coordinate: {path!r}")
-        result.add((".".join(group) + ":" + artifact, version))
-    return sorted(result)
+    return sorted({coordinate(reference) for reference in references})
+
+
+def coordinate(reference):
+    """Turn one Mill artifact reference into a (group:artifact, version) pair, or reject it."""
+    if not isinstance(reference, str):
+        raise AuditError("Artifact reference is not a string")
+    match = re.fullmatch(r"(?:qref|ref):v1:[0-9a-f]+:(/[^\n]+)", reference)
+    if not match:
+        raise AuditError(f"Unrecognized Mill reference: {reference!r}")
+    path = match[1]
+    cache, _, repository = path.rpartition("/https/")
+    layout = cache and re.fullmatch(
+        r"(?:repo1\.maven\.org|repo\.maven\.apache\.org)/maven2/(.+)", repository
+    )
+    if not layout:
+        raise AuditError(f"Unrecognized Maven repository path: {path!r}")
+    parts = layout[1].split("/")
+    if len(parts) < 4 or any(not re.fullmatch(r"[A-Za-z0-9_.+\-]+", p) or p in (".", "..") for p in parts):
+        raise AuditError(f"Invalid Maven path: {path!r}")
+    *group, artifact, version, filename = parts
+    stem = re.escape(f"{artifact}-{version}")
+    if not re.fullmatch(stem + r"(?:-[A-Za-z0-9_.+\-]+)?\.jar", filename):
+        raise AuditError(f"Artifact filename does not match coordinate: {path!r}")
+    return (".".join(group) + ":" + artifact, version)
 
 
 def request_osv(queries):
@@ -66,48 +68,67 @@ def scan(packages, request=request_osv):
     findings = set()
     deadline = time.monotonic() + 300
     for start in range(0, len(packages), 100):
-        pending = [(package, version, None) for package, version in packages[start:start + 100]]
-        seen_tokens = set()
-        for _ in range(20):
-            if time.monotonic() >= deadline:
-                raise AuditError("OSV scan exceeded five minutes")
-            queries = []
-            for package, version, token in pending:
-                query = {"package": {"ecosystem": "Maven", "name": package}, "version": version}
-                if token is not None:
-                    query["page_token"] = token
-                queries.append(query)
-            response = request(queries)
-            results = response.get("results") if isinstance(response, dict) else None
-            if not isinstance(response, dict) or set(response) != {"results"} or not isinstance(results, list) or len(results) != len(pending):
-                raise AuditError("OSV returned an incomplete result batch")
-            next_queries = []
-            for (package, version, _), result in zip(pending, results):
-                if not isinstance(result, dict) or set(result) - {"vulns", "next_page_token"}:
-                    raise AuditError("OSV returned an error or unknown result shape")
-                vulnerabilities = result.get("vulns", [])
-                if not isinstance(vulnerabilities, list):
-                    raise AuditError("OSV vulnerabilities are not a list")
-                for vulnerability in vulnerabilities:
-                    identifier = vulnerability.get("id") if isinstance(vulnerability, dict) else None
-                    if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,200}", identifier):
-                        raise AuditError("OSV returned an invalid advisory ID")
-                    findings.add((package, version, identifier))
-                token = result.get("next_page_token")
-                if token is not None:
-                    if not isinstance(token, str) or not token or len(token) > 8192:
-                        raise AuditError("OSV returned an invalid pagination token")
-                    page = (package, version, token)
-                    if page in seen_tokens:
-                        raise AuditError("OSV repeated a pagination token")
-                    seen_tokens.add(page)
-                    next_queries.append(page)
-            if not next_queries:
-                break
-            pending = next_queries
-        else:
-            raise AuditError("OSV pagination exceeded 20 pages; scan incomplete")
+        scan_batch(packages[start:start + 100], request, deadline, findings)
     return sorted(findings)
+
+
+def scan_batch(packages, request, deadline, findings):
+    """Query one batch of packages, following page tokens for at most 20 pages."""
+    pending = [(package, version, None) for package, version in packages]
+    seen_tokens = set()
+    for _ in range(20):
+        if time.monotonic() >= deadline:
+            raise AuditError("OSV scan exceeded five minutes")
+        results = checked_results(request(osv_queries(pending)), len(pending))
+        next_queries = []
+        for (package, version, _), result in zip(pending, results):
+            page = collect_result(package, version, result, findings)
+            if page is not None:
+                if page in seen_tokens:
+                    raise AuditError("OSV repeated a pagination token")
+                seen_tokens.add(page)
+                next_queries.append(page)
+        if not next_queries:
+            return
+        pending = next_queries
+    raise AuditError("OSV pagination exceeded 20 pages; scan incomplete")
+
+
+def osv_queries(pending):
+    queries = []
+    for package, version, token in pending:
+        query = {"package": {"ecosystem": "Maven", "name": package}, "version": version}
+        if token is not None:
+            query["page_token"] = token
+        queries.append(query)
+    return queries
+
+
+def checked_results(response, expected):
+    results = response.get("results") if isinstance(response, dict) else None
+    if not isinstance(response, dict) or set(response) != {"results"} or not isinstance(results, list) or len(results) != expected:
+        raise AuditError("OSV returned an incomplete result batch")
+    return results
+
+
+def collect_result(package, version, result, findings):
+    """Record one result's advisories; return the (package, version, token) of its next page, if any."""
+    if not isinstance(result, dict) or set(result) - {"vulns", "next_page_token"}:
+        raise AuditError("OSV returned an error or unknown result shape")
+    vulnerabilities = result.get("vulns", [])
+    if not isinstance(vulnerabilities, list):
+        raise AuditError("OSV vulnerabilities are not a list")
+    for vulnerability in vulnerabilities:
+        identifier = vulnerability.get("id") if isinstance(vulnerability, dict) else None
+        if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,200}", identifier):
+            raise AuditError("OSV returned an invalid advisory ID")
+        findings.add((package, version, identifier))
+    token = result.get("next_page_token")
+    if token is None:
+        return None
+    if not isinstance(token, str) or not token or len(token) > 8192:
+        raise AuditError("OSV returned an invalid pagination token")
+    return (package, version, token)
 
 
 def apply_exceptions(findings, exceptions, today):

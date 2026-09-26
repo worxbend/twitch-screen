@@ -41,6 +41,7 @@ class ApiSuite extends munit.FunSuite:
   )
 
   private val notificationsConfig = NotificationsConfig(30.seconds, ChatNotifications.Hide)
+  private val AlertTitle = "Rack A"
 
   /** Builds the whole management API over a fresh hub and hands the test a backend plus the hub behind it. */
   private def withApi(body: (SyncBackend, DeviceHub, AlertStore) => Unit): Unit =
@@ -124,7 +125,7 @@ class ApiSuite extends munit.FunSuite:
     withApi: (backend, _, _) =>
       val response = SttpClientInterpreter()
         .toRequestThrowDecodeFailures(NotificationApi.createEndpoint, basePath)
-        .apply(Notification_IN(NotificationKind.Alert, "Rack A", "78C", None))
+        .apply(Notification_IN(NotificationKind.Alert, AlertTitle, "78C", None))
         .send(backend)
       assertEquals(response.body.map(_.seq.value), Right(1L))
 
@@ -140,7 +141,7 @@ class ApiSuite extends munit.FunSuite:
     withApi: (backend, _, _) =>
       val response = SttpClientInterpreter()
         .toRequestThrowDecodeFailures(NotificationApi.createEndpoint, basePath)
-        .apply(Notification_IN(NotificationKind.Alert, "Rack A", "78C", Some(0L)))
+        .apply(Notification_IN(NotificationKind.Alert, AlertTitle, "78C", Some(0L)))
         .send(backend)
       assertEquals(response.code, StatusCode.BadRequest)
 
@@ -148,7 +149,7 @@ class ApiSuite extends munit.FunSuite:
     withApi: (backend, hub, _) =>
       val response = SttpClientInterpreter()
         .toRequestThrowDecodeFailures(NotificationApi.createEndpoint, basePath)
-        .apply(Notification_IN(NotificationKind.Alert, "Rack A", "78C", Some(Long.MaxValue)))
+        .apply(Notification_IN(NotificationKind.Alert, AlertTitle, "78C", Some(Long.MaxValue)))
         .send(backend)
       assertEquals(response.code, StatusCode.BadRequest)
       assert(response.body.left.exists(_.isInstanceOf[Fail.IncorrectInput]))
@@ -158,7 +159,7 @@ class ApiSuite extends munit.FunSuite:
     withApi: (backend, _, _) =>
       val response = SttpClientInterpreter()
         .toRequestThrowDecodeFailures(NotificationApi.createEndpoint, basePath)
-        .apply(Notification_IN(NotificationKind.Alert, "Rack A", "78C", Some(6553500L)))
+        .apply(Notification_IN(NotificationKind.Alert, AlertTitle, "78C", Some(6553500L)))
         .send(backend)
       assertEquals(response.body.map(_.ttlMs), Right(6553500L))
 
@@ -166,7 +167,7 @@ class ApiSuite extends munit.FunSuite:
     withApi: (backend, hub, _) =>
       val response = SttpClientInterpreter()
         .toRequestThrowDecodeFailures(NotificationApi.createEndpoint, basePath)
-        .apply(Notification_IN(NotificationKind.Alert, "Rack A", "x" * 4097, None))
+        .apply(Notification_IN(NotificationKind.Alert, AlertTitle, "x" * 4097, None))
         .send(backend)
       assertEquals(response.code, StatusCode.BadRequest)
       assertEquals(hub.snapshot.notificationsPublished, 0L)

@@ -12,6 +12,7 @@ import twitchscreen.relay.config.Sensitive
 
 class TokenFileSuite extends munit.FunSuite:
   private val token = UserToken(Sensitive("access"), Sensitive("refresh"), Instant.MAX, Nil, "123", "channel")
+  private val TokenFileName = "token.json"
   private val tempDir = FunFixture[Path](
     _ => Files.createTempDirectory("token-file"),
     dir => Using.resource(Files.walk(dir))(_.sorted(java.util.Comparator.reverseOrder()).forEach(Files.delete(_)))
@@ -30,14 +31,14 @@ class TokenFileSuite extends munit.FunSuite:
     assertEquals(String(bytes.toArray, java.nio.charset.StandardCharsets.UTF_8), "complete token")
 
   tempDir.test("oversized on-disk tokens are rejected before JSON parsing"): dir =>
-    val path = dir.resolve("token.json")
+    val path = dir.resolve(TokenFileName)
     Files.write(path, Array.fill[Byte](65537)(32)).discard
     if path.getFileSystem.supportedFileAttributeViews.contains("posix") then
       Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------")).discard
     assert(TokenFile(path).load().left.exists(_.contains("size limit")))
 
   tempDir.test("load rejects permissions broadened after save"): dir =>
-    val path = dir.resolve("token.json")
+    val path = dir.resolve(TokenFileName)
     val file = TokenFile(path)
     file.save(token)
     if path.getFileSystem.supportedFileAttributeViews.contains("posix") then
@@ -45,7 +46,7 @@ class TokenFileSuite extends munit.FunSuite:
       assert(file.load().left.exists(_.contains("only by its owner")))
 
   tempDir.test("startup removes abandoned staging copies"): dir =>
-    val path = dir.resolve("token.json")
+    val path = dir.resolve(TokenFileName)
     Files.writeString(dir.resolve("token.json.tmp"), "legacy secret").discard
     Files.writeString(dir.resolve(".token.json.crashed.tmp"), "staged secret").discard
     assertEquals(TokenFile(path).load(), Right(None))
@@ -53,7 +54,7 @@ class TokenFileSuite extends munit.FunSuite:
     assert(!Files.exists(dir.resolve(".token.json.crashed.tmp")))
 
   tempDir.test("a failed replacement removes the staging copy"): dir =>
-    val path = Files.createDirectory(dir.resolve("token.json"))
+    val path = Files.createDirectory(dir.resolve(TokenFileName))
     Files.writeString(path.resolve("keep"), "directory cannot be replaced").discard
     intercept[java.io.IOException](TokenFile(path).save(token)).discard
     Using.resource(Files.list(dir)): files =>

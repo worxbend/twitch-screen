@@ -36,6 +36,7 @@ class ManagementRoutesSuite extends munit.FunSuite:
   private val secret = "test-eventsub-signing-secret"
   private val now = Instant.parse("2026-09-25T12:00:00Z")
   private val clock = Clock.fixed(now, ZoneOffset.UTC)
+  private val EventSubPath = "twitch/eventsub"
   private val routes = List(
     ("GET", "config", "", 200),
     ("GET", "logs", "", 200),
@@ -108,7 +109,7 @@ class ManagementRoutesSuite extends munit.FunSuite:
             send(
               port,
               "POST",
-              "twitch/eventsub",
+              EventSubPath,
               body = challenge,
               headers = EventSubSigning.headers(secret, "after-bind", now.toString, challenge)
             )
@@ -159,9 +160,9 @@ class ManagementRoutesSuite extends munit.FunSuite:
       assertEquals(send(port, "GET", "twitch/callback?code=unissued&state=unissued").statusCode(), 400)
       val body = """{"subscription":{"type":"stream.online"},"challenge":"verified"}"""
       val headers = EventSubSigning.headers(secret, "delivery", now.toString, body)
-      assertEquals(send(port, "POST", "twitch/eventsub", body = body, headers = headers).body(), "verified")
+      assertEquals(send(port, "POST", EventSubPath, body = body, headers = headers).body(), "verified")
       val forged = headers.filterNot(_._1.endsWith("Signature")) :+ ("Twitch-Eventsub-Message-Signature" -> "forged")
-      assertEquals(send(port, "POST", "twitch/eventsub", Some(s"Bearer $token"), body, forged).statusCode(), 401)
+      assertEquals(send(port, "POST", EventSubPath, Some(s"Bearer $token"), body, forged).statusCode(), 401)
 
   test("credential rotation rejects the old token and secrets are absent from configuration logs and exports"):
     val rotated = token + "-rotated"
@@ -185,7 +186,7 @@ class ManagementRoutesSuite extends munit.FunSuite:
       val yaml = docs.body()
       val alternatives = "security:\\s+- ManagementBasic: \\[\\]\\s+- ManagementToken: \\[\\]".r
       assertEquals(alternatives.findAllIn(yaml).size, routes.size)
-      List("health", "stats", "twitch/callback", "twitch/eventsub").foreach: path =>
+      List("health", "stats", "twitch/callback", EventSubPath).foreach: path =>
         val section = yaml.linesIterator.dropWhile(_ != s"  /api/v1/$path:").drop(1).takeWhile(!_.startsWith("  /")).mkString("\n")
         assert(section.nonEmpty, s"missing public $path")
         assert(!section.contains("security:"), section)

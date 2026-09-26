@@ -11,6 +11,13 @@ class ConfigSuite extends munit.FunSuite:
     ConfigFactory.parseString("http.auth.api-token = \"test-configuration-token-at-least-32-bytes\"").withFallback(ConfigFactory.load())
   private def configSource = ConfigSource.fromConfig(configured)
   private val ValidToken = "valid-test-token-with-at-least-32-bytes"
+  private val BasicPairRequired = "requires both Basic username and password hash"
+  private val BlankHashRejected = "basic-password-hash cannot be whitespace"
+  private val MisspelledSecret = "client-secert"
+  private val AuthPreferenceProperty = "http.auth.preference"
+  private val NonProxyHostsProperty = "http.nonProxyHosts"
+  private val CallbackUrl = "http://localhost:8080/api/v1/twitch/callback"
+  private val PingIntervalKey = "ping-interval"
 
   /** Well-formed for `PasswordVerifier.valid` (16-byte salt, 32-byte key); no password verifies against it. */
   private val ValidHash =
@@ -49,7 +56,7 @@ class ConfigSuite extends munit.FunSuite:
 
   test("the shipped configuration obtains the Twitch user token through the consent flow, never from the environment"):
     val config = configSource.loadOrThrow[Config]
-    assertEquals(config.twitch.oauth.redirectUrl, "http://localhost:8080/api/v1/twitch/callback")
+    assertEquals(config.twitch.oauth.redirectUrl, CallbackUrl)
     assertEquals(config.twitch.oauth.scopes, TwitchScopes.Default)
     assert(!ConfigFactory.load().hasPath("twitch.user-access-token"))
 
@@ -71,17 +78,17 @@ class ConfigSuite extends munit.FunSuite:
 
   test("a ping interval longer than the idle timeout is rejected"):
     val failure = intercept[IllegalArgumentException](deviceLinkConfig(pingInterval = 30.seconds))
-    assert(failure.getMessage.contains("ping-interval"), failure.getMessage)
+    assert(failure.getMessage.contains(PingIntervalKey), failure.getMessage)
 
   test("RLY-25: a ping interval that is zero, negative or under a second is rejected, naming the key"):
     List(0.seconds, (-1).second, 500.millis).foreach: ping =>
       val failure = intercept[IllegalArgumentException](deviceLinkConfig(pingInterval = ping))
-      assert(failure.getMessage.contains("ping-interval"), s"$ping: ${failure.getMessage}")
+      assert(failure.getMessage.contains(PingIntervalKey), s"$ping: ${failure.getMessage}")
 
   test("RLY-25: ping and idle are compared in the whole seconds WELCOME carries, not in nanoseconds"):
     // 1500 ms < 1900 ms, but both go on the wire as 1 s: the device would be told ping == idle.
     val fractionalPing = intercept[IllegalArgumentException](deviceLinkConfig(pingInterval = 1500.millis, idleTimeout = 1900.millis))
-    assert(fractionalPing.getMessage.contains("ping-interval"), fractionalPing.getMessage)
+    assert(fractionalPing.getMessage.contains(PingIntervalKey), fractionalPing.getMessage)
     val fractionalIdle = intercept[IllegalArgumentException](deviceLinkConfig(pingInterval = 2.seconds, idleTimeout = 2500.millis))
     assert(fractionalIdle.getMessage.contains("idle-timeout"), fractionalIdle.getMessage)
     List(0.seconds, (-1).second).foreach: idle =>
@@ -133,7 +140,7 @@ class ConfigSuite extends munit.FunSuite:
       .withValue("device-link.idle-timeout", ConfigValueFactory.fromAnyRef("1900ms"))
     val result = ConfigSource.fromConfig(source).load[Config]
     assert(result.isLeft)
-    assert(result.swap.toOption.exists(_.toString.contains("ping-interval")), result.toString)
+    assert(result.swap.toOption.exists(_.toString.contains(PingIntervalKey)), result.toString)
 
   private def deviceLinkConfig(
       pingInterval: FiniteDuration = 4.seconds,
@@ -171,7 +178,7 @@ class ConfigSuite extends munit.FunSuite:
   test("config rejects sub-millisecond timers and unbounded queue sizes"):
     // K-067: every fixture is valid as built, so each rejection below comes from the one field its copy changes.
     val alerts = AlertsConfig(1.second, 10, Some(1.minute), Some(1.minute), Some(1.minute), 0, 1.minute)
-    val oauth = TwitchOAuthConfig("http://localhost:8080/api/v1/twitch/callback", Nil, "data/twitch-token.json", 15.minutes)
+    val oauth = TwitchOAuthConfig(CallbackUrl, Nil, "data/twitch-token.json", 15.minutes)
     val twitch = liveTwitchConfig("client")
     val deviceLink = deviceLinkConfig()
     assertEquals(alerts.copy(evaluationInterval = 1.millis, noDevicesConnectedFor = Some(1.millis)).evaluationInterval, 1.millis)
@@ -201,7 +208,7 @@ class ConfigSuite extends munit.FunSuite:
     val absent = intercept[IllegalArgumentException](HttpAuthConfig())
     assert(absent.getMessage.contains("requires Basic credentials or an API token"), absent.getMessage)
     val incomplete = intercept[IllegalArgumentException](HttpAuthConfig("operator", apiToken = Some(Sensitive(ValidToken))))
-    assert(incomplete.getMessage.contains("requires both Basic username and password hash"), incomplete.getMessage)
+    assert(incomplete.getMessage.contains(BasicPairRequired), incomplete.getMessage)
 
   test("K-045: a complete credential method constructs"):
     assertEquals(HttpAuthConfig(apiToken = Some(Sensitive(ValidToken))).apiToken.map(_.value), Some(ValidToken))
@@ -261,7 +268,7 @@ class ConfigSuite extends munit.FunSuite:
       channel = "somechannel",
       clientId = clientId,
       clientSecret = Sensitive("secret"),
-      oauth = TwitchOAuthConfig("http://localhost:8080/api/v1/twitch/callback", Nil, "data/twitch-token.json", 15.minutes),
+      oauth = TwitchOAuthConfig(CallbackUrl, Nil, "data/twitch-token.json", 15.minutes),
       eventSub = EventSubConfig(EventSubTransport.WebSocket, "", Sensitive("")),
       pollInterval = 30.seconds,
       simulation = SimulationConfig(10.seconds, 2.seconds)
@@ -307,7 +314,7 @@ class ConfigSuite extends munit.FunSuite:
     List(
       "http.auth.api-token = \"\"" -> "requires Basic credentials or an API token",
       "http.auth.api-token = \"sixteen-byte-tok\"" -> "at least 32 bytes",
-      "http.auth { api-token = \"\", basic-username = \"operator\" }" -> "requires both Basic username and password hash"
+      "http.auth { api-token = \"\", basic-username = \"operator\" }" -> BasicPairRequired
     ).foreach: (overrides, expected) =>
       val messages = authConversionFailures(overrides)
       assert(
@@ -329,7 +336,7 @@ class ConfigSuite extends munit.FunSuite:
     List(
       "http.auth.api-token = \"   \"" -> "api-token",
       s"http.auth { api-token = \"$ValidToken\", basic-username = \"operator\", basic-password-hash = \"   \" }" ->
-        "basic-password-hash cannot be whitespace"
+        BlankHashRejected
     ).foreach: (overrides, expected) =>
       val messages = authConversionFailures(overrides)
       assert(messages.exists(_.contains(expected)), s"$overrides: expected '$expected', got $messages")
@@ -340,11 +347,11 @@ class ConfigSuite extends munit.FunSuite:
     assert(blankToken.getMessage.contains("api-token"), blankToken.getMessage)
     val blankHash =
       intercept[IllegalArgumentException](HttpAuthConfig("operator", basicPasswordHash = Some(Sensitive(" ")), apiToken = token))
-    assert(blankHash.getMessage.contains("basic-password-hash cannot be whitespace"), blankHash.getMessage)
+    assert(blankHash.getMessage.contains(BlankHashRejected), blankHash.getMessage)
     val emptyHash = intercept[IllegalArgumentException](HttpAuthConfig(basicPasswordHash = Some(Sensitive("")), apiToken = token))
-    assert(emptyHash.getMessage.contains("basic-password-hash cannot be whitespace"), emptyHash.getMessage)
+    assert(emptyHash.getMessage.contains(BlankHashRejected), emptyHash.getMessage)
     val hashOnly = intercept[IllegalArgumentException](HttpAuthConfig(basicPasswordHash = Some(Sensitive(ValidHash)), apiToken = token))
-    assert(hashOnly.getMessage.contains("requires both Basic username and password hash"), hashOnly.getMessage)
+    assert(hashOnly.getMessage.contains(BasicPairRequired), hashOnly.getMessage)
 
   test("K-100: an optional auth secret stays masked when the config is rendered"):
     val rendered = HttpAuthConfig(apiToken = Some(Sensitive(ValidToken))).toString
@@ -367,7 +374,7 @@ class ConfigSuite extends munit.FunSuite:
   test("K-016: a misspelled secret key fails startup and names the key instead of being silently ignored"):
     val result = loadWith("twitch.client-secert = \"leak\"")
     assert(result.isLeft, result.toString)
-    assert(failureText(result).contains("client-secert"), failureText(result))
+    assert(failureText(result).contains(MisspelledSecret), failureText(result))
 
   test("K-016: a misspelled management token key fails startup and names the key"):
     val result = loadWith("http.auth.api-tokn = \"leak-leak-leak-leak-leak-leak-leak-leak\"")
@@ -382,7 +389,7 @@ class ConfigSuite extends munit.FunSuite:
 
   test("K-016: every unknown key is reported, not just the first"):
     val text = failureText(loadWith("twitch.client-secert = \"a\"\nalerts.bufer-size = 3"))
-    assert(text.contains("client-secert") && text.contains("bufer-size"), text)
+    assert(text.contains(MisspelledSecret) && text.contains("bufer-size"), text)
 
   test("K-016: an optional setting may still be omitted, and one that is set is not mistaken for an unknown key"):
     val omitted = configured.withoutPath("alerts.no-devices-connected-for")
@@ -407,7 +414,7 @@ class ConfigSuite extends munit.FunSuite:
     )
 
   test("K-016: the JDK's http.* and http.auth.* system properties still load, and /config masks them"):
-    val properties = Map("http.nonProxyHosts" -> "localhost|*.local", "http.auth.preference" -> "basic")
+    val properties = Map(NonProxyHostsProperty -> "localhost|*.local", AuthPreferenceProperty -> "basic")
     val previous = properties.keys.map(key => key -> Option(System.getProperty(key))).toMap
     try
       properties.foreach(System.setProperty(_, _).discard)
@@ -415,8 +422,8 @@ class ConfigSuite extends munit.FunSuite:
       val result = configSource.load[Config]
       assert(result.isRight, failureText(result))
       val rendered = ConfigApi.flatten(configured)
-      assertEquals(rendered.get("http.nonProxyHosts"), Some("***"))
-      assertEquals(rendered.get("http.auth.preference"), Some("***"))
+      assertEquals(rendered.get(NonProxyHostsProperty), Some("***"))
+      assertEquals(rendered.get(AuthPreferenceProperty), Some("***"))
     finally
       previous.foreach:
         case (key, Some(value)) => System.setProperty(key, value).discard
@@ -428,8 +435,8 @@ class ConfigSuite extends munit.FunSuite:
     List(
       "http.proxyHost" -> "proxy.local",
       "http.proxyPort" -> "3128",
-      "http.nonProxyHosts" -> "localhost",
-      "http.auth.preference" -> "basic",
+      NonProxyHostsProperty -> "localhost",
+      AuthPreferenceProperty -> "basic",
       "http.auth.digest.validateServer" -> "true"
     ).foreach(properties.setProperty(_, _).discard)
     val overlay = ConfigFactory.parseProperties(
@@ -445,5 +452,5 @@ class ConfigSuite extends munit.FunSuite:
       java.nio.file.Files.writeString(file, "twitch.client-secert = \"leak\"\nhttp.auth.api-tokn = \"leak\"\n").discard
       val source = ConfigFactory.systemProperties().withFallback(ConfigFactory.parseFile(file.toFile)).withFallback(configured)
       val text = failureText(ConfigSource.fromConfig(source).load[Config])
-      assert(text.contains("client-secert") && text.contains("api-tokn"), text)
+      assert(text.contains(MisspelledSecret) && text.contains("api-tokn"), text)
     finally java.nio.file.Files.deleteIfExists(file).discard

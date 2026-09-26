@@ -15,6 +15,7 @@ class TwitchEventHandlersSuite extends munit.FunSuite:
   private val now = Instant.ofEpochSecond(1790309000L)
   private val clock = Clock.fixed(now, ZoneOffset.UTC)
   private val notifications = NotificationsConfig(30.seconds, ChatNotifications.Hide)
+  private val StartedAt = "2026-09-25T09:02:20Z"
 
   test("fixtures: Twitch's snake_case JSON populates the twitch4j getters"):
     val update = channelUpdate(Some("Streamer"), Some("Soldering"), Some("Science"))
@@ -23,7 +24,7 @@ class TwitchEventHandlersSuite extends munit.FunSuite:
       ("Streamer", "Soldering", "Science")
     )
     assertEquals(follow(Some("pixelpainter")).getUserName, "pixelpainter")
-    assertEquals(streamOnline(Some("2026-09-25T09:02:20Z")).getStartedAt, Instant.parse("2026-09-25T09:02:20Z"))
+    assertEquals(streamOnline(Some(StartedAt)).getStartedAt, Instant.parse(StartedAt))
     val empty = channelUpdate(None, None, None)
     assertEquals((empty.getBroadcasterUserName, empty.getTitle, empty.getCategoryName), (null, null, null))
 
@@ -59,8 +60,8 @@ class TwitchEventHandlersSuite extends munit.FunSuite:
     assertEquals(TwitchEventHandlers.followPayload(follow(Some("pixelpainter"))), EventSubPayload(userName = Some("pixelpainter")))
     assertEquals(TwitchEventHandlers.streamOnlinePayload(streamOnline(None)), EventSubPayload())
     assertEquals(
-      TwitchEventHandlers.streamOnlinePayload(streamOnline(Some("2026-09-25T09:02:20Z"))),
-      EventSubPayload(startedAt = Some("2026-09-25T09:02:20Z"))
+      TwitchEventHandlers.streamOnlinePayload(streamOnline(Some(StartedAt))),
+      EventSubPayload(startedAt = Some(StartedAt))
     )
 
   test("K-064: the handlers registerEventSub wires publish null-normalised events"):

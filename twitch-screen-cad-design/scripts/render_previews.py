@@ -57,7 +57,14 @@ for name,desc in json.loads((OUT/'render_scene.json').read_text()).items():
     obj.name = name
     obj.scale = (.001,)*3
     bpy.ops.object.transform_apply(location=False,rotation=False,scale=True)
-    key = name if name in materials else 'pcb' if 'pcb' in name else 'metal' if name in ('esp32_shield','usb_socket') else 'plastic'
+    if name in materials:
+        key = name
+    elif 'pcb' in name:
+        key = 'pcb'
+    elif name in ('esp32_shield','usb_socket'):
+        key = 'metal'
+    else:
+        key = 'plastic'
     obj.data.materials.append(materials[key])
     # Keep planar hardware crisp; smooth the actual curved CAD surfaces only.
     if name in ('shell','lcd_glass','lcd_retainer','base','face_bezel'):

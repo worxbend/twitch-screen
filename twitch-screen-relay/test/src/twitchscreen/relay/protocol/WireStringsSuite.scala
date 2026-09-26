@@ -11,6 +11,8 @@ import scala.concurrent.duration.DurationInt
   * replacement glyph at the end of every long message.
   */
 class WireStringsSuite extends munit.FunSuite:
+  private val PaddedWords = " a  b "
+  private val PolishChatWithEmoji = "świetny stream! 🎉"
   private def utf8(value: String): Array[Byte] = value.getBytes(StandardCharsets.UTF_8)
   private def truncate(value: String, width: Int): WireField = WireStrings.truncate(utf8(value), width)
   private def text(field: WireField): String = String(field.bytes, StandardCharsets.UTF_8)
@@ -87,7 +89,7 @@ class WireStringsSuite extends munit.FunSuite:
 
   test("§9.3: without CAP_UTF8_TEXT the relay folds to printable US-ASCII — V12's strings as the spec spells them out"):
     assertEquals(folded("Paweł"), "Pawel")
-    assertEquals(folded("świetny stream! 🎉"), "swietny stream!")
+    assertEquals(folded(PolishChatWithEmoji), "swietny stream!")
 
   test("§9.3: the mappings the specification names by hand"):
     assertEquals(folded("ł"), "l")
@@ -115,19 +117,19 @@ class WireStringsSuite extends munit.FunSuite:
   test("§9.3: with CAP_UTF8_TEXT the string travels verbatim, byte for byte"):
     assertEquals(TextPolicy.forCapabilities(Capabilities.RelaySupported), TextPolicy.Verbatim)
     assertEquals(TextPolicy.forCapabilities(Capabilities.Ack | Capabilities.Chat), TextPolicy.AsciiFolded)
-    val verbatim = WireStrings.field("świetny stream! 🎉", Tsb3.TextWidth, TextPolicy.Verbatim)
-    assertEquals(text(verbatim), "świetny stream! 🎉")
+    val verbatim = WireStrings.field(PolishChatWithEmoji, Tsb3.TextWidth, TextPolicy.Verbatim)
+    assertEquals(text(verbatim), PolishChatWithEmoji)
     assertEquals(verbatim.bytes.length, 21)
 
   test("§9.3: verbatim means verbatim — runs of spaces and edge spaces survive; only the folded path collapses them"):
-    assertEquals(text(WireStrings.field(" a  b ", Tsb3.TextWidth, TextPolicy.Verbatim)), " a  b ")
-    assertEquals(text(WireStrings.field(" a  b ", Tsb3.TextWidth, TextPolicy.AsciiFolded)), "a b")
+    assertEquals(text(WireStrings.field(PaddedWords, Tsb3.TextWidth, TextPolicy.Verbatim)), PaddedWords)
+    assertEquals(text(WireStrings.field(PaddedWords, Tsb3.TextWidth, TextPolicy.AsciiFolded)), "a b")
 
   test("§9.3: the encoder honours the policy, so a device without a UTF-8 font never sees UTF-8"):
     val record = EventRecords.chat(
       seq = SeqNo.fromWire(1),
       chatter = "Paweł",
-      message = "świetny stream! 🎉",
+      message = PolishChatWithEmoji,
       colour = None,
       at = Instant.ofEpochSecond(1790309000L),
       ttl = 6.seconds

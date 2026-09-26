@@ -29,7 +29,7 @@ class PodFeature:
         obj.Proxy = self
 
     def execute(self, obj):
-        parts, hardware, refs = geometry(parameter_values(obj.Parameters))
+        parts, hardware, _ = geometry(parameter_values(obj.Parameters))
         obj.Shape = (hardware if obj.HardwareReference else parts)[obj.PartKey]
 
 

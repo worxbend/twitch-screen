@@ -31,11 +31,15 @@ class ManagementAuthSuite extends munit.FunSuite:
   private val hash = s"pbkdf2-sha256$$600000$$${Base64.getEncoder.encodeToString(salt)}$$${Base64.getEncoder.encodeToString(key)}"
   private val auth = HttpAuthConfig("operator", Some(Sensitive(hash)), Some(Sensitive(token)))
   private val basic = "Basic " + Base64.getEncoder.encodeToString(s"operator:$password".getBytes(UTF_8))
+  private val ProtectedPath = "/api/v1/protected"
+  private val ErrorBodyPrefix = "{\"error\":"
+  private val AuthenticateHeader = "WWW-Authenticate"
+  private val Loopback = "127.0.0.1"
 
   private def withServer(
       readTimeout: FiniteDuration = 30.seconds,
       requestDeadline: FiniteDuration = 30.seconds,
-      host: String = "127.0.0.1",
+      host: String = Loopback,
       credentials: HttpAuthConfig = auth
   )(
       test: (Int, AtomicInteger) => Unit
@@ -109,7 +113,7 @@ class ManagementAuthSuite extends munit.FunSuite:
       interval: FiniteDuration,
       cap: FiniteDuration = 5.seconds
   ): Option[FiniteDuration] =
-    val socket = Socket("127.0.0.1", port)
+    val socket = Socket(Loopback, port)
     try
       socket.setSoTimeout(cap.toMillis.toInt)
       val started = System.nanoTime()
@@ -157,38 +161,38 @@ class ManagementAuthSuite extends munit.FunSuite:
 
   test("both credential alternatives independently authorize before management logic"):
     withServer(): (port, calls) =>
-      assertEquals(request(port, "/api/v1/protected", Some(basic), Some("basic")).statusCode(), 200)
-      assertEquals(request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("token")).statusCode(), 200)
+      assertEquals(request(port, ProtectedPath, Some(basic), Some("basic")).statusCode(), 200)
+      assertEquals(request(port, ProtectedPath, Some(s"Bearer $token"), Some("token")).statusCode(), 200)
       assertEquals(calls.get(), 2)
 
   test("K-100: a token-only config rejects Basic and a Basic-only config rejects Bearer"):
     withServer(credentials = HttpAuthConfig(apiToken = Some(Sensitive(token)))): (port, calls) =>
-      assertEquals(request(port, "/api/v1/protected", Some(basic), Some("basic")).statusCode(), 401)
-      assertEquals(request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("bearer")).statusCode(), 200)
+      assertEquals(request(port, ProtectedPath, Some(basic), Some("basic")).statusCode(), 401)
+      assertEquals(request(port, ProtectedPath, Some(s"Bearer $token"), Some("bearer")).statusCode(), 200)
       assertEquals(calls.get(), 1)
     withServer(credentials = HttpAuthConfig("operator", basicPasswordHash = Some(Sensitive(hash)))): (port, calls) =>
-      assertEquals(request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("bearer")).statusCode(), 401)
-      assertEquals(request(port, "/api/v1/protected", Some(basic), Some("basic")).statusCode(), 200)
+      assertEquals(request(port, ProtectedPath, Some(s"Bearer $token"), Some("bearer")).statusCode(), 401)
+      assertEquals(request(port, ProtectedPath, Some(basic), Some("basic")).statusCode(), 200)
       assertEquals(calls.get(), 1)
 
   test("missing malformed and incorrect credentials are JSON 401s without executing handlers"):
     withServer(): (port, calls) =>
       List(None, Some("Basic !!!"), Some("Basic"), Some("Bearer wrong"), Some("Unknown foo")).foreach: credential =>
-        val result = request(port, "/api/v1/protected", credential, Some("body"))
+        val result = request(port, ProtectedPath, credential, Some("body"))
         assertEquals(result.statusCode(), 401)
-        assert(result.body().startsWith("{\"error\":"), result.body())
-        assert(result.headers().firstValue("WWW-Authenticate").isPresent)
+        assert(result.body().startsWith(ErrorBodyPrefix), result.body())
+        assert(result.headers().firstValue(AuthenticateHeader).isPresent)
       assertEquals(calls.get(), 0)
 
   test("Basic browser cross-site management is rejected; same-origin succeeds"):
     withServer(): (port, calls) =>
-      val rejected = request(port, "/api/v1/protected", Some(basic), Some("bad"), List("Origin" -> "https://evil.example"))
+      val rejected = request(port, ProtectedPath, Some(basic), Some("bad"), List("Origin" -> "https://evil.example"))
       assertEquals(rejected.statusCode(), 403)
-      assert(!rejected.headers().firstValue("WWW-Authenticate").isPresent)
-      assert(rejected.body().startsWith("{\"error\":"))
-      assertEquals(request(port, "/api/v1/protected", Some(basic), Some("bad"), List("Sec-Fetch-Site" -> "cross-site")).statusCode(), 403)
+      assert(!rejected.headers().firstValue(AuthenticateHeader).isPresent)
+      assert(rejected.body().startsWith(ErrorBodyPrefix))
+      assertEquals(request(port, ProtectedPath, Some(basic), Some("bad"), List("Sec-Fetch-Site" -> "cross-site")).statusCode(), 403)
       assertEquals(
-        request(port, "/api/v1/protected", Some(basic), Some("ok"), List("Origin" -> s"http://127.0.0.1:$port")).statusCode(),
+        request(port, ProtectedPath, Some(basic), Some("ok"), List("Origin" -> s"http://127.0.0.1:$port")).statusCode(),
         200
       )
       assertEquals(calls.get(), 1)
@@ -198,7 +202,7 @@ class ManagementAuthSuite extends munit.FunSuite:
       assertEquals(request(port, "/api/v1/health").statusCode(), 200)
       val missing = request(port, "/unknown-route")
       assertEquals(missing.statusCode(), 404)
-      assert(missing.body().startsWith("{\"error\":"))
+      assert(missing.body().startsWith(ErrorBodyPrefix))
       val docs = request(port, "/docs/docs.yaml")
       assertEquals(docs.statusCode(), 200)
       val yaml = docs.body()
@@ -213,9 +217,9 @@ class ManagementAuthSuite extends munit.FunSuite:
   test("oversized bodies are bounded before handling and exception responses preserve JSON without details"):
     withServer(): (port, calls) =>
       List(false, true).foreach: chunked =>
-        val oversized = request(port, "/api/v1/protected", Some(s"Bearer $token"), Some("x" * 65537), chunked = chunked)
+        val oversized = request(port, ProtectedPath, Some(s"Bearer $token"), Some("x" * 65537), chunked = chunked)
         assertEquals(oversized.statusCode(), 413)
-        assert(oversized.body().startsWith("{\"error\":"))
+        assert(oversized.body().startsWith(ErrorBodyPrefix))
       assertEquals(calls.get(), 0)
       val failure = request(port, "/api/v1/failure", Some(s"Bearer $token"))
       assertEquals(failure.statusCode(), 500)
@@ -252,8 +256,8 @@ class ManagementAuthSuite extends munit.FunSuite:
         assert(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
         val busy = send()
         assertEquals(busy.code.code, 503)
-        assert(busy.header("WWW-Authenticate").isEmpty, busy.headers)
-        assert(busy.body.fold(identity, identity).startsWith("{\"error\":"), busy.body)
+        assert(busy.header(AuthenticateHeader).isEmpty, busy.headers)
+        assert(busy.body.fold(identity, identity).startsWith(ErrorBodyPrefix), busy.body)
       finally release.countDown()
       assertEquals(first.join().code.code, 200)
       assertEquals(second.join().code.code, 200)
@@ -262,18 +266,18 @@ class ManagementAuthSuite extends munit.FunSuite:
     assertEquals(plaintextWarnings("0.0.0.0").size, 1)
 
   test("loopback binds do not warn about plaintext management credentials"):
-    List("127.0.0.1", "LOCALHOST").foreach: host =>
+    List(Loopback, "LOCALHOST").foreach: host =>
       assertEquals(plaintextWarnings(host), Nil, host)
 
   test("loopback classification is case-insensitive and covers IPv4, IPv6 and bracketed IPv6"):
     def loopback(host: String) = HttpApi.isLoopback(Hostname(host).toOption.get)
-    List("localhost", "LOCALHOST", "127.0.0.1", "::1", "[::1]", " localhost ").foreach(host => assert(loopback(host), host))
+    List("localhost", "LOCALHOST", Loopback, "::1", "[::1]", " localhost ").foreach(host => assert(loopback(host), host))
     List("0.0.0.0", "::", "192.168.1.10", "relay.example.com").foreach(host => assert(!loopback(host), host))
 
   test("silent connections and incomplete HTTP headers hit a read deadline"):
     withServer(readTimeout = 200.millis): (port, calls) =>
       List("", "GET /api/v1/health HTTP/1.1\r\nHost: local").foreach: prefix =>
-        val socket = Socket("127.0.0.1", port)
+        val socket = Socket(Loopback, port)
         try
           socket.setSoTimeout(3000)
           socket.getOutputStream.write(prefix.getBytes(UTF_8))
@@ -303,7 +307,7 @@ class ManagementAuthSuite extends munit.FunSuite:
 
   test("the whole-request deadline restarts for each keep-alive request and ends with the body"):
     withServer(readTimeout = 5.seconds, requestDeadline = 500.millis): (port, calls) =>
-      val socket = Socket("127.0.0.1", port)
+      val socket = Socket(Loopback, port)
       try
         socket.setSoTimeout(3000)
         val out = socket.getOutputStream

@@ -85,7 +85,10 @@ class TwitchRecoverySuite extends munit.FunSuite:
       .build()
     com.github.twitch4j.helix.TwitchHelixErrorDecoder(null, null).decode(path, response)
 
-  private val emptySubscriptions = """{"data":[]}"""
+  private val emptyPage = """{"data":[]}"""
+  private val RegistrationFailed = "registration failed"
+  private val StreamOnline = "stream.online"
+  private val CallbackUnreachable = "callback unreachable"
 
   test("failed broadcaster resolution retries the actual Helix adapter and recovers"):
     var calls = 0
@@ -114,7 +117,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
     val client = helix: (method, arguments) =>
       assertEquals(arguments(0), null, "webhook Helix calls use the app-token fallback")
       method match
-        case "getEventSubSubscriptions" => command(mapper.readValue("""{"data":[]}""", classOf[EventSubSubscriptionList]))
+        case "getEventSubSubscriptions" => command(mapper.readValue(emptyPage, classOf[EventSubSubscriptionList]))
         case "createEventSubSubscription" =>
           command:
             attempts += 1
@@ -139,7 +142,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
       (_, result) => results = results :+ result,
       () => rejected.set(true)
     )
-    assert(results.head match { case EventSubOutcome.Failed(reason) => reason.startsWith("registration failed"); case _ => false })
+    assert(results.head match { case EventSubOutcome.Failed(reason) => reason.startsWith(RegistrationFailed); case _ => false })
     assertEquals(results.last, EventSubOutcome.Healthy)
     assert(!rejected.get(), "a failure unrelated to authorization must not rebuild the client")
 
@@ -149,7 +152,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
     val client = helix: (method, arguments) =>
       assertEquals(arguments(0), null, "webhook Helix calls use the app-token fallback")
       method match
-        case "getEventSubSubscriptions"   => command(mapper.readValue(emptySubscriptions, classOf[EventSubSubscriptionList]))
+        case "getEventSubSubscriptions"   => command(mapper.readValue(emptyPage, classOf[EventSubSubscriptionList]))
         case "createEventSubSubscription" => command[EventSubSubscriptionList](throw unauthorizedCause("eventsub/subscriptions"))
         case other                        => fail(s"unexpected method $other")
     EventSubWebhookApi.reconcileSubscriptions(
@@ -160,8 +163,8 @@ class TwitchRecoverySuite extends munit.FunSuite:
       () => rejected.set(true)
     )
     assert(rejected.get())
-    assertEquals(results.map(_._1), List("stream.online"))
-    assert(results.head._2 match { case EventSubOutcome.Failed(reason) => reason.startsWith("registration failed"); case _ => false })
+    assertEquals(results.map(_._1), List(StreamOnline))
+    assert(results.head._2 match { case EventSubOutcome.Failed(reason) => reason.startsWith(RegistrationFailed); case _ => false })
 
   test("listing subscriptions with a rejected application token requests a rebuild before any creation"):
     val rejected = AtomicBoolean(false)
@@ -172,7 +175,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
         case "getEventSubSubscriptions" => command[EventSubSubscriptionList](throw unauthorizedCause("eventsub/subscriptions"))
         case "createEventSubSubscription" =>
           creations += 1
-          command(mapper.readValue(emptySubscriptions, classOf[EventSubSubscriptionList]))
+          command(mapper.readValue(emptyPage, classOf[EventSubSubscriptionList]))
         case other => fail(s"unexpected method $other")
     EventSubWebhookApi.reconcileSubscriptions(
       client,
@@ -184,7 +187,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
     assert(rejected.get())
     assertEquals(creations, 0)
     assertEquals(results.size, EventSubWebhookApi.unscopedSubscriptions("123").size, "every kind is still observed as failed")
-    assert(results.forall { case EventSubOutcome.Failed(reason) => reason.startsWith("registration failed"); case _ => false })
+    assert(results.forall { case EventSubOutcome.Failed(reason) => reason.startsWith(RegistrationFailed); case _ => false })
 
   private def streamsFailing(error: => Throwable): TwitchHelix = helix: (method, arguments) =>
     method match
@@ -229,7 +232,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
       val userRejected = AtomicBoolean(false)
       val client = helix: (method, _) =>
         method match
-          case "getStreams"          => command(mapper.readValue("""{"data":[]}""", classOf[com.github.twitch4j.helix.domain.StreamList]))
+          case "getStreams"          => command(mapper.readValue(emptyPage, classOf[com.github.twitch4j.helix.domain.StreamList]))
           case "getChannelFollowers" => command[Unit](throw unauthorizedCause("channels/followers"))
           case "getSubscriptions"    => command[Unit](throw unauthorizedCause("subscriptions"))
           case other                 => fail(s"unexpected method $other")
@@ -382,7 +385,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
       val health = TwitchRuntimeHealth(config, EventBus(Clock.systemUTC(), 64))
       val restart = java.util.concurrent.atomic.AtomicBoolean(false)
       EventSubTransportStrategy.subscriptionFailed(health, restart, "channel.follow")
-      EventSubTransportStrategy.subscriptionSucceeded(health, "stream.online")
+      EventSubTransportStrategy.subscriptionSucceeded(health, StreamOnline)
       assert(restart.get())
       assert(health.failure(HealthComponent.EventSubFollow).isDefined)
       assertEquals(health.failure(HealthComponent.EventSubOnline), None)
@@ -479,7 +482,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
         case "createEventSubSubscription" =>
           command:
             creations += 1
-            mapper.readValue(emptySubscriptions, classOf[EventSubSubscriptionList])
+            mapper.readValue(emptyPage, classOf[EventSubSubscriptionList])
         case other => fail(s"unexpected method $other")
     EventSubWebhookApi.reconcileSubscriptions(
       client,
@@ -499,7 +502,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
     var results = List.empty[(String, EventSubOutcome)]
     val client = helix: (method, _) =>
       method match
-        case "getEventSubSubscriptions" => command(mapper.readValue(emptySubscriptions, classOf[EventSubSubscriptionList]))
+        case "getEventSubSubscriptions" => command(mapper.readValue(emptyPage, classOf[EventSubSubscriptionList]))
         case "createEventSubSubscription" =>
           command(mapper.readValue(s"""{"data":[${pendingAt(config.eventSub.callbackUrl)}]}""", classOf[EventSubSubscriptionList]))
         case other => fail(s"unexpected method $other")
@@ -510,7 +513,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
       (kind, outcome) => results = results :+ (kind -> outcome),
       () => fail("no rejection")
     )
-    assertEquals(results, List("stream.online" -> EventSubOutcome.Awaiting))
+    assertEquals(results, List(StreamOnline -> EventSubOutcome.Awaiting))
 
   test("an existing subscription pending verification at our callback is typed awaiting and not recreated"):
     var results = List.empty[(String, EventSubOutcome)]
@@ -521,7 +524,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
           command(mapper.readValue(s"""{"data":[${pendingAt(config.eventSub.callbackUrl)}]}""", classOf[EventSubSubscriptionList]))
         case "createEventSubSubscription" =>
           creations += 1
-          command(mapper.readValue(emptySubscriptions, classOf[EventSubSubscriptionList]))
+          command(mapper.readValue(emptyPage, classOf[EventSubSubscriptionList]))
         case other => fail(s"unexpected method $other")
     EventSubWebhookApi.reconcileSubscriptions(
       client,
@@ -531,7 +534,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
       () => fail("no rejection")
     )
     assertEquals(creations, 0)
-    assertEquals(results, List("stream.online" -> EventSubOutcome.Awaiting))
+    assertEquals(results, List(StreamOnline -> EventSubOutcome.Awaiting))
 
   private def drained(events: ox.channels.Source[twitchscreen.relay.bus.BusEvent]): List[RelayEvent] =
     Iterator.continually(events.tryReceive()).takeWhile(_.isDefined).flatten.map(_.event).toList
@@ -552,10 +555,10 @@ class TwitchRecoverySuite extends munit.FunSuite:
       val bus = EventBus(Clock.systemUTC(), 64)
       val events = bus.subscribe("failed")
       val health = TwitchRuntimeHealth(config, bus)
-      health.record(HealthComponent.Streams, EventSubOutcome.Failed("callback unreachable"))
-      assertEquals(health.failure(HealthComponent.Streams), Some("callback unreachable"))
+      health.record(HealthComponent.Streams, EventSubOutcome.Failed(CallbackUnreachable))
+      assertEquals(health.failure(HealthComponent.Streams), Some(CallbackUnreachable))
       assert(health.status.detail.contains("streams: callback unreachable"), clue(health.status.detail))
-      assert(drained(events).contains(RelayEvent.RelayFailure("twitch-streams", "callback unreachable")))
+      assert(drained(events).contains(RelayEvent.RelayFailure("twitch-streams", CallbackUnreachable)))
 
   test("a typed healthy outcome after a failure logs recovery and clears the failure"):
     supervised:

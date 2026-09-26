@@ -63,31 +63,33 @@ class AlertRuleSuite extends munit.FunSuite:
 class AlertStoreSuite extends munit.FunSuite:
   private val at = Instant.ofEpochSecond(1790309000L)
   private val rule = AlertRule.NoDevicesConnected(1.minute)
+  private val NoDevice = "no device"
+  private val StillNoDevice = "still no device"
 
   test("a rule that stays broken raises one alert, not one per evaluation"):
     val store = AlertStore(10)
-    store.raise(rule, "no device", at).discard
-    assertEquals(store.raise(rule, "still no device", at.plusSeconds(15)), None)
-    assertEquals(store.recent(1, None, activeOnly = false).head.message, "still no device")
+    store.raise(rule, NoDevice, at).discard
+    assertEquals(store.raise(rule, StillNoDevice, at.plusSeconds(15)), None)
+    assertEquals(store.recent(1, None, activeOnly = false).head.message, StillNoDevice)
     assertEquals(store.recent(1, None, activeOnly = false).head.raisedAt, at)
 
   test("a resolved rule can raise again when it breaks a second time"):
     val store = AlertStore(10)
-    store.raise(rule, "no device", at).discard
+    store.raise(rule, NoDevice, at).discard
     store.resolve(rule.name, at.plusSeconds(30)).discard
     assert(store.raise(rule, "no device again", at.plusSeconds(60)).isDefined)
 
   test("acknowledging an alert takes it out of the active count"):
     val store = AlertStore(10)
-    val raised = store.raise(rule, "no device", at).get
+    val raised = store.raise(rule, NoDevice, at).get
     store.acknowledge(raised.id, at.plusSeconds(5)).discard
     assertEquals(store.activeCount, 0)
 
   test("an acknowledged condition stays open until it resolves without raising another alert"):
     val store = AlertStore(10)
-    val raised = store.raise(rule, "no device", at).get
+    val raised = store.raise(rule, NoDevice, at).get
     store.acknowledge(raised.id, at.plusSeconds(5)).discard
-    assertEquals(store.raise(rule, "still no device", at.plusSeconds(10)), None)
+    assertEquals(store.raise(rule, StillNoDevice, at.plusSeconds(10)), None)
     assertEquals(store.resolve(rule.name, at.plusSeconds(15)).map(_.status), Some(AlertStatus.Resolved(at.plusSeconds(15))))
     assert(store.raise(rule, "no device again", at.plusSeconds(20)).isDefined)
 
@@ -95,7 +97,7 @@ class AlertStoreSuite extends munit.FunSuite:
     ox.supervised:
       (1 to 100).foreach: _ =>
         val store = AlertStore(10)
-        val raised = store.raise(rule, "no device", at).get
+        val raised = store.raise(rule, NoDevice, at).get
         ox.par(store.acknowledge(raised.id, at.plusSeconds(5)), store.resolve(rule.name, at.plusSeconds(10))).discard
         assertEquals(store.recent(1, None, activeOnly = false).head.status, AlertStatus.Resolved(at.plusSeconds(10)))
 
@@ -110,7 +112,7 @@ class AlertStoreSuite extends munit.FunSuite:
 
   test("acknowledging a resolved alert is a conflict, not a silent success"):
     val store = AlertStore(10)
-    val raised = store.raise(rule, "no device", at).get
+    val raised = store.raise(rule, NoDevice, at).get
     store.resolve(rule.name, at.plusSeconds(5)).discard
     assertEquals(store.acknowledge(raised.id, at.plusSeconds(10)), Left(AcknowledgeFailure.NotActive(raised.id)))
 
