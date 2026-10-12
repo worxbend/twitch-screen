@@ -58,6 +58,7 @@ struct StatsRenderPlan {
   uint32_t viewersValue;
   bool arc;               // Live only
   int32_t arcValue;       // clamped to the gauge's 0..100
+  bool measurementsKnown; // false means unavailable numeric labels, not measured zero
   bool uptime;            // Live only; the tick itself compare-skips the label
 
   int writes() const {
@@ -66,8 +67,9 @@ struct StatsRenderPlan {
   }
 };
 
-inline bool planChip(char (&out)[8], const char *shown, uint32_t value) {
-  formatCount(out, sizeof(out), value);
+inline bool planChip(char (&out)[8], const char *shown, uint32_t value, bool known = true) {
+  if (known) formatCount(out, sizeof(out), value);
+  else memcpy(out, "--", 3);
   return strcmp(out, shown) != 0;
 }
 
@@ -79,14 +81,15 @@ inline StatsRenderPlan planStatsRender(const StatsShown &shown, const StreamStat
   if (plan.group == StatsGroup::None) return plan;
   const bool live = plan.group == StatsGroup::Live;
   const ChipTexts &chips = live ? shown.live : shown.offline;
-  plan.chat = planChip(plan.text.chat, chips.chat, s.msgTotal);
-  plan.foll = planChip(plan.text.foll, chips.foll, s.followers);
-  plan.subs = planChip(plan.text.subs, chips.subs, s.subs);
+  plan.measurementsKnown = s.availability == 1;
+  plan.chat = planChip(plan.text.chat, chips.chat, s.msgTotal, plan.measurementsKnown);
+  plan.foll = planChip(plan.text.foll, chips.foll, s.followers, plan.measurementsKnown);
+  plan.subs = planChip(plan.text.subs, chips.subs, s.subs, plan.measurementsKnown);
   if (!live) return plan;
   plan.uptime = true;
   plan.viewersValue = s.viewers;
-  plan.viewers = shown.viewers != (int64_t)s.viewers;
-  plan.arcValue = s.chatRate > 100 ? 100 : (int32_t)s.chatRate;
+  plan.viewers = shown.viewers != (plan.measurementsKnown ? (int64_t)s.viewers : -2);
+  plan.arcValue = !plan.measurementsKnown ? 0 : s.chatRate > 100 ? 100 : (int32_t)s.chatRate;
   plan.arc = shown.arc != plan.arcValue;
   return plan;
 }
@@ -97,7 +100,7 @@ inline void commitStatsPlan(StatsShown &shown, const StatsRenderPlan &plan) {
   if (plan.chat) memcpy(chips.chat, plan.text.chat, sizeof(chips.chat));
   if (plan.foll) memcpy(chips.foll, plan.text.foll, sizeof(chips.foll));
   if (plan.subs) memcpy(chips.subs, plan.text.subs, sizeof(chips.subs));
-  if (plan.viewers) shown.viewers = plan.viewersValue;
+  if (plan.viewers) shown.viewers = plan.measurementsKnown ? (int64_t)plan.viewersValue : -2;
   if (plan.arc) shown.arc = plan.arcValue;
 }
 

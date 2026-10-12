@@ -1,6 +1,5 @@
 package twitchscreen.relay.config
 
-import java.nio.charset.StandardCharsets.UTF_8
 import java.security.MessageDigest
 import java.util.Base64
 import javax.crypto.SecretKeyFactory
@@ -9,10 +8,7 @@ import pureconfig.ConfigReader
 import scala.util.Try
 import ox.computeIntensive
 
-/** An absent secret (`None`; an empty string in HOCON) disables its method. Construction rejects an invalid credential set, a present but
-  * whitespace-only secret, or a set without a complete method, so every instance is usable as-is: the HOCON reader reports that rejection
-  * as a `CannotConvert` at `http.auth`.
-  */
+/** Deprecated settings retained only to reject nonempty legacy configuration without disclosing values. */
 final case class HttpAuthConfig(
     basicUsername: String = "",
     basicPasswordHash: Option[Sensitive] = None,
@@ -21,22 +17,15 @@ final case class HttpAuthConfig(
   validate()
 
   private def validate(): Unit =
+    val obsolete = List(
+      "basic-username" -> basicUsername.nonEmpty,
+      "basic-password-hash" -> basicPasswordHash.exists(_.value.nonEmpty),
+      "api-token" -> apiToken.exists(_.value.nonEmpty)
+    ).collect { case (key, true) => s"http.auth.$key" }
     require(
-      basicUsername.isEmpty || (!basicUsername.isBlank && basicUsername == basicUsername.trim && !basicUsername
-        .exists(c => c.isControl || c == ':')),
-      "http.auth.basic-username must be nonblank without surrounding whitespace, controls or colon"
+      obsolete.isEmpty,
+      s"Obsolete management authentication settings: ${obsolete.mkString(", ")}; remove them and restrict network access"
     )
-    require(
-      apiToken.forall(_.value.matches("[A-Za-z0-9._~+/-]+=*")),
-      "http.auth.api-token must use the ASCII Bearer token alphabet"
-    )
-    require(basicPasswordHash.forall(_.isSet), "http.auth.basic-password-hash cannot be whitespace")
-    require(apiToken.forall(_.isSet), "http.auth.api-token cannot be whitespace")
-    require(basicUsername.isBlank == basicPasswordHash.isEmpty, "http.auth requires both Basic username and password hash")
-    require(basicUsername.isBlank || !basicUsername.contains(':'), "http.auth.basic-username cannot contain ':'")
-    require(basicPasswordHash.forall(hash => PasswordVerifier.valid(hash.value)), "http.auth.basic-password-hash has invalid format")
-    require(apiToken.forall(_.value.getBytes(UTF_8).length >= 32), "http.auth.api-token must contain at least 32 bytes")
-    require(basicPasswordHash.isDefined || apiToken.isDefined, "http.auth requires Basic credentials or an API token")
 
 object HttpAuthConfig:
   private given ConfigReader[Option[Sensitive]] = Sensitive.optionalReader

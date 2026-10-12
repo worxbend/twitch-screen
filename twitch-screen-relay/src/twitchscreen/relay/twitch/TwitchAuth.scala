@@ -66,8 +66,7 @@ private[twitch] final class TwitchAuth private (
       transitions.ask(_.install(issued))
       lastFailure.set(None)
       logger.info(s"Twitch authorized by '${issued.login}' (${issued.scopes.mkString(" ")})")
-      if !issued.login.equalsIgnoreCase(config.channel) then
-        logger.warn(s"The token belongs to '${issued.login}', not the broadcaster '${config.channel}'; subscriber totals will be refused")
+      // Channel compatibility belongs to the current source/subscription plan, not this stable grant owner.
       val missing = missingScopesOf(issued)
       if missing.nonEmpty then logger.warn(s"Twitch did not grant ${missing.mkString(", ")}")
       issued
@@ -111,7 +110,7 @@ private[twitch] final class TwitchAuth private (
   private def fail(reason: String): Unit =
     if lastFailure.getAndSet(Some(reason)) != Some(reason) then
       logger.warn(s"Twitch authorization: $reason")
-      bus.publish(RelayEvent.RelayFailure("twitch-oauth", reason))
+      bus.publish(RelayEvent.RelayFailure("twitch-oauth", reason, twitchscreen.relay.protocol.DeskMessageCodec.Origin.Twitch))
 
 private[twitch] object TwitchAuth:
   private val logger = LoggerFactory.getLogger(getClass)
@@ -169,7 +168,7 @@ private[twitch] object TwitchAuth:
         case NonFatal(error) =>
           val reason = s"could not update token file (${error.getClass.getSimpleName})"
           logger.warn(reason)
-          bus.publish(RelayEvent.RelayFailure("twitch-oauth", reason))
+          bus.publish(RelayEvent.RelayFailure("twitch-oauth", reason, twitchscreen.relay.protocol.DeskMessageCodec.Origin.Twitch))
 
   /** Twitch requires an application to validate its user tokens at least hourly. */
   private val ValidationInterval = JDuration.ofHours(1)

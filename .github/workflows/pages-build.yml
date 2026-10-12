@@ -1,0 +1,49 @@
+name: Build product site artifact
+
+on:
+  push:
+    paths: ['site/**', 'docs/**', 'twitch-screen-relay/**', 'twitch-screen-firmware/**', 'twitch-screen-client/**', 'twitch-screen-cad-design/**', 'README.md', 'LICENSE.md', 'LICENSES/**', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md', 'protocol/desk-v1-http-examples.json', '.github/workflows/pages-*.yml']
+  pull_request:
+    paths: ['site/**', 'docs/**', 'twitch-screen-relay/**', 'twitch-screen-firmware/**', 'twitch-screen-client/**', 'twitch-screen-cad-design/**', 'README.md', 'LICENSE.md', 'LICENSES/**', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md', 'protocol/desk-v1-http-examples.json', '.github/workflows/pages-*.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12.12'
+      - name: Unit and deterministic build checks
+        run: python -m unittest discover -s site/tests -v
+      - name: Install test-only browser dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r site/requirements-browser.lock
+          python -m playwright install-deps chromium
+          python site/tools/install_browser.py
+      - name: Real-browser static-site checks
+        run: python site/tests/browser_check.py
+      - name: Build project-path artifact
+        run: python site/tools/build.py --base-path /twitch-screen/ --canonical https://worxbend.github.io/twitch-screen/
+      - name: Verify exact artifact bytes
+        run: python site/tools/verify_artifact.py site/dist
+      - name: Real-browser checks of exact upload bytes
+        run: python site/tests/browser_check.py --artifact site/dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: twitch-screen-site-${{ github.sha }}
+          path: site/dist/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

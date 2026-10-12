@@ -9,8 +9,10 @@ import ox.*
 import ox.channels.{Actor, ActorRef, Channel, ChannelClosed}
 import ox.either.catching
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
-import twitchscreen.relay.bus.{EventBus, RelayEvent}
-import twitchscreen.relay.config.{ChatNotifications, DeviceLinkConfig}
+import twitchscreen.relay.bus.{BusEvent, EventBus, RelayEvent}
+import twitchscreen.relay.config.{ChatNotifications, DeviceLinkConfig, StatsConfig}
+import twitchscreen.relay.stats.StatsState
+import twitchscreen.relay.settings.SettingsSnapshot
 import twitchscreen.relay.protocol.*
 
 /** One frame on its way to one device: the message, and the header flags it carries.
@@ -45,7 +47,9 @@ private[device] final case class AttachRequest(
     outbound: Channel[Outbound],
     counters: LinkCounters,
     connection: Closeable,
-    drained: Channel[Unit]
+    drained: Channel[Unit],
+    deskHello: Option[DeskGreetingCodec.HelloTail] = None,
+    firmwareVersion: String = ""
 )
 
 /** The relay's fan-out point: it assigns sequence numbers, keeps the replay buffers, and knows every attached device.
@@ -62,7 +66,9 @@ private[relay] final class DeviceHub private (
     state: ActorRef[DeviceHubState],
     connected: AtomicInteger,
     refused: AtomicLong,
-    observed: AtomicReference[HubSnapshot]
+    observed: AtomicReference[HubSnapshot],
+    sourceObserved: AtomicReference[SourceFence],
+    observers: HubObservers
 ):
   // Ox's bounded default mailbox admits 16 pending operations; when it is full, ask blocks the caller (backpressure, not dropping).
   // See docs/reference/architecture.md "Actor mailboxes". ask confines operation failures to the caller,
@@ -97,6 +103,65 @@ private[relay] final class DeviceHub private (
   /** Most recent notifications first, out of both replay rings. */
   def recentNotifications(limit: Int): List[Notification] = state.ask(_.recent(limit))
 
+  /** Reliable post-storage handoff; no disk I/O runs in this actor transaction. */
+  private[relay] def installSettings(value: SettingsSnapshot): Unit = command(_.installSettings(value))
+
+  private[relay] def weatherSnapshot: Weather_OUT = state.ask(_.weatherSnapshot)
+  private[relay] def acceptWeather(request: Weather_IN): Either[IngressFailure, (Weather_OUT, Option[String], Option[String])] =
+    command(current => current.publishWeather(request).map(value => WriteCalibration.attach(value, value.relayEpoch, current.relayClock)))
+
+  private[relay] def cpuSnapshot: Cpu_OUT = state.ask(_.cpuSnapshot)
+  private[relay] def publishCpu(request: Cpu_IN): Either[IngressFailure, Cpu_OUT] = command(_.publishCpu(request))
+  private[device] def acceptCpu(request: Cpu_IN): Either[IngressFailure, (Cpu_OUT, Option[String], Option[String])] =
+    command(current => current.publishCpu(request).map(value => WriteCalibration.attach(value, value.relayEpoch, current.relayClock)))
+
+  /** Samples the same epoch and monotonic domain retained with notifications. No wall-clock fallback. */
+  private[relay] def relayClock: RelayClock = state.ask(_.relayClock)
+
+  private[device] def publishExternal(request: EventRequest, deadline: Option[RelayClock]): Either[IngressFailure, RetainedEvent] =
+    command(_.publishExternal(request, deadline))
+
+  private[device] def acceptExternal(
+      request: EventRequest,
+      deadline: Option[RelayClock]
+  ): Either[IngressFailure, (Notification_OUT, Option[String], Option[String])] = command: current =>
+    current
+      .publishExternal(request, deadline)
+      .map: published =>
+        val now = current.relayClock
+        val value = Notification_OUT.from(published, now)
+        WriteCalibration.attach(value, value.relayEpoch, now)
+
+  private[device] def recentPublications(limit: Int): (RelayClock, Vector[RetainedEvent]) =
+    state.ask(current => (current.relayClock, current.retainedPublications.reverse.take(limit)))
+
+  private[relay] def resetEpoch(expectedEpoch: Long, replacementEpoch: Long): Boolean =
+    command(_.resetEpoch(expectedEpoch, replacementEpoch))
+
+  /** Reliable actor-committed fence, also safe during scope cancellation after the actor stops accepting commands. */
+  private[relay] def sourceFence: SourceFence = sourceObserved.get()
+
+  private[device] def acceptSource(fence: SourceFence, message: BusEvent, config: StatsConfig): Boolean =
+    command(_.acceptSource(fence, message, config))
+
+  private[device] def acceptApplicationDiagnostic(message: BusEvent): Boolean =
+    command(_.acceptApplicationDiagnostic(message))
+
+  private[device] def refreshSourceStats(fence: SourceFence, config: StatsConfig): Boolean =
+    command(_.refreshSourceStats(fence, config))
+
+  /** Captures current classic state and retained publication authority in one actor transaction. */
+  private[relay] def publicationSnapshot: PublicationSnapshot = state.ask(_.publicationSnapshot)
+
+  /** Reliable latest capture and atomic register/capture, independent of lossy EventBus delivery. No browser work runs in the hub. */
+  private[relay] def observeHub(remote: java.net.InetAddress): Either[String, (HubObservation, HubSubscription)] =
+    observers.subscribe(remote)
+  private[relay] def latestObservation: Option[HubObservation] = observers.snapshot
+  private[relay] def refreshObservation(): Unit = command(_ => ())
+
+  /** Internal retained publication snapshot; metadata shares the existing bounded rings. */
+  private[device] def retainedPublications: Vector[RetainedEvent] = state.ask(_.retainedPublications)
+
   /** The actor's last published snapshot, overlaid with the refusal count, which the listener records without going through the actor. */
   def snapshot: HubSnapshot = observed.get().copy(connectionsRefused = refused.get())
 
@@ -126,6 +191,7 @@ private[relay] final class DeviceHub private (
       device.link
 
   private[device] def attach(request: AttachRequest): ConnectionId = command(_.attach(request))
+  private[device] def desk(connection: ConnectionId): Option[DeskConnection] = state.ask(_.desk(connection))
 
   private[device] def detach(connection: ConnectionId, reason: DisconnectReason): Unit =
     command(_.detach(connection, reason))
@@ -162,11 +228,35 @@ private[relay] object DeviceHub:
     // connectionsRefused is 0 here and in every actor snapshot: the facade overlays the live value.
     val initial = HubSnapshot(0, 0L, 0L, 0L, initialSequence, 0, StreamStats.Unknown, initialSequence.next.isEmpty)
     val observed = AtomicReference(initial)
+    val observers = useInScope(new HubObservers)(_.stop())
+    val refresh = Channel.buffered[Unit](1)
+    val current = new DeviceHubState(
+      config,
+      chat,
+      clock,
+      bus,
+      connected,
+      initialSequence,
+      sessionId,
+      observed,
+      observers = observers,
+      observationChanged = () => refresh.trySendOrClosed(()).discard
+    )
+    current.observe(_ => ())
+    val actor = Actor.create(current)
+    forkDiscard:
+      while observers.awaitDeadline() do actor.ask(_.observe(_ => ()))
+    forkDiscard:
+      forever:
+        refresh.receive()
+        actor.ask(_.observe(_ => ()))
     new DeviceHub(
-      Actor.create(new DeviceHubState(config, chat, clock, bus, connected, initialSequence, sessionId, observed)),
+      actor,
       connected,
       AtomicLong(0),
-      observed
+      observed,
+      current.observedSource,
+      observers
     )
 
 /** The hub's mutable state. The `var`s are safe because every method runs inside the actor that owns this instance; nothing else may hold a
@@ -187,13 +277,18 @@ private[device] final class DeviceHubState(
       * by frame as duplicates. The baseline is `last_seq` against `latest_seq` on both sides. This value stays for the device's log, which
       * is where "the relay restarted under me" belongs.
       */
-    sessionId: SessionId,
-    observed: AtomicReference[HubSnapshot]
+    private var sessionId: SessionId,
+    observed: AtomicReference[HubSnapshot],
+    timeline: RelayTimeline = RelayTimeline(),
+    observers: HubObservers = new HubObservers,
+    observationChanged: () => Unit = () => ()
 ):
   private val logger = LoggerFactory.getLogger(classOf[DeviceHub])
 
+  private var activeTimeline = timeline
+  val observedSource = AtomicReference(SourceFence(activeTimeline.epoch, 1L))
   private var lastConnectionId: Long = 0
-  private val sequences = SequenceAllocator(initialSequence)
+  private var sequences = SequenceAllocator(initialSequence)
   private def latestSequence: SeqNo = sequences.latest
 
   /** Exhaustion is reported once. The report is a `RelayFailure`, which the router turns into an `Alert` card that this hub then refuses;
@@ -201,15 +296,25 @@ private[device] final class DeviceHubState(
     */
   private var exhaustionReported: Boolean = false
 
-  private val replay = ReplayBuffers(config.replayBufferSize, DeviceLinkConfig.ChatReplaySize)
-  private val reclaims = ReclaimPolicy()
+  private var replay = ReplayBuffers(config.replayBufferSize, DeviceLinkConfig.ChatReplaySize)
+  private var reclaims = ReclaimPolicy()
 
   def observe[A](operation: DeviceHubState => A): A =
     try operation(this)
-    finally observed.set(snapshot)
+    finally
+      observedSource.set(sourceFence)
+      observed.set(snapshot)
+      val captured = publicationSnapshot
+      val devices = attached.values.toVector.sortBy(_.id.value).map(_.observation(captured.sampledRelayMs))
+      observers.refresh(clock.instant(), captured, devices.map(_.link).toList, devices)
+      if stopping then observers.stop()
 
   private var attached: Map[ConnectionId, AttachedDevice] = Map.empty
   private var latestObservedStats: StreamStats = StreamStats.Unknown
+  private var statsRevision = 1L
+  private var statsObservedAt: Option[Instant] = None
+  private var statsContentAt: Option[Instant] = None
+  private var statsAvailability = DeskMessageCodec.Availability.Unknown
   private var connectionsAccepted: Long = 0
   private var notificationsPublished: Long = 0
   private var stopping: Boolean = false
@@ -227,7 +332,38 @@ private[device] final class DeviceHubState(
       attached = attached.updated(connection, device)
       connected.set(attached.size)
       connectionsAccepted += 1
-      greet(device, request.lastSeq, now)
+      request.deskHello match
+        case Some(tail) =>
+          require((request.caps.unsigned & DeskGreetingCodec.CapabilityBit) != 0, "DESK attachment must have a selected profile")
+          val captured = publicationSnapshot
+          val resume =
+            tail.previousRelayEpoch == captured.relayEpoch && tail.processedSeq > 0 && tail.processedSeq <= captured.latestSeq.value
+          val baseline = if resume then tail.processedSeq else captured.latestSeq.value
+          // The classic HELLO cursor is independent. A resumed initial report establishes its bounded enqueue baseline.
+          val enqueued = if resume then 0L else baseline
+          val greeting = DeskProjection.greeting(captured, connection.value, tail.probeDeviceMs, request.caps, sessionId, config, now)
+          val connectionTimeline = activeTimeline
+          val owner = DeskConnection(
+            greeting,
+            tail.deviceBootId,
+            baseline,
+            enqueued,
+            config.replayBufferSize + DeviceLinkConfig.ChatReplaySize + 1,
+            () => connectionTimeline.nowMs,
+            request.connection,
+            bootstrapEnqueued = resume,
+            observationChanged = observationChanged
+          )
+          device.desk = Some(owner)
+          if resume then
+            captured.retained
+              .filter(_.record.seq.value > baseline)
+              .foreach: value =>
+                val allowed = device.wants(RelayMessage.Event(value.record), chat) && value.capableEligible &&
+                  value.origin != DeskMessageCodec.Origin.Twitch && value.deadlineRelayMs > captured.sampledRelayMs
+                owner.offer(if allowed then DeskProjection.card(value, true) else DeskDelivery.Barrier(value.record.seq.value)).discard
+            owner.offer(DeskDelivery.Barrier(captured.latestSeq.value)).discard
+        case None => greet(device, request.lastSeq, now)
       bus.publish(RelayEvent.DeviceConnected(request.device, connection, request.remoteAddress))
     connection
 
@@ -260,6 +396,41 @@ private[device] final class DeviceHubState(
         logger.info(s"Device ${device.device.value} (#${connection.value}) detached: ${reason.describe}")
         bus.publish(RelayEvent.DeviceDisconnected(device.device, connection, reason.describe))
 
+  private var weather = WeatherSlot()
+  def weatherSnapshot: Weather_OUT = weather.snapshot(relayClock)
+  def publishWeather(request: Weather_IN): Either[IngressFailure, Weather_OUT] =
+    val result = weather.put(request, relayClock, twitchscreen.relay.http.ApiTime.format(clock.instant()))
+    if result.isRight then publishDeskState()
+    result
+
+  private var cpu = CpuSlot()
+  def cpuSnapshot: Cpu_OUT = cpu.snapshot(relayClock)
+  def publishCpu(request: Cpu_IN): Either[IngressFailure, Cpu_OUT] =
+    val result = cpu.put(request, relayClock, twitchscreen.relay.http.ApiTime.format(clock.instant()))
+    if result.isRight then publishDeskState()
+    result
+
+  private var notificationRate = IngressRateLimit()
+
+  def relayClock: RelayClock = RelayClock(activeTimeline.epoch, activeTimeline.nowMs)
+
+  /** Calibrated deadline and rate admission occur immediately before sequencing, in the original process clock domain. */
+  def publishExternal(request: EventRequest, deadline: Option[RelayClock]): Either[IngressFailure, RetainedEvent] =
+    require(request.origin == DeskMessageCodec.Origin.External, "HTTP cannot supply producer provenance")
+    val now = activeTimeline.nowMs
+    if deadline.exists(_.relayEpoch != activeTimeline.epoch) then Left(IngressFailure.EpochChanged)
+    else
+      val effective = math.min(Math.addExact(now, request.expiresInMs), deadline.fold(Long.MaxValue)(_.monotonicMs))
+      if effective <= now then Left(IngressFailure.Expired)
+      else if latestSequence.next.isEmpty then Left(IngressFailure.SequenceSpent)
+      else if !notificationRate.admit(now) then Left(IngressFailure.RateLimited)
+      else
+        sequences.allocate() match
+          case None => Left(IngressFailure.SequenceSpent)
+          case Some(seq) =>
+            val _ = sequenced(request, seq, None, Some(now), Some(effective))
+            Right(replay.publications.find(_.record.seq == seq).get)
+
   def publish(request: EventRequest, transition: Option[StreamStats] = None): Either[SequenceExhausted, Notification] =
     sequences.allocate() match
       case None => Left(refuse())
@@ -277,12 +448,42 @@ private[device] final class DeviceHubState(
     else logger.debug(s"EVENT refused: sequence space exhausted at ${latestSequence.value}")
     SequenceExhausted(latestSequence)
 
-  private def sequenced(request: EventRequest, seq: SeqNo, transition: Option[StreamStats]): Notification =
+  private def sequenced(
+      request: EventRequest,
+      seq: SeqNo,
+      transition: Option[StreamStats],
+      receipt: Option[Long] = None,
+      absoluteDeadline: Option[Long] = None
+  ): Notification =
     val record = request.record(seq, clock.instant())
-    replay.remember(record)
+    val received = receipt.getOrElse(activeTimeline.nowMs)
+    val (generation, episode) =
+      if request.origin == DeskMessageCodec.Origin.Twitch then
+        publicationControl.map(value => (value.sourceGeneration, value.twitchEpisode)).getOrElse((1L, 1L))
+      else (0L, 0L)
+    val publication = RetainedEvent(
+      record,
+      request.origin,
+      activeTimeline.epoch,
+      received,
+      absoluteDeadline.getOrElse(Math.addExact(received, request.expiresInMs)),
+      generation,
+      episode,
+      request.expiresInMs,
+      request.origin != DeskMessageCodec.Origin.Twitch || publicationControl.exists(_.display.twitchDisplayEnabled)
+    )
+    replay.remember(publication)
     notificationsPublished += 1
-    transition.foreach(stats => latestObservedStats = stats)
-    broadcast(RelayMessage.Event(record))
+    transition.foreach(stats => recordStats(stats))
+    if transition.isDefined then publishDeskState()
+    val frame = Outbound(RelayMessage.Event(record))
+    attached.values.foreach: device =>
+      device.desk match
+        case Some(owner) =>
+          val allowed = publication.capableEligible && device.wants(frame.message, chat)
+          if !owner.offer(if allowed then DeskProjection.card(publication, false) else DeskDelivery.Barrier(seq.value)) then
+            detach(device.id, DisconnectReason.OutboundOverflow)
+        case None => send(device, frame)
     if record.kind.isLifecycle && (transition.isDefined || latestObservedStats != StreamStats.Unknown)
     then
       // The stats fold supplies the lifecycle card and post-transition snapshot in this same actor operation.
@@ -292,15 +493,175 @@ private[device] final class DeviceHubState(
     bus.publish(RelayEvent.NotificationPublished(notification))
     notification
 
-  def updateStats(stats: StreamStats): Unit =
-    latestObservedStats = stats
+  private def recordStats(
+      stats: StreamStats,
+      availability: DeskMessageCodec.Availability = DeskMessageCodec.Availability.Observed,
+      force: Boolean = false
+  ): Unit =
+    if force || stats != latestObservedStats || statsAvailability != availability then
+      require(statsRevision < 0xffffffffL, "STATS revision exhausted")
+      statsRevision += 1
+      // The encoded STATS timestamp belongs to content revision, not provider freshness.
+      statsContentAt = Some(clock.instant())
+      latestObservedStats = stats
+      statsAvailability = availability
+
+  private def publishDeskState(): Unit =
+    val captured = publicationSnapshot
+    attached.values.foreach(_.desk.foreach(_.update(captured)))
+
+  def updateStats(stats: StreamStats, observed: Boolean = true): Unit =
+    if observed then statsObservedAt = Some(clock.instant())
+    recordStats(stats)
     broadcast(RelayMessage.Stats(stats, Some(clock.instant())))
+    publishDeskState()
 
   def latestStats: StreamStats = latestObservedStats
 
   def links: List[DeviceLink] = attached.values.map(_.link).toList.sortBy(_.connection.value)
 
   def link(connection: ConnectionId): Option[DeviceLink] = attached.get(connection).map(_.link)
+  def desk(connection: ConnectionId): Option[DeskConnection] = attached.get(connection).flatMap(_.desk)
+
+  private var sourceStats = StatsState.Initial
+
+  def sourceFence: SourceFence = SourceFence(activeTimeline.epoch, publicationControl.fold(1L)(_.sourceGeneration))
+
+  /** Admission, statistics and notification sequencing share the settings owner's actor transaction. No lossy bus owns authority. */
+  def acceptSource(fence: SourceFence, message: BusEvent, statsConfig: StatsConfig): Boolean =
+    if stopping || fence != sourceFence then false
+    else if !NotificationRouter.sourceEvent(message.event) then
+      true // Preserve auth/diagnostic telemetry without folding it as Twitch data.
+    else
+      // Provider observation time is independent of content revision. Aggregation ticks and link/failure diagnostics are not samples.
+      val observed = message.event.isObservation || (message.event match
+        case _: (RelayEvent.StreamStarted | RelayEvent.StreamEnded | RelayEvent.ChatMessaged) => true
+        case _                                                                                => false)
+      if observed then statsObservedAt = Some(clock.instant())
+      sourceStats = sourceStats.apply(message, statsConfig.chatRateWindow)
+      val figures = sourceStats.toStats(clock.instant(), statsConfig.chatRateWindow)
+      val lifecycle = message.event match
+        case _: (RelayEvent.StreamStarted | RelayEvent.StreamEnded) => true
+        case _                                                      => false
+      NotificationRouter.toRequest(message.event) match
+        case Some(request) =>
+          publish(request, Option.when(lifecycle)(figures)) match
+            case Left(_) if lifecycle => updateStats(figures)
+            case _                    => ()
+        case None => ()
+      recordStats(figures)
+      publishDeskState()
+      true
+
+  /** Stable application producers have no replaceable source fence. Sequence against current authority in this one transaction; do not
+    * manufacture observed source data from an OAuth failure. Other producer events must use their own source-admitted view.
+    */
+  def acceptApplicationDiagnostic(message: BusEvent): Boolean =
+    if stopping then false
+    else
+      message.event match
+        case event @ RelayEvent.RelayFailure(_, _, DeskMessageCodec.Origin.Twitch) =>
+          NotificationRouter.toRequest(event).foreach(request => publish(request).discard)
+          true
+        case _ => false
+
+  /** Refreshes uptime/rate in the same source generation. An old timer cannot restore cleared channel state. */
+  def refreshSourceStats(fence: SourceFence, statsConfig: StatsConfig): Boolean =
+    if stopping || fence != sourceFence then false
+    else if statsAvailability == DeskMessageCodec.Availability.Unknown then true
+    else
+      sourceStats = sourceStats.prune(clock.instant(), statsConfig.chatRateWindow)
+      updateStats(sourceStats.toStats(clock.instant(), statsConfig.chatRateWindow), observed = false)
+      true
+
+  private var runtimeSettings: Option[SettingsSnapshot] = None
+  private var publicationControl: Option[PublicationControl] = None
+
+  def installSettings(value: SettingsSnapshot): Unit =
+    require(value.storageFailure.isEmpty && !value.projectionFailed, "only confirmed settings may enter hub authority")
+    runtimeSettings match
+      case None => require(value.revision == 1L, "initial settings revision must be one")
+      case Some(previous) =>
+        require(
+          value == previous || value.revision == previous.revision + 1L,
+          "settings handoff must be identical or the next committed revision"
+        )
+    // Compute all counters before mutating any authority. Rejected/exhausted handoffs leave the prior transaction intact.
+    val next = publicationControl match
+      case None => PublicationControl(1L, 1L, 1L, value.confirmed.display)
+      case Some(previous) =>
+        val sourceChanged = runtimeSettings.exists(_.confirmed.monitoring != value.confirmed.monitoring)
+        val displayChanged = previous.display != value.confirmed.display
+        val overrideChanged = previous.display.twitchDisplayEnabled != value.confirmed.display.twitchDisplayEnabled
+        def advance(counter: Long, changed: Boolean): Long =
+          require(!changed || counter < 0xffffffffL, "control counter exhausted")
+          if changed then counter + 1L else counter
+        PublicationControl(
+          advance(previous.revision, displayChanged || sourceChanged),
+          advance(previous.sourceGeneration, sourceChanged),
+          advance(previous.twitchEpisode, overrideChanged || sourceChanged),
+          value.confirmed.display
+        )
+    if publicationControl.exists(_.sourceGeneration != next.sourceGeneration) then
+      recordStats(StreamStats.Unknown, DeskMessageCodec.Availability.Unknown, force = true)
+      statsObservedAt = None
+      sourceStats = StatsState.Initial
+    publicationControl = Some(next)
+    runtimeSettings = Some(value)
+    publishDeskState()
+
+  /** Reliable hub half of a coordinated discontinuity transaction. The caller must fence, cancel/join and recreate source scopes and reset
+    * runtime alerts before enabling automatic detection. No disk, provider work or socket drain waits occur in this actor.
+    */
+  def resetEpoch(expectedEpoch: Long, replacementEpoch: Long): Boolean =
+    if stopping || activeTimeline.epoch != expectedEpoch then false
+    else
+      val replacement = activeTimeline.renewed(replacementEpoch)
+      val devices = attached.values.toList
+      // Close old connection owners before rotating the domain. Their late detach callbacks retain globally unique connection IDs.
+      devices.foreach(_.invalidate())
+      attached = Map.empty
+      connected.set(0)
+      activeTimeline = replacement
+      sessionId = SessionId.fromWire(DeviceHub.RandomSessionId())
+      sequences = SequenceAllocator(SeqNo.Zero)
+      replay = ReplayBuffers(config.replayBufferSize, DeviceLinkConfig.ChatReplaySize)
+      reclaims = ReclaimPolicy()
+      exhaustionReported = false
+      notificationRate = IngressRateLimit()
+      cpu = CpuSlot()
+      weather = WeatherSlot()
+      sourceStats = StatsState.Initial
+      latestObservedStats = StreamStats.Unknown
+      statsRevision = 1L
+      statsObservedAt = None
+      statsContentAt = None
+      statsAvailability = DeskMessageCodec.Availability.Unknown
+      publicationControl = runtimeSettings.map(value => PublicationControl(1L, 1L, 1L, value.confirmed.display))
+      devices.foreach(device => bus.publish(RelayEvent.DeviceDisconnected(device.device, device.id, "clock discontinuity")))
+      true
+
+  def publicationSnapshot: PublicationSnapshot =
+    val now = relayClock
+    PublicationSnapshot(
+      now.relayEpoch,
+      now.monotonicMs,
+      latestSequence,
+      latestObservedStats,
+      replay.publications,
+      runtimeSettings,
+      publicationControl,
+      Some(cpu.snapshot(now)),
+      Some(weather.snapshot(now)),
+      cpu.deadlineRelayMs,
+      weather.deadlineRelayMs,
+      statsRevision,
+      statsObservedAt,
+      statsAvailability,
+      statsContentAt
+    )
+
+  def retainedPublications: Vector[RetainedEvent] = replay.publications
 
   def recent(limit: Int): List[Notification] =
     replay.ordered.reverse.take(limit).map(Notification.from).toList
@@ -371,7 +732,7 @@ private[device] final class DeviceHubState(
 
   private def broadcast(message: RelayMessage): Unit =
     val frame = Outbound(message)
-    attached.values.foreach(send(_, frame))
+    attached.values.filter(_.desk.isEmpty).foreach(send(_, frame))
 
   private def send(device: AttachedDevice, frame: Outbound): Unit =
     if attached.contains(device.id) && device.wants(frame.message, chat) then
@@ -411,9 +772,19 @@ private[device] final class AttachedDevice(val id: ConnectionId, request: Attach
   private val counters: LinkCounters = request.counters
   private val connection: Closeable = request.connection
   private val drained: Channel[Unit] = request.drained
+  var desk: Option[DeskConnection] = None
 
   def link: DeviceLink =
     DeviceLink(id, device, request.remoteAddress, connectedAt, request.protocolVersion.value, request.lastSeq.value, counters.traffic)
+
+  def observation(nowMs: Long): HubDeviceObservation =
+    HubDeviceObservation(
+      link,
+      caps.unsigned,
+      request.firmwareVersion.take(15),
+      desk.map(_.observation(nowMs)),
+      classicQueuedFrames = counters.queuedFrames
+    )
 
   def wants(message: RelayMessage, chat: ChatNotifications): Boolean = message match
     case RelayMessage.Event(record) if !record.kind.isDurable =>
@@ -423,7 +794,7 @@ private[device] final class AttachedDevice(val id: ConnectionId, request: Attach
 
   /** Non-blocking, because it runs on the hub's actor thread (§10.1). */
   def offer(frame: Outbound): Offer =
-    outbound.trySendOrClosed(frame) match
+    counters.offerQueued(outbound, frame) match
       case true => Offer.Accepted
       case false =>
         counters.recordDropped()
@@ -436,8 +807,18 @@ private[device] final class AttachedDevice(val id: ConnectionId, request: Attach
           case _ => Offer.DroppedReplaceable // Telemetry is replaceable. Every drop is counted, without per-frame logging.
       case _: ChannelClosed => Offer.Closed
 
+  /** Discontinuity invalidates queued bytes as well as replay; no old-domain writer may continue after the reset. */
+  def invalidate(): Unit =
+    desk.foreach(_.close())
+    outbound.doneOrClosed().discard
+    closeTransport()
+
   def queueFinalBye(code: ByeCode, reason: String): Unit =
-    twitchscreen.relay.device.queueFinalBye(outbound, code, reason)
+    desk match
+      case Some(owner) => owner.finish(RelayMessage.Bye(code, ByeDetail.Zero, 0.seconds, reason))
+      case None =>
+        counters.offerQueued(outbound, Outbound(RelayMessage.Bye(code, ByeDetail.Zero, 0.seconds, reason))).discard
+        outbound.doneOrClosed().discard
 
   /** Waits up to `limit` for the session's writer to flush what is queued, then closes the transport whether or not it did. */
   def drainThenClose(limit: FiniteDuration): Unit = AttachedDevice.drainThenClose(List(this), limit)

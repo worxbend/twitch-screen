@@ -30,7 +30,7 @@ private[alerts] final case class MonitorState(twitch: Presence, stream: Presence
     case RelayEvent.StreamStarted(_, _, _, _) => copy(stream = stream.sighted)
     case RelayEvent.StreamEnded(_, _)         => copy(stream = stream.missing(message.at))
     case RelayEvent.ViewersObserved(_, _)     => copy(stream = stream.sighted)
-    case RelayEvent.RelayFailure(_, _)        => copy(failuresAt = failuresAt :+ message.at)
+    case RelayEvent.RelayFailure(_, _, _)     => copy(failuresAt = failuresAt :+ message.at)
     case _                                    => this
 
   /** Device presence is read from the hub at evaluation time rather than tracked from events, which cannot go stale. */

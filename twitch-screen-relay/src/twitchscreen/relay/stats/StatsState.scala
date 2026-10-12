@@ -6,7 +6,7 @@ import twitchscreen.relay.bus.{BusEvent, RelayEvent}
 import twitchscreen.relay.protocol.*
 
 /** Whether the channel is streaming, and since when. A separate type per state, so "live without a start time" cannot exist. */
-private[stats] enum ChannelState:
+private[relay] enum ChannelState:
   case Offline
   case Live(since: Instant)
 
@@ -16,7 +16,7 @@ private[stats] enum ChannelState:
   * Bot filtering happens upstream, at the source (§13.1), so every `ChatMessaged` that reaches this fold is one a human wrote. That is what
   * makes `messagesTotal` and the chat rate count exactly the same population of messages — if they counted different ones, both would lie.
   */
-private[stats] final case class StatsState(
+private[relay] final case class StatsState(
     channel: ChannelState,
     viewers: Count,
     followers: Count,
@@ -80,5 +80,5 @@ private[stats] final case class StatsState(
     val seconds = math.max(1L, window.toSeconds)
     MessagesPerMinute.clamp(((pruned(now, window).size.toLong * 60L) / seconds).toInt)
 
-private[stats] object StatsState:
+private[relay] object StatsState:
   val Initial: StatsState = StatsState(ChannelState.Offline, Count.Zero, Count.Zero, Count.Zero, Vector.empty, 0L)

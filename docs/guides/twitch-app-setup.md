@@ -1,5 +1,7 @@
 # 🎮 Connect your Twitch channel
 
+> Desk-update migration notice: management Basic/Bearer instructions in this historical guide are obsolete for this checkout. Nonempty `RELAY_HTTP_AUTH_*` settings fail startup; Authorization confers no privilege. Use the [current root quickstart](../../README.md#first-success-without-twitch), [migration guide](migration.md) and [implementation status](../implementation-status.md). Trusted-network isolation is mandatory. Clock/display/weather/CPU ingress and durable desired display intent are mounted. Complete DESK delivery, admin and runtime-channel behavior remain pending.
+
 [Guidebook](../README.md) · [Relay setup](relay-setup.md) · [Configuration reference](../reference/relay-configuration.md)
 
 Turn your desk display into a little witness to your stream's main-character moments. This guide registers your Twitch application, connects the **broadcaster's account**, and checks that the relay can receive real events.
@@ -9,11 +11,11 @@ Start with a working [simulated stream](first-simulated-stream.md). You need a T
 > [!NOTE]
 > The default setup uses an outbound EventSub **WebSocket**. You do not need to publish a webhook or open a router port to Twitch. The browser still needs to reach the OAuth callback during consent.
 
-## 1. Understand the three credentials 🔑
+## 1. Understand provider credentials 🔑
 
 | Credential | What it unlocks | Where it belongs |
 |---|---|---|
-| Relay management token or Basic password | Your relay's management API | Your terminal, browser, or deployment secret store |
+| Network isolation, not a relay credential | Anyone reaching the private API can control it | Trusted LAN/VPN, explicit bind/Host/Origin settings and firewall |
 | Twitch application Client ID and Client Secret | The relay's connection to Twitch | Relay environment only |
 | Broadcaster access and refresh tokens | The broadcaster's approved Twitch data | Created by consent; saved by the relay in its token file |
 
@@ -52,7 +54,7 @@ Keep that terminal open. Your browser's `http://localhost:8080` now reaches port
 
 When local port 8080 is occupied, use a different local tunnel port, then update **both** the registered redirect and `RELAY_TWITCH_REDIRECT_URL` to match. For example, a local tunnel on 18080 needs `http://localhost:18080/api/v1/twitch/callback` even when the relay itself still listens on 8080.
 
-For a hosted relay, use an HTTPS reverse proxy and register `https://your-relay.example/api/v1/twitch/callback`. The relay validates HTTPS callbacks or HTTP loopback callbacks only. A plain `http://192.168.…` callback fails its startup validation. See [network boundaries](relay-setup.md#network-boundaries-and-https-).
+For a separate private relay host, use the [private Caddy HTTPS example](relay-setup.md#network-boundaries-and-https-) and an exact registered callback on its trusted LAN/VPN hostname. Install the CA only on consenting client devices; never disable certificate verification or expose management publicly. The relay validates HTTPS callbacks or HTTP loopback callbacks only. A plain `http://192.168.…` callback fails validation. Real phone/tablet consent remains an acceptance gate.
 
 ## 4. Configure live mode ⚙️
 
@@ -84,46 +86,33 @@ The source reads chat anonymously. Subs, gifts, Bits, and raids arrive through t
 
 ## 5. Start the relay and grant consent ✅
 
-Management authentication is required before startup. For convenient browser login, generate a Basic password verifier:
+No management credentials are required. Start the relay with the provider configuration from the previous section:
 
 ```sh
-export RELAY_HTTP_AUTH_BASIC_USERNAME='admin'
-export RELAY_HTTP_AUTH_BASIC_PASSWORD_HASH="$(python3 tools/hash_management_password.py)"
 ./mill run
 ```
 
-The helper prompts twice without echoing the password and requires at least 12 characters. The relay stores a salted verifier, not that password. You can keep a management Bearer token configured too; either method is sufficient.
+OAuth routes belong to a stable application owner, independent of ingestion mode. Valid application credentials, callback and token-storage configuration mount them even while ingestion is disabled or simulated. Missing or invalid OAuth configuration leaves consent unavailable; generic notifications remain usable. Runtime channel switching is not mounted yet.
 
-Open `http://localhost:8080/api/v1/twitch/authorize` directly in the browser address bar. When prompted by the browser, use your **relay Basic credentials**. Then sign in on Twitch as the **same broadcaster named in `RELAY_TWITCH_CHANNEL`** and approve the requested permissions.
+Open `http://localhost:8080/api/v1/twitch/authorize` directly in the browser address bar. Sign in on Twitch as the broadcaster whose scoped data you intend to use and approve the requested permissions. There is no relay login prompt. Keep the temporary OAuth state private and complete consent within ten minutes.
 
 The successful callback page says **Twitch connected** and identifies the authorized login. The token is saved automatically. No manual token copy and no firmware rebuild are involved.
-
-> [!TIP]
-> Already using Bearer authentication? Request the redirect without following it:
->
-> ```sh
-> curl --silent --show-error --dump-header - --output /dev/null \
->   -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
->   http://localhost:8080/api/v1/twitch/authorize
-> ```
->
-> Copy the `Location:` value into your browser. It includes a temporary OAuth state value. Keep it private and complete consent within ten minutes. Do not add your relay token to the browser URL.
 
 The relay retains up to 16 pending consent requests. Each state is single-use and expires after ten minutes; restarting the relay also discards pending states. Start a fresh request when the callback reports an unknown or expired request.
 
 ## 6. Check the account and event pipeline 🔍
 
-In a second terminal, use Basic authentication; `curl` prompts for the management password:
+In a second terminal, read grant metadata through the isolated private listener without management credentials:
 
 ```sh
-curl --fail --silent --show-error --user admin \
+curl --fail --silent --show-error \
   http://localhost:8080/api/v1/twitch/authorization
 ```
 
-Check that `authorized` is `true`, `login` matches your configured channel, and `missingScopes` is empty. `userId` is the Twitch ID of the consenting account. This endpoint never returns the access or refresh token. `authorized: true` means a token is held; the following readiness check is needed to assess whether the integration is currently usable.
+Check that `authorized` is `true`, `login` matches the intended broadcaster for restricted features, and `missingScopes` is empty. `userId` is the Twitch ID of the consenting account. This endpoint never returns tokens. `authorized: true` means the retained grant is usable, not that the selected channel matches or every provider feature is healthy. Inspect readiness separately; public monitoring and broadcaster-scoped data have different requirements.
 
 ```sh
-curl --fail --silent --show-error --user admin \
+curl --fail --silent --show-error \
   http://localhost:8080/api/v1/status
 curl --fail --silent --show-error \
   http://localhost:8080/api/v1/stats
@@ -152,7 +141,7 @@ Maintenance runs every minute, refreshing near expiry and validating at least ho
 To disconnect the account intentionally:
 
 ```sh
-curl --silent --show-error --user admin --request DELETE \
+curl --silent --show-error --request DELETE \
   --write-out '\nHTTP %{http_code}\n' \
   http://localhost:8080/api/v1/twitch/authorization
 ```
@@ -173,7 +162,7 @@ export RELAY_TWITCH_EVENTSUB_SECRET="$(openssl rand -hex 32)"
 
 Persist the generated secret privately. It must contain 10–100 ASCII characters. The OAuth callback `/api/v1/twitch/callback` and EventSub callback `/api/v1/twitch/eventsub` are separate endpoints with separate purposes.
 
-Keep the raw webhook body and Twitch headers intact through your proxy. The relay verifies HMAC signatures, timestamps, and delivery IDs. Do not put proxy Basic authentication in front of these exact callbacks; management routes still require the relay's authentication. The relay creates and reconciles its own subscriptions; you do not manually register them in the Developer Console. Twitch uses app tokens for webhook subscription management and user tokens for WebSocket subscriptions. [Subscription management](https://dev.twitch.tv/docs/eventsub/manage-subscriptions/)
+Keep the raw webhook body and Twitch headers intact through your proxy. The relay verifies HMAC signatures, timestamps, and delivery IDs. Expose only `/api/v1/twitch/eventsub` through a separate restricted public ingress, never the admin/API wildcard. OAuth consent and all management routes stay on the trusted private origin; no application login protects them. The relay creates and reconciles its own subscriptions; you do not manually register them in the Developer Console. Twitch uses app tokens for webhook subscription management and user tokens for WebSocket subscriptions. [Subscription management](https://dev.twitch.tv/docs/eventsub/manage-subscriptions/)
 
 Changing an EventSub signing secret requires coordinating the existing provider subscriptions too: the current reconciliation finds an enabled subscription by condition and callback and does not compare its hidden signing secret. A fresh callback hostname with the same required path lets the relay create new subscriptions; retire the old subscriptions in your Twitch administration workflow. Simply changing the local secret can make existing deliveries fail HMAC verification.
 
@@ -183,15 +172,15 @@ Webhooks do not replace the IRC connection for subscription, gift, Bits, or raid
 
 | Symptom | Check |
 |---|---|
-| `/authorize` returns `401` | Supply relay management credentials; Twitch credentials do not authenticate this API |
+| `/authorize` returns `403` | Check exact allowed Host/Origin and same-origin browser access; no relay login exists |
 | Twitch rejects the redirect | Compare the registered URL and relay URL character for character |
 | Callback cannot connect on a headless host | Keep the SSH tunnel running on the browser's computer |
 | Callback state expired | Start at `/authorize` again; do not reuse an old callback URL |
-| Wrong account was authorized | Revoke, sign in as the configured broadcaster, and consent again |
+| Wrong account was authorized | Preserve the existing grant; verify required broadcaster identity/scopes and complete deliberate new consent if needed |
 | Missing follower/subscriber totals | Inspect `missingScopes`, authorized login, readiness detail, and provider errors |
-| `/twitch/authorization` is `404` | These endpoints exist only in `live` mode |
+| `/twitch/authorization` is `404` | Check valid OAuth application/callback/storage configuration; ingestion mode does not control these routes |
 | Follows work but subs/raids do not | Check the anonymous IRC connection; those events are not EventSub subscriptions here |
-| Healthy container, disconnected Twitch | Health checks cover HTTP liveness; inspect authenticated `/status` |
+| Healthy container, disconnected Twitch | Health checks cover HTTP liveness; inspect private `/status` |
 
 The real-account path still needs operator acceptance with actual Twitch credentials and sustained reconnect testing. Source-level and simulated checks cannot prove provider acceptance. Continue with [troubleshooting](troubleshooting.md), [relay operations](relay-setup.md), or [firmware setup](firmware-setup.md).
 

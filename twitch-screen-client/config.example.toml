@@ -1,0 +1,11 @@
+# Anyone reaching the relay can read content and control the display.
+# Keep the relay on a trusted private network. No API token is required.
+relay_url = "http://127.0.0.1:8080"
+source_id = "desktop"
+# host = "My desktop"
+sample_interval_ms = 2000
+cpu_enabled = true
+notifications_enabled = false
+forward_body = false
+include_apps = ["twitch-screen-e2e"]
+exclude_apps = []

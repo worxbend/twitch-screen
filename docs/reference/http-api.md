@@ -1,20 +1,16 @@
 # 🔌 Relay HTTP API
 
+> Desk-update migration notice: management Basic/Bearer instructions in this historical guide are obsolete for this checkout. Nonempty `RELAY_HTTP_AUTH_*` settings fail startup; Authorization confers no privilege. Use the [current root quickstart](../../README.md#first-success-without-twitch), [migration guide](../guides/migration.md) and [implementation status](../implementation-status.md). Trusted-network isolation is mandatory. Clock/display/weather/CPU/monitoring ingress and durable desired display/monitoring intent are mounted. The default relay supports DESK negotiation and mounted admin snapshot/SSE/panel; default ESP32 and complete provider/physical acceptance remain pending.
+
 [Guidebook](../README.md) · [Relay setup](../guides/relay-setup.md) · [Configuration](relay-configuration.md)
 
 Base URL for local development: `http://localhost:8080/api/v1`. Open **`http://localhost:8080/docs`** on the running relay for generated Swagger UI and schemas. The device itself uses binary TCP on port 8099; these HTTP endpoints manage the relay and publish cards.
 
-## Authentication and shared behavior 🔑
+## Private-network boundary and shared behavior
 
-Protected requests accept **one** `Authorization` header, using either:
+Management needs no login, password or token. Anyone reaching the listener can inspect and control the relay. Isolate HTTP and TCP on a trusted LAN/VPN/firewall. Nonempty obsolete `RELAY_HTTP_AUTH_*` or old HOCON auth settings fail startup; Authorization headers confer no privilege.
 
-```http
-Authorization: Bearer <your-relay-management-token>
-```
-
-or HTTP Basic credentials. `curl --user admin` prompts for the plaintext management password. The relay stores a PBKDF2 verifier for Basic login. Twitch's Client Secret and broadcaster access token are separate credentials and cannot authenticate management requests.
-
-Health, aggregate stats, Swagger documentation, and the exact OAuth/EventSub callbacks are public. Callbacks validate their own protocol credentials. Every other route below requires management authentication. Basic password verification permits two concurrent checks; excess checks receive `503` and can retry. Bearer authentication does not use that budget. Only `401` includes `WWW-Authenticate`. Cross-site browser requests using Basic credentials can receive `403`; use the relay directly in the address bar and preserve the public Host header through an HTTPS proxy.
+Host, Origin and Fetch Metadata are checked before buffering request bodies. Non-callback POST/PUT/PATCH requests need exactly one JSON Content-Type header, including bodyless management actions. Use `-H 'Content-Type: application/json'` for those actions. Provider callbacks retain OAuth state or EventSub signature checks. Direct HTTP and exact immediate-proxy HTTPS origins are supported. Certificate-verified container HTTPS and notification readback pass; real mobile consent and complete production admin/SSE acceptance remain pending. See [migration](../guides/migration.md). “Management” in the route map denotes purpose, not authentication.
 
 | Contract | Behavior |
 |---|---|
@@ -47,21 +43,20 @@ All paths in this table are relative to `/api/v1`.
 | `GET` | `/alertRules` | Management | Configured rules |
 | `POST` | `/alerts/{id}:acknowledge` | Management | Acknowledge an active alert |
 | `GET` | `/logs` | Management | Buffered application log records |
-| `GET` | `/twitch/authorize` | Management; live mode | `302` redirect to Twitch consent |
-| `GET` | `/twitch/callback` | OAuth state; live mode | HTML consent success/failure page |
-| `GET` | `/twitch/authorization` | Management; live mode | Held grant's identity, scopes, and expiry |
-| `DELETE` | `/twitch/authorization` | Management; live mode | Forget grant and attempt Twitch revocation |
+| `GET` | `/twitch/authorize` | Management; OAuth configured | `302` redirect to Twitch consent |
+| `GET` | `/twitch/callback` | OAuth state; OAuth configured | HTML consent success/failure page |
+| `GET` | `/twitch/authorization` | Management; OAuth configured | Held grant's identity, scopes, and expiry |
+| `DELETE` | `/twitch/authorization` | Management; OAuth configured | Forget grant and attempt Twitch revocation |
 | `POST` | `/twitch/eventsub` | Twitch HMAC; live webhook mode | EventSub challenge or delivery response |
 
-Disabled/simulated modes do not mount the Twitch OAuth routes. The EventSub callback also requires webhook transport. A `404` for one of these routes can therefore be a mode mismatch.
+The four OAuth routes are mounted when valid OAuth application configuration is available, independent of disabled/simulated/live ingestion. Missing or invalid OAuth configuration leaves those routes absent without blocking generic operation. The EventSub callback still requires live webhook transport.
 
 ## Send a card 💌
 
-Use the same token as the running relay:
+Publish over the isolated listener without management credentials:
 
 ```sh
 curl --fail --silent --show-error \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
   -H 'Content-Type: application/json' \
   --data '{"type":"info","title":"Desk check","body":"The tiny screen has entered the chat.","ttlMs":8000}' \
   http://localhost:8080/api/v1/notifications
@@ -86,12 +81,14 @@ HTTP `200` returns the assigned replay record. Example shape, with illustrative 
 | `type` | Yes | Notification JSON kind; see the compatibility note below |
 | `title` | Yes | Nonblank after trimming; at most 4096 characters |
 | `body` | Yes | May be empty; at most 4096 characters |
-| `ttlMs` | No | Integer 1–6553500; omitted uses `RELAY_NOTIFICATION_TTL` |
+| `ttlMs` | No | Exact integral JSON number 100–30000 ms, rounded up to 100 ms; omitted uses 8000 ms |
+| `expiresInMs` | No | Exact integral JSON number 1–600000 ms; omitted uses 60000 ms |
+| `deadline` | No | Calibrated `{relayEpoch, monotonicMs}`; cannot extend waiting lifetime |
 
 Useful kinds are `info`, `message`, `warning`, `alert`, `follow`, `sub`, `gift`, `raid`, `chat`, and `bits`. Text can be shortened when encoded for the 240 × 240 display. This endpoint posts a generic card; it does not expose all native Twitch event metadata such as a subscription tier or gift count.
 
 > [!IMPORTANT]
-> **Existing stream-kind compatibility issue:** the generated schema advertises `stream_start` and `stream_end`, but the current JSON codec accepts and emits `streamstart` and `streamend`. The underscored spellings return `400`. Prefer the ordinary kinds above for integrations; binary TSB/3 stream event codes are unaffected. This behavior was checked against the local assembly and the [JSON codec](../../twitch-screen-relay/src/twitchscreen/relay/http/ApiJson.scala).
+> Canonical lifecycle notification names are `stream_start` and `stream_end`. Unseparated `streamstart`/`streamend` aliases now return `400`. Binary TSB/3 event codes remain unchanged. Treat this validation correction and the hold-limit change as breaking HTTP migration, not a classic wire layout change.
 
 Every accepted POST creates a **new** notification. Retrying after an interrupted response can create a duplicate; there is no idempotency key. The response confirms publication and retention in the current process, including when no device is attached. It does not confirm rendering on a screen.
 
@@ -101,7 +98,6 @@ Read recent cards:
 
 ```sh
 curl --fail --silent --show-error \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
   'http://localhost:8080/api/v1/notifications?pageSize=20'
 ```
 
@@ -137,7 +133,6 @@ Twitch health may be `Disabled`, `Connecting`, `Connected`, `Degraded`, or `Disc
 
 ```sh
 curl --fail --silent --show-error \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
   http://localhost:8080/api/v1/devices
 ```
 
@@ -147,11 +142,10 @@ Use the current **connection number**, not the device name, in per-connection UR
 
 ```sh
 curl --fail --silent --show-error \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
   http://localhost:8080/api/v1/devices/7
 
 curl --fail --silent --show-error --request POST \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
+  -H 'Content-Type: application/json' \
   http://localhost:8080/api/v1/devices/7:disconnect
 ```
 
@@ -170,15 +164,13 @@ Activity categories are `Channel`, `Audience`, `Twitch`, `Device`, `Notification
 
 ```sh
 curl --fail --silent --show-error \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
   'http://localhost:8080/api/v1/logs?minLevel=Warn&pageSize=50'
 
 curl --fail --silent --show-error \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
   'http://localhost:8080/api/v1/alerts?activeOnly=true'
 
 curl --fail --silent --show-error --request POST \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
+  -H 'Content-Type: application/json' \
   --output relay-activity.txt \
   'http://localhost:8080/api/v1/activity:export?category=Device&pageSize=100'
 ```
@@ -189,7 +181,7 @@ The report returns plain text with download filename `relay-activity.txt`. Revie
 
 ```sh
 curl --fail --silent --show-error --request POST \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN" \
+  -H 'Content-Type: application/json' \
   http://localhost:8080/api/v1/alerts/3:acknowledge
 ```
 
@@ -197,9 +189,9 @@ Replace 3 with an active alert ID from your list. An unknown ID returns `404`; a
 
 ## Configuration and Twitch consent 🎮
 
-`GET /config` returns a `settings` map using dotted HOCON keys and string values. Management tokens/password verifiers, the Twitch application secret, and EventSub secret are masked. There is no configuration-write endpoint.
+`GET /config` returns a `settings` map using dotted HOCON keys and string values. Provider secrets are masked. There is no configuration-write endpoint.
 
-The OAuth endpoints exist only in live mode:
+The application-scoped owner mounts OAuth endpoints with valid OAuth application configuration; ingestion mode does not control their lifetime:
 
 - **`GET /twitch/authorize`** returns `302` with a Twitch `Location` URL and `Cache-Control: no-store`. It starts a single-use, ten-minute state. Do not follow it with a client that would forward management credentials to Twitch.
 - **`GET /twitch/callback`** receives Twitch's `code` and `state`, or its error parameters. It returns HTML with `200` or `400`. Start at `/authorize`, not a manually constructed callback.
@@ -212,24 +204,43 @@ The webhook route is provider-facing, not a manual event injection API. It check
 
 ## Error responses 🛠️
 
-Typical error shape:
+Typical boundary rejection:
 
 ```json
-{"error":"Invalid management credentials"}
+{"error":"Private HTTP boundary rejected request","code":"browser_boundary_rejected"}
 ```
 
 | HTTP status | Meaning / next step |
 |---|---|
-| `400` | Invalid input, enum, range, or failed OAuth callback; inspect `error` or callback HTML |
-| `401` | Missing/incorrect management credentials, duplicate Authorization headers, or invalid provider callback authentication |
-| `403` | A valid Basic request was rejected as cross-site |
+| `400` | Invalid input, enum, range, or failed OAuth callback |
+| `401` | Provider authentication failure, not missing management credentials |
+| `403` | Host, Origin, Fetch Metadata or request-target boundary rejection |
 | `404` | Route/resource absent, stale connection/alert ID, or Twitch route not mounted |
 | `409` | Alert acknowledgement conflicts with current state |
 | `413` | Request body exceeds 65536 bytes |
-| `503` | Basic password verification is busy; retry with a modest delay. On `POST /notifications` it can instead mean the sequence space is exhausted; the `error` text says so, and only a relay restart clears it |
+| `415` | Management POST/PUT/PATCH lacks the required single JSON Content-Type |
+| `503` | Publication unavailable, including exhausted sequence space; inspect error text |
 | `500` | Internal server error; inspect redacted logs |
 
-Basic password verification permits two concurrent derivations; additional checks receive `503`. Prefer Bearer authentication for frequent automated polling. Retry GET requests as appropriate; notification POST retries can publish another card.
+Retry GET requests as appropriate. Notification POST retries can publish duplicates. No Basic password verification or Bearer privilege exists.
 
-Source trail: [API assembly](../../twitch-screen-relay/src/twitchscreen/relay/Apis.scala), [HTTP transport](../../twitch-screen-relay/src/twitchscreen/relay/http/HttpApi.scala), [notification contract](../../twitch-screen-relay/src/twitchscreen/relay/device/NotificationApi.scala), and [authentication](../../twitch-screen-relay/src/twitchscreen/relay/http/ManagementAuth.scala).
+## Mounted desk ingress
+
+`GET /clock` returns a no-store relay epoch and monotonic millisecond sample. Notification POST and CPU PUT return matching `X-Relay-Epoch` and `X-Relay-Monotonic-Ms` exchange samples. Wrong deadline epoch returns 409, an expired deadline 410, and rate-limit rejection 429 with `Retry-After: 1`. Explicit null, duplicate or unknown request fields are rejected.
+
+`GET /display` returns desired override/preference and source readiness. `PATCH /display` accepts `twitchDisplayEnabled` and/or `preferredDashboard` (`generic`, `weather`, `cpu`), preserves omitted fields and persists accepted intent before success. Equivalent writes do not advance revision. Desired intent is not device application. The default relay and initialized ESP32 support DESK negotiation; older classic-only firmware remains notification-compatible but cannot apply dashboard selection. Reports describe firmware observations, never physical pixels.
+
+`GET /cpu` reads the latest global sample; `PUT /cpu` requires `sourceId`, `host` and `cpuPercent`. Optional fields are `memoryPercent`, `temperatureCelsius`, `observedAt`, `freshnessMs` and calibrated `deadline`. Percentages are finite 0–100; temperature is −20–150 °C; host is valid Unicode up to 128 scalar values. Freshness is 1000–60000 ms, default 10000. CPU history is not persisted or replayed. Follow the [canonical contract](desk-contract.md) for exact schemas.
+
+`GET /weather` reads the latest relay-owned snapshot, whether fetched by the optional built-in Open-Meteo source or uploaded externally; `PUT /weather` admits the canonical source/location/temperature/condition payload with optional humidity and calibrated deadline. Omitted unit defaults to celsius; explicit null is rejected. Invalid, expired or wrong-epoch writes preserve accepted revision/data. Diagnostic labels preserve valid Unicode, including embedded controls, within 128 scalar values; wire text sanitization is separate. Reads never renew freshness; failed provider refreshes preserve the last successful value's original deadline. See [weather setup](../guides/weather.md) and [canonical schemas](desk-contract.md).
+
+`GET /twitch/monitoring` and `PATCH /twitch/monitoring` are mounted. PATCH accepts a nonempty partial `mode`/`channel` update; modes are `disabled`, `simulated` and `live`. Channel input is format-validated and normalized to lowercase. Live resolution runs before acceptance under a three-second budget; missing application configuration rejects live selection without mutation. Accepted desired state persists separately from effective asynchronous application, and display intent remains unchanged. GET exposes desired/effective mode/channel, transition, generation, resolved identity and numeric-ID/scope grant compatibility. Stored unrelated grants are not revoked. See the [canonical schemas](desk-contract.md).
+
+`GET /admin/snapshot` and `GET /admin/events` are mounted, together with the bundled panel at `/`. Snapshot responses join authoritative desired display/monitoring, current CPU/weather, bounded publication previews, separate transport pressure and firmware-reported queues. An unknown FIFO is null; a calibrated known-empty FIFO is an empty array. Stale/historical observations retain explicit labels and age, never become current from an ACK or receipt alone.
+
+The same-origin SSE feed sends complete `snapshot`/`reset` events with `<relayEpoch>:<revision>` IDs, one latest pending snapshot, no-store/no-buffering headers and heartbeat comments. Limits are eight feeds globally, two per normalized remote IP, four snapshots/s and 512 KiB encoded snapshots. Chart history uses 180 five-second buckets and at most sixteen device identities; publication previews retain at most eighty records. A reset means epoch change or coalesced revision gap, not notification replay. There is no application polling fallback.
+
+Companion calibration/upload/readback works against current ingress. Exact final HTTP/TCP/SSE/browser gates remain required independently of mounting. Default ESP32/physical LCD, complete provider/suspend, broader race/reset/producer-to-panel and physical mobile consent remain unverified.
+
+Source trail: [API assembly](../../twitch-screen-relay/src/twitchscreen/relay/Apis.scala), [HTTP transport](../../twitch-screen-relay/src/twitchscreen/relay/http/HttpApi.scala), [notification contract](../../twitch-screen-relay/src/twitchscreen/relay/device/NotificationApi.scala), and [browser boundary](../../twitch-screen-relay/src/twitchscreen/relay/http/BrowserBoundary.scala).
 

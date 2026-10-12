@@ -6,6 +6,6 @@ private[twitch] trait TokenProvider:
   def reject(token: String): Unit
 
 private[twitch] object TokenProvider:
-  def broadcaster(auth: TwitchAuth, channel: String): TokenProvider = new TokenProvider:
-    override def tokenFor(scope: String): Option[String] = auth.view.tokenFor(channel, scope)
+  def broadcaster(auth: TwitchAuth, broadcasterId: String): TokenProvider = new TokenProvider:
+    override def tokenFor(scope: String): Option[String] = auth.view.tokenFor(broadcasterId, scope)
     override def reject(token: String): Unit = auth.rejectAccessToken(token)

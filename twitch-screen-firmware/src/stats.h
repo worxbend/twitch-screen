@@ -18,4 +18,7 @@ struct StreamStats {
   uint16_t chatRate        = 0;  // +28  msgs/min; the UI clamps its gauge at 100
   uint8_t  live            = 0;  // +30  any non-zero means live
   uint8_t  sflags          = 0;  // +31  reserved; ignored
+  // Application-only availability; never encoded into the unchanged base payload.
+  // Classic peers keep their historical observed-value behavior.
+  uint8_t availability = 1;  // DESK: unknown=0, observed=1, unavailable=2
 };

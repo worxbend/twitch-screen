@@ -22,13 +22,75 @@ This firmware turns a classic ESP32 DevKit V1 and Waveshare GC9A01 LCD into an a
 
 ## ✨ What runs on the screen
 
-- Animated **CONNECTING**, **OFFLINE** and **LIVE** states.
+- A self-contained **Generic** Picsum/Kyiv-weather screensaver with five-second slides, independent of the relay; see [connectivity, public services and WROOM limits](../docs/guides/standalone-generic.md).
+- Colorful instrument-style **Weather** and **CPU** dashboards, selectable through the relay admin; see [widget visuals and gauge meanings](../docs/guides/widgets.md).
+- Red-yellow breathing gas when Wi-Fi/internet is unavailable, with distinct connectivity messages, plus linked **OFFLINE** and **LIVE** Twitch states.
 - Viewer count, stream uptime, follower/subscriber totals and observed chat total.
 - A chat-activity ring and event cards for follows, subs, gifts, raids, Bits, chat and stream transitions.
 - Automatic retries and bounded replay after connection interruptions.
 - Custom INFO, MESSAGE, WARNING and ALERT cards supplied by the relay.
 
 The current build has no touch/menu input, on-device provisioning, PWM brightness setting or OTA updater. Wi-Fi and relay settings are compiled in; USB is the update path. [Daily use](../docs/guides/device-use.md) explains timing, ASCII text support and recovery limits.
+
+## DESK implementation status
+
+The host-tested DESK controller, conservative clock model, additive codecs and
+bounded report-intent scheduler are implemented as firmware modules. All 23 additive
+canonical vectors are exercised alongside unchanged classic suites. The actual TCP
+session has opt-in DESK dispatch and atomic reports. Main uses one controller for
+classic cards and actual LVGL lifecycle callbacks; a memory-display LVGL test exercises
+those callbacks under ASan/UBSan. The shared application greeting binding preserves
+negotiated DESK sessions while retaining classic baseline/resume behavior. Main now
+binds controller-selected Twitch and Generic bases through a rendering-only adapter;
+notifications cover the entire base rather than only Twitch. First boot renders the
+local Generic connectivity animation before networking. Generic uses bounded runtime
+photo buffers and direct public weather; Weather/CPU views use fixed objects and
+bounded text, with honest optional-field handling. Actual Receiver codecs and
+LVGL animations test staged readiness, override hiding and freshness before and during
+slide-out. The default ESP32 enables `CAP_DESK_V1` only after all base widgets,
+notification lifecycle bindings and a nonzero immutable per-boot identity are ready.
+Session readiness still requires calibrated coherent synchronization. Complete joint
+profile acceptance, physical layouts/resources and the broader product gates remain
+separate from that capability. Actual frozen default Main/Compose assemblies have
+passed native capable/API pairing; that is not physical pixel acceptance.
+Telemetry software precursors do not establish whole D2/E2 acceptance. DESK STATS
+revision floors remain connection-scoped across source changes. Unknown/unavailable
+Twitch measurements render `--`, distinct from observed zero; a source-switch control
+invalidates prior-source values before the next render or card reveal. Actual LinkSession
+and LVGL memory-display regressions cover these paths without claiming physical pixels.
+See [controller boundaries and verification](docs/desk-controller.md) for interfaces,
+test commands and the required integration order. Host tests are not LCD evidence.
+An explicitly invoked [actual TCP application peer](docs/runtime-pairing.md) now
+pairs LinkSession/Controller/Receiver and real LVGL callbacks with a current-source
+Scala relay. Classic reconnect/replay and ten-card pressure across eight pending
+slots pass. `--require-desk` makes real capable synchronization, complete socket-written
+reports and two ordered generic lifecycles mandatory; classic fallback then fails the
+combined command. Exact frozen production Main/Compose artifacts pass this native
+software gate; complete profile acceptance and physical visual validation remain pending. A separate
+synthetic socket test verifies the executable's observation and short-write paths;
+synthetic traffic is not capable-relay or physical acceptance. A separate actual
+application recovery regression retains eight cards across a synthetic TCP reconnect,
+verifies zero-credit control/CPU expiry and completes their real LVGL lifecycles.
+Per-connection readiness, actual adapter visibility and complete report control/base
+fields are recorded; no report or ACK is presented as physical rendering evidence.
+Focused [writer and continuous-control gates](docs/runtime-pairing.md#actual-kernel-writer-and-continuous-control)
+now exercise real kernel backpressure on the Linux firmware socket and installed
+capable relay session, plus 121 override/source/episode changes beneath a long
+active generic card. Every report/view and sampled remotely accepted control are
+checked. These focused software tests do not enable the default ESP32 profile,
+certify complete provider/source teardown or replace physical LCD/soak acceptance.
+A separate [default Main process-restart gate](docs/runtime-pairing.md#default-production-process-restart-recovery)
+now proves persisted intent, fresh-epoch cursor/credit reset, retained original
+card identities, waiting expiry and actual LVGL completion through a test-owned
+relay outage. Application observations include both epoch and connection ID;
+connection IDs may repeat after restart. Missing RAM telemetry stays hidden at
+every reveal. This is not a suspend/provider, Docker-restart or board claim.
+A separate [actual process-suspension gate](docs/runtime-pairing.md#default-production-process-suspension-recovery)
+stops only its owned native child for over sixty seconds against frozen Main.
+It verifies receiver-gap invalidation before resumed views, original waiting expiry,
+current source/control fences, conserved reconnect credit and full active/offline
+card completion. This is not machine suspend, live provider or default ESP32 proof;
+physical/network/soak acceptance and complete-profile advertisement stay gated.
 
 ## 🚀 Quick start
 
@@ -58,6 +120,9 @@ On Linux, also run the sanitizer gate:
 
 ```sh
 ../.venv-pio/bin/pio test -e native-sanitized
+../.venv-pio/bin/pio test -e native-lvgl
+../.venv-pio/bin/pio test -e native-lvgl-base
+../.venv-pio/bin/pio test -e native-generic
 ```
 
 Once the correct device is connected, upload and inspect it:
@@ -69,7 +134,7 @@ Once the correct device is connected, upload and inspect it:
 
 The monitor uses 115200 baud. Close it before another upload. For explicit port selection, OS setup and BOOT-button recovery, use the complete [firmware setup guide](../docs/guides/firmware-setup.md).
 
-Before first boot, start the [LAN-reachable simulated relay](../docs/guides/firmware-setup.md#start-a-relay-the-physical-device-can-reach) and leave it running. The [first simulated stream tutorial](../docs/guides/first-simulated-stream.md) is a separate local exercise whose loopback-only listener cannot accept a physical ESP32. Management authentication is required even in simulated mode. The old Python/NDJSON demo is incompatible with TSB/3.
+For relay-backed simulated stats/cards, start the [LAN-reachable simulated relay](../docs/guides/firmware-setup.md#start-a-relay-the-physical-device-can-reach) before boot and leave it running. Standalone Generic can instead fetch public photos/weather with Wi-Fi/internet and no relay. The [first simulated stream tutorial](../docs/guides/first-simulated-stream.md) is a separate local exercise whose loopback-only listener cannot accept a physical ESP32. Management APIs require no application credentials; trusted private-network isolation plus Host/Origin defenses define the boundary. Twitch OAuth remains separate. The old Python/NDJSON demo is incompatible with TSB/3.
 
 ## 🔌 Wiring
 
@@ -109,14 +174,30 @@ LVGL and application callbacks remain on the Arduino loop. Network work must kee
 
 ## 🧪 Verification and limits
 
+The DESK software precursors are described in [desk-controller.md](docs/desk-controller.md).
+Negotiated generic cards reuse the existing widgets with compact metadata and a
+wrapped, ellipsized body, or a multiline headline when bodyless. Classic cards keep
+their original layout, including after retained cards cross a reconnect. Layout
+choice never determines notification provenance or admission policy.
+
+Boot setup supplies a nonzero, ephemeral 64-bit correlation identity once before
+network initialization. Reconnect and classic fallback do not replace it. This is
+not a credential or a guarantee of uniqueness. The production receiver still has
+`profileReady=false`: a boot identity does not enable `CAP_DESK_V1`. The default
+ESP32 profile and complete joint profile acceptance remain pending;
+verified native production pairing does not close those gates.
+
 From the repository root:
 
 ```sh
 python3 tools/check_protocol_vectors.py
+python3 twitch-screen-firmware/tools/test_pairing_runbook.py
 .venv-pio/bin/python twitch-screen-firmware/tools/test_runner_contract.py
 ```
 
 This checks the shared normative protocol vectors. Native tests and an ESP32 compile establish software results; they do not establish physical LCD rendering, Wi-Fi outage recovery or watchdog behavior on hardware. Record those observations separately after any upload.
+
+Every minute, bounded [runtime measurements](docs/runtime-measurements.md) report cumulative loop/UI timing upper bounds and sampled heap/block/stack minima. Native tests verify the measurement arithmetic, not physical performance or continuous allocator minima.
 
 Boot logs report watchdog initialization/subscription status and the configured 10-second timeout. Every minute the loop reports its minimum free stack in bytes. Exercise live cards, long text, replay bursts and reconnects before recording hardware headroom; no measured minimum is asserted by host tests. LVGL allocation/assertion failures halt rendering with a repeated serial diagnostic while keeping the idle task/watchdog fed, avoiding an allocation-triggered reboot loop. UART diagnostics are dropped when the output buffer is full so replay cannot block the display loop.
 
@@ -130,5 +211,5 @@ PlatformIO commands share a package store: do not run installs/builds concurrent
 - [Hardware build guide](../docs/guides/device-build.md) — parts, printing, wiring and assembly.
 - [Troubleshooting](../docs/guides/troubleshooting.md) — display colors, upload failures and connection logs.
 - [Relay setup](../docs/guides/relay-setup.md) and [Twitch application setup](../docs/guides/twitch-app-setup.md).
-- [PLAN.md](PLAN.md) — historical design notes and roadmap; some earlier status entries predate the current relay and enclosure.
+- [PLAN.md](../docs/reference/desk-contract.md) — historical design notes and roadmap; some earlier status entries predate the current relay and enclosure.
 - [Project overview](../README.md).

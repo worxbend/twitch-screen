@@ -28,7 +28,9 @@ final case class Alert(
     severity: AlertSeverity,
     message: String,
     raisedAt: Instant,
-    status: AlertStatus
+    status: AlertStatus,
+    relayEpoch: Option[String] = None,
+    sourceGeneration: Option[Long] = None
 ) derives Schema
 
 /** Why an acknowledgement could not be applied. */

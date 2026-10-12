@@ -1,0 +1,16 @@
+[Unit]
+Description=Twitch Screen user-session companion
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/twitch-screen-client/venv/bin/twitch-screen-client run
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=5
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,154 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Twitch Screen — A small display for your whole desk.</title>
+  <meta name="description" content="A DIY round ESP32 desk display. Explore existing notification and Twitch features, the planned desk update, and the parts and source to build one.">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta property="og:title" content="Twitch Screen — A small display for your whole desk.">
+  <meta property="og:description" content="A DIY round ESP32 display. The multi-purpose desk update is in development.">
+  <meta property="og:type" content="website">
+  {{canonical}}
+  <link rel="icon" type="image/svg+xml" href="{{base}}assets/orbit.svg">
+  <link rel="stylesheet" href="{{base}}assets/site.css">
+  <script type="module" src="{{base}}assets/demo.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header>
+    <a class="brand" href="{{base}}">Twitch Screen</a>
+    <nav aria-label="Main navigation">
+      <a href="#uses">Everyday uses</a><a href="#build">Build one</a><a href="https://github.com/worxbend/twitch-screen">Source</a>
+    </nav>
+  </header>
+  <main id="main" tabindex="-1">
+    <section class="hero" aria-labelledby="hero-title">
+      <div>
+        <h1 id="hero-title">A small display for your whole desk.</h1>
+        <p class="lead">A round ESP32 display for useful messages and optional Twitch stats. The next update adds more of your desk, not more cloud.</p>
+        <div class="actions"><a class="button primary" href="#build">Build one</a><a class="button" href="https://github.com/worxbend/twitch-screen">View source</a></div>
+        <p class="status">The multi-purpose desk update is in development. Existing source and planned features are separated below. No desktop, physical-display or complete-release acceptance is claimed here.</p>
+      </div>
+      <figure class="demo paused">
+        <div class="display-shell">
+          <svg class="orbit" viewBox="0 0 240 240" width="240" height="240" role="img" aria-labelledby="demo-title demo-description">
+            <title id="demo-title">Local orbital screensaver illustration</title>
+            <desc id="demo-description">Three slow arcs surround a dark round face. The appearance button changes to amber and gray arcs with a steady connection-loss mark. This is not a physical display capture.</desc>
+            <circle cx="120" cy="120" r="119" fill="#080C12"/>
+            <g fill="none">
+              <circle class="arc inner" cx="120" cy="120" r="70" stroke="#185B63" stroke-width="3" stroke-dasharray="330 110"/>
+              <circle class="arc middle" cx="120" cy="120" r="89" stroke="#326F91" stroke-width="4" stroke-dasharray="420 140"/>
+              <circle class="arc outer" cx="120" cy="120" r="108" stroke="#6B598B" stroke-width="2" stroke-dasharray="520 159"/>
+              <path class="loss" d="M110 121a14 14 0 0 1 20 0m-15 5a7 7 0 0 1 10 0m-15-19 20 30" stroke="#A6BDC7" stroke-width="2"/>
+            </g>
+          </svg>
+          <div id="demo-card" class="demo-card" tabindex="0" hidden role="group" aria-label="Synthetic generic card illustration">
+            <p class="card-meta">MESSAGE · SYNTHETIC</p>
+            <p id="card-title" class="card-title">Build finished</p>
+            <p id="card-body">Synthetic example. Your build is ready to inspect.</p>
+          </div>
+        </div>
+        <div class="demo-controls"><button id="pause-motion" type="button" aria-pressed="true" disabled>Resume motion</button><button id="change-appearance" type="button" aria-pressed="false" disabled>Show disconnected appearance</button></div>
+        <div class="demo-controls" role="group" aria-label="Manual synthetic card tour">
+          <button id="show-card" type="button" aria-controls="demo-card" disabled>Preview text card</button>
+          <button id="show-headline" type="button" aria-controls="demo-card" disabled>Preview bodyless card</button>
+          <button id="finish-card" type="button" aria-controls="demo-card" disabled>Finish illustration</button>
+        </div>
+        <p id="tour-note" aria-live="polite">Manual illustration: no sending, device timers or queue simulation. Change the base appearance during a card, then finish it.</p>
+        <p id="appearance-label" aria-live="polite">Connected appearance — illustration</p>
+        <p id="motion-note">Static without JavaScript. No relay connection.</p>
+        <figcaption>Original browser illustration of the planned orbital screensavers. Not LCD rendering, timing or performance evidence.</figcaption>
+        <noscript><p>Controls require JavaScript. The static illustration and every documentation link work without it.</p></noscript>
+      </figure>
+    </section>
+    <section id="uses" aria-labelledby="uses-title">
+      <h2 id="uses-title">Useful things, one small circle.</h2>
+      <p>Generic cards are independent overlays, not a competing dashboard. The planned control remembers a non-Twitch preference while Twitch takes base-screen priority.</p>
+      <ul class="feature-list">{{features}}</ul>
+    </section>
+    <section id="architecture" aria-labelledby="architecture-title">
+      <h2 id="architecture-title">Your sources. Your network. Your display.</h2>
+      <p>The desk update keeps ingestion, selected display and data freshness separate. These are the target relationships, not a claim that every new path is implemented.</p>
+      <ol class="flow">
+        <li><strong>Sources and clients</strong>Generic API producers, an opt-in Linux companion, external weather and optional Twitch integration.</li>
+        <li><strong>Private relay</strong>The Scala relay accepts cards, holds latest telemetry and sends compact TSB/3 frames. The planned admin panel stays on this private origin.</li>
+        <li><strong>ESP32 and round LCD</strong>The device presents cards and dashboards. Planned local orbits run without providers; retained eligible generic cards can finish offline.</li>
+      </ol>
+      <p>Weather and CPU are unavailable when the relay link is down, even if a cached value has not expired. Active cards finish; stale or missing telemetry must not reappear underneath.</p>
+      <p class="status">Keep management and the plain TCP device link on a trusted LAN or VPN. Never expose management ports publicly. The credential-free HTTP boundary in this checkout lets any reachable peer read and control the relay; network isolation is essential. Local private-HTTPS health, docs and notification read-back passed a certificate-verifying container smoke test. Real mobile trust and provider consent remain untested.</p>
+    </section>
+    <section id="build" aria-labelledby="build-title">
+      <h2 id="build-title">Build it, in a sensible order.</h2>
+      <p>The root quickstart is credential-free in this checkout. Older guides are marked for migration; do not follow obsolete Basic/Bearer setup steps. The multi-purpose runtime remains incomplete.</p>
+      <ol class="steps">
+        <li><strong>Start with software.</strong> <a href="https://github.com/worxbend/twitch-screen/blob/main/README.md#first-success-without-twitch">Run the credential-free generic quickstart</a>. No hardware, Twitch account or management token is needed. Remove obsolete nonempty auth settings before startup.</li>
+        <li><strong>Choose and measure your parts.</strong> <a href="https://github.com/worxbend/twitch-screen/blob/main/docs/guides/device-build.md">Read the BOM, wiring and assembly guide</a>. Target: ESP32 DevKit and a 240 × 240 round LCD. Board clones vary; physical enclosure fit remains a validation task.</li>
+        <li><strong>Print and configure.</strong> <a href="https://github.com/worxbend/twitch-screen/tree/main/twitch-screen-cad-design">Inspect CAD sources and print exports</a>, then <a href="https://github.com/worxbend/twitch-screen/blob/main/docs/guides/firmware-setup.md">configure and build firmware</a>. Wi-Fi credentials belong on your device, never on this site.</li>
+        <li><strong>Add integrations deliberately.</strong> <a href="https://github.com/worxbend/twitch-screen/blob/main/docs/guides/relay-setup.md">Read relay deployment guidance</a> and <a href="https://github.com/worxbend/twitch-screen/blob/main/docs/guides/twitch-app-setup.md">optional Twitch setup</a>. Provider consent and display selection are different actions.</li>
+      </ol>
+      <div id="upgrade-guidance" aria-labelledby="upgrade-guidance-title">
+        <h3 id="upgrade-guidance-title">Upgrade an existing deployment deliberately.</h3>
+        <p>Old management credentials do not protect this checkout. Restrict reachable HTTP and device TCP to a trusted LAN or VPN before upgrading. Provider OAuth remains separate from management access.</p>
+        <p>Back up operator configuration, Twitch tokens and runtime intent privately. Do not delete grants or token volumes. HTTP hold duration is now 100–30000 ms; waiting expiry is separate. Legacy devices do not gain device waiting-expiry, control or report guarantees. Complete production DESK/1 and rollback acceptance remain pending.</p>
+        <div class="actions" aria-label="Upgrade documentation">
+          <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/docs/guides/migration.md#compatibility-today">Compatibility and migration</a>
+          <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/docs/guides/migration.md#backup-and-rollback">Backup and rollback guidance</a>
+        </div>
+      </div>
+      <div id="verification-guidance" aria-labelledby="verification-guidance-title">
+        <h3 id="verification-guidance-title">Verify the installed path, not just a codec.</h3>
+        <p>Use a separate test-owned relay and synthetic notification bus; never an existing service. The software runbooks exercise the installed companion, documented Compose deployment and native firmware application. Native LVGL observations are software evidence, not LCD pixels.</p>
+        <p>HTTP acceptance, socket-written reports and visible adapter revisions prove different layers. Numeric CPU/memory application needs matching measured values and presence fields, not just a revision. Default ESP32 DESK/1 advertisement and complete product acceptance remain pending. Physical checks need verified board ownership, private configuration, LCD observation and measured resource/soak evidence; live checks need verified provider and OBS prerequisites.</p>
+        <p>Finite software checks cover baseline/current peer compatibility, retained-eight reconnect and measured CPU/memory application. The baseline firmware row exercises transport and queue code, not an LCD. These checks do not accept the default ESP32, complete provider/suspend behavior or the private admin panel.</p>
+        <p>Correlate application views, numeric values and reports by relay epoch, connection and revision. Matching connection numbers alone cannot join observations across relay restarts. An unknown queue is not an empty queue. Keep unsupported, uncalibrated, stale and historical observations distinct from a fresh reported FIFO. Snapshot and pushed-feed evidence do not replace panel, deployment or LCD acceptance.</p>
+        <div class="actions" aria-label="Verification documentation">
+          <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/twitch-screen-client/README.md#companion-to-native-application-compose-check">Installed companion and Compose pairing</a>
+          <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/twitch-screen-firmware/docs/runtime-pairing.md#canonical-production-api-and-retained-eight-application-gate">Native production application checks</a>
+          <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/docs/guides/end-to-end-testing.md#physical-and-live-prerequisites">Physical and live prerequisites</a>
+          <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/twitch-screen-firmware/docs/runtime-pairing.md#actual-baselinecurrent-four-peer-compatibility">Baseline/current software matrix</a>
+        </div>
+      </div>
+    </section>
+    <section id="integrations" aria-labelledby="integrations-title">
+      <h2 id="integrations-title">Small API. Explicit guarantees.</h2>
+      <p>The existing notification route is <code>POST /api/v1/notifications</code>. A synthetic bodyless card payload:</p>
+      <pre aria-label="Synthetic notification JSON"><code>{{example}}</code></pre>
+      <p>No request runs here. <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/docs/reference/http-api.md">Read the mounted HTTP API guidance</a> for your private deployment. <code>ttlMs</code> is screen hold duration; <code>expiresInMs</code> is the relay waiting lifetime. Both are accepted by the notification HTTP route in this checkout. Legacy devices cannot enforce waiting expiry after transmission. Complete DESK/1 device expiry and recovery acceptance remain pending. HTTP acceptance, enqueue ACK and firmware lifecycle reports are not proof of pixels.</p>
+      <p>Weather stays externally supplied. Companion CPU and memory are measured host values, not inferred ESP32 load. Forwarded notification content becomes readable by reachable relay peers and anyone near the physical display.</p>
+      <div id="companion-guidance" aria-labelledby="companion-guidance-title">
+        <h3 id="companion-guidance-title">Explore the Linux companion deliberately.</h3>
+        <p>The companion has installable source and isolated integration tests, not complete product acceptance. Supported desktop, installed service and physical display acceptance remain pending.</p>
+        <p>Notification forwarding starts disabled. After explicit enable, summary-only is the default; bodies need a separate opt-in. Application-name filters are not authenticated sender identities. Capture covers supported Freedesktop Notify submissions, not every portal or native notification path, guaranteed popups or remote cancellation.</p>
+        <p>CPU sampling and delivery stay independent when capture fails. Fresh CPU data does not prove notification capture is healthy. Missing memory is absent, not measured zero. Read configuration and privacy guidance before running the foreground client; service installation is a separate step after prerequisites.</p>
+        <div class="actions" aria-label="Companion documentation">
+          <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/twitch-screen-client/README.md#configure-and-run">Companion configuration</a>
+          <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/twitch-screen-client/README.md#privacy-and-capture-scope">Notification privacy and scope</a>
+          <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/twitch-screen-client/README.md#measurement-and-delivery-semantics">Measurement and delivery limits</a>
+        </div>
+      </div>
+      <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/docs/reference/desk-contract.md">Read the target desk contract</a>
+    </section>
+    <section id="project" aria-labelledby="project-title">
+      <h2 id="project-title">Made to inspect, build and improve.</h2>
+      <div class="details">
+        <div><h3>Source and contributions</h3><p>Source is available on GitHub. Original-contribution license texts and mapping are present in this checkout: MIT for original software, CC BY 4.0 for original docs/media, CERN OHL P v2 for original hardware designs. <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/LICENSE.md">Read the license map</a> and <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/THIRD_PARTY_NOTICES.md">Unresolved third-party rights</a>. This does not establish whole-repository clearance or relicense third-party assets.</p><p>Only newly authored illustrations are bundled here. No product photos, Twitch logos, downloaded fonts or external trackers.</p><a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/CONTRIBUTING.md">Contribution guide</a></div>
+        <div><h3>What still needs evidence</h3><p>Production desk integration, supported desktop capture/service behavior, physical text and animation, resource headroom, enclosure fit and scoped live-provider acceptance remain pending. Browser illustrations cannot close these gates.</p><p>Software access has no paid gate here. Parts, printing, hosting and provider use may cost money.</p><a class="button" href="https://github.com/worxbend/twitch-screen/issues">Report an issue</a></div>
+      </div>
+      <div id="illustration-rights" aria-labelledby="illustration-rights-title">
+        <h3 id="illustration-rights-title">Reuse the original site illustrations with attribution.</h3>
+        <p>Credit Twitch Screen contributors, link the illustration source and CC BY 4.0 license, and identify your changes. Retain supplied notices and the disclaimer of warranties. No trademark rights or endorsement is granted.</p>
+        <p>This scope does not clear firmware artwork, photographs, imported CAD references or third-party binary obligations. The original vectors are browser illustrations, not physical display evidence; project-wide rights and publication review remain pending.</p>
+        <div class="actions" aria-label="Illustration attribution documentation">
+          <a class="button" href="https://github.com/worxbend/twitch-screen/tree/main/site/assets">Original illustration sources</a>
+          <a class="button" href="https://github.com/worxbend/twitch-screen/blob/main/LICENSES/CC-BY-4.0.txt">CC BY 4.0 license text</a>
+          <a class="button" href="{{base}}assets/provenance.json">Site asset attribution record</a>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer><p>Independent DIY project. Not affiliated with Twitch. This public static page is separate from the private relay admin panel.</p><p><a href="{{base}}assets/provenance.json">Site asset attribution</a> · <a href="https://github.com/worxbend/twitch-screen/blob/main/site/README.md">Site build and verification</a></p></footer>
+</body>
+</html>

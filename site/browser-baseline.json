@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "channel": "Stable",
+  "version": "155.0.8059.39",
+  "revision": "1697595",
+  "platform": "linux64",
+  "url": "https://storage.googleapis.com/chrome-for-testing-public/155.0.8059.39/linux64/chrome-headless-shell-linux64.zip",
+  "sha256": "39dcb8c46550632a3d911850ab3b8af840b4e3f6d8622faa2018eb8756278786",
+  "archiveBytes": 124203329,
+  "executable": "chrome-headless-shell-linux64/chrome-headless-shell",
+  "reviewedAt": "2026-10-11",
+  "releaseSource": "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json",
+  "crossCheckSource": "https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Linux&num=3"
+}

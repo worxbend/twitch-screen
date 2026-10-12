@@ -1,34 +1,33 @@
 # ⚙️ Relay configuration reference
 
+> Desk-update migration notice: management Basic/Bearer instructions in this historical guide are obsolete for this checkout. Nonempty `RELAY_HTTP_AUTH_*` settings fail startup; Authorization confers no privilege. Use the [current root quickstart](../../README.md#first-success-without-twitch), [migration guide](../guides/migration.md) and [implementation status](../implementation-status.md). Trusted-network isolation is mandatory. Clock/display/weather/CPU ingress and durable desired display intent are mounted. Default-relay DESK delivery, admin snapshot/SSE/panel and runtime-monitoring APIs are mounted; complete default-target/provider/physical acceptance remains pending.
+
 [Guidebook](../README.md) · [Relay setup](../guides/relay-setup.md) · [Twitch setup](../guides/twitch-app-setup.md) · [HTTP API](http-api.md)
 
 The source of truth is [resources/application.conf](../../twitch-screen-relay/resources/application.conf), with startup validation in [Config.scala](../../twitch-screen-relay/src/twitchscreen/relay/config/Config.scala) and [HttpAuthConfig.scala](../../twitch-screen-relay/src/twitchscreen/relay/config/HttpAuthConfig.scala). Settings are read at startup. The HTTP configuration endpoint is read-only.
 
 The tables below list **every explicit `RELAY_*` environment override** in the shipped configuration. Advanced settings further down have HOCON keys only; an invented environment name has no effect.
 
-## Management HTTP and authentication 🔑
+## Private management HTTP 🔑
+
+Management needs no credentials. Anyone reaching this listener can inspect and control the relay; trusted-network isolation is mandatory. Authorization confers no privilege. Nonempty obsolete `RELAY_HTTP_AUTH_*` settings fail startup.
 
 | Environment variable | HOCON key | Default | Meaning / constraint |
 |---|---|---|---|
-| `RELAY_HTTP_HOST` | `http.host` | `0.0.0.0` | HTTP bind address |
+| `RELAY_HTTP_HOST` | `http.host` | `127.0.0.1` | Native HTTP bind; container binds internally to all interfaces |
 | `RELAY_HTTP_PORT` | `http.port` | `8080` | HTTP port, 1–65535 |
-| `RELAY_HTTP_AUTH_API_TOKEN` | `http.auth.api-token` | Empty | Bearer credential; at least 32 UTF-8 bytes in the accepted ASCII alphabet |
-| `RELAY_HTTP_AUTH_BASIC_USERNAME` | `http.auth.basic-username` | Empty | Basic username; no colon, control characters, or surrounding whitespace |
-| `RELAY_HTTP_AUTH_BASIC_PASSWORD_HASH` | `http.auth.basic-password-hash` | Empty | Salted PBKDF2-SHA256 verifier; requires a Basic username |
+| `RELAY_HTTP_ALLOWED_HOSTS` | `http.allowed-hosts` | localhost/IPv4/IPv6 loopback authorities on 8080 | Exact allowed authorities |
+| `RELAY_HTTP_ALLOWED_ORIGINS` | `http.allowed-origins` | Matching HTTP loopback origins | Exact allowed browser origins |
+| `RELAY_HTTP_PUBLIC_ORIGIN` | `http.public-origin` | Empty | Optional exact private HTTPS origin |
+| `RELAY_HTTP_TRUSTED_PROXIES` | `http.trusted-proxies` | Empty | Exact immediate proxy IPs, not chains or forwarded client identities |
 
-At least one complete authentication method is mandatory **in every mode**. If both are configured, either can authorize a request. Half-configured Basic credentials fail startup even with a valid Bearer token.
-
-The Bearer alphabet is `A–Z`, `a–z`, `0–9`, `.`, `_`, `~`, `+`, `/`, `-`, with optional trailing `=`. `openssl rand -hex 32` generates an accepted 64-character random value. An ordinary sentence, token with spaces, or short default is rejected.
-
-The exact Basic verifier format is `pbkdf2-sha256$600000$<base64-salt>$<base64-key>`, with a 16–64-byte salt and 32-byte derived key. Generate it with `python3 tools/hash_management_password.py` from `twitch-screen-relay/`. Keep literal dollar signs by single-quoting a saved verifier in shell or Compose environment files.
-
-Neither listener terminates TLS. See the [network guide](../guides/relay-setup.md#network-boundaries-and-https-) before exposing management credentials beyond localhost.
+Neither relay listener terminates TLS. The [dedicated Caddy topology](../../twitch-screen-relay/deploy/private-https/README.md) has independently passed certificate-verified HTTPS and notification readback. A loopback-published Docker port does not make its upstream peer loopback. Mobile CA/consent and production SSE remain unverified.
 
 ## Device listener 📡
 
 | Environment variable | HOCON key | Default | Meaning / constraint |
 |---|---|---|---|
-| `RELAY_DEVICE_HOST` | `device-link.host` | `0.0.0.0` | TCP bind address |
+| `RELAY_DEVICE_HOST` | `device-link.host` | `127.0.0.1` | Native TCP bind; container binds internally to all interfaces |
 | `RELAY_DEVICE_PORT` | `device-link.port` | `8099` | TCP port, 1–65535; match firmware `SERVER_PORT` |
 | `RELAY_DEVICE_IDLE_TIMEOUT` | `device-link.idle-timeout` | `90 seconds` | Accepted duration must have 1–65535 whole seconds; longer than ping interval |
 
@@ -51,7 +50,7 @@ The listener accepts **TSB/3** only. The firmware connects to the relay's reacha
 | `simulated` | Repeating synthetic stream activity and chat | No |
 | `live` | Helix polling, anonymous IRC, and EventSub | Yes, plus broadcaster consent for scoped data |
 
-The Dockerfile defaults to `disabled`; **Compose overrides this to `simulated`**. The numeric broadcaster ID is resolved from the login. The selected mode determines which Twitch HTTP routes exist.
+The Dockerfile and base Compose default to `disabled`. Compose explicitly interpolates mode/channel/chat overrides; arbitrary host variables are not automatically forwarded.
 
 ## Broadcaster OAuth 🔐
 
@@ -81,7 +80,7 @@ WebSocket transport opens an outbound connection. Webhook transport requires Twi
 
 | Environment variable | HOCON key | Default | Meaning / constraint |
 |---|---|---|---|
-| `RELAY_NOTIFICATION_TTL` | `notifications.default-ttl` | `8 seconds` | Default for manual HTTP notifications only; 1–6553500 milliseconds |
+| `RELAY_NOTIFICATION_TTL` | `notifications.default-ttl` | `8 seconds` | Legacy setting; HTTP POST now always defaults to 8000 ms |
 | `RELAY_CHAT_NOTIFICATIONS` | `notifications.chat` | `hide` | `show` or `hide`; case-insensitive |
 | `RELAY_IGNORED_DISPLAY_NAMES` | `notifications.ignored-display-names` | `streamelements,nightbot,moobot,streamlabs,fossabot,sery_bot` | Comma-separated display names; replaces the default list |
 | `RELAY_STATS_INTERVAL` | `stats.broadcast-interval` | `5 seconds` | Positive interval between device stats broadcasts |
@@ -90,7 +89,24 @@ Chat `hide` suppresses individual chat **cards**; accepted chat still feeds coun
 
 Customizing the ignored list replaces it wholesale. Include the defaults in your value when you want to add one more bot. List parsing accepts either a HOCON list or a comma-separated environment value.
 
-Live and simulated Twitch event cards use protocol-defined TTLs: follows/chat 6 seconds; subs/gifts/Bits and generic kinds 8 seconds; raids and stream transitions 10 seconds. `RELAY_NOTIFICATION_TTL` affects only `POST /api/v1/notifications` when `ttlMs` is omitted. Wire TTL is encoded in deciseconds; see the [protocol](../../twitch-screen-firmware/docs/PROTOCOL.md) for rounding and payload limits.
+Live and simulated Twitch event cards use protocol-defined TTLs: follows/chat 6 seconds; subs/gifts/Bits and generic kinds 8 seconds; raids and stream transitions 10 seconds. `POST /api/v1/notifications` defaults to 8000 ms independently of `RELAY_NOTIFICATION_TTL`; the relay warns when the legacy setting differs. Wire TTL is encoded in deciseconds; see the [protocol](../../twitch-screen-firmware/docs/PROTOCOL.md) for rounding and payload limits.
+
+## Built-in weather
+
+See [weather setup and device selection](../guides/weather.md). One relay-owned Open-Meteo source supplies all connected devices; it is disabled by default and requires no key for the provider's non-commercial endpoint. The ESP32 receives TCP snapshots, not provider credentials or an HTTP fetch loop.
+
+| Environment variable | HOCON key | Default | Meaning / constraint |
+|---|---|---|---|
+| `RELAY_WEATHER_ENABLED` | `weather.enabled` | `false` | Enable backend collection independently of Twitch |
+| `RELAY_WEATHER_LATITUDE` | `weather.latitude` | `50.45466` | Finite latitude −90–90 |
+| `RELAY_WEATHER_LONGITUDE` | `weather.longitude` | `30.5238` | Finite longitude −180–180 |
+| `RELAY_WEATHER_LOCATION` | `weather.location` | `Kyiv` | Nonblank display label; maximum 128 Unicode scalar values |
+| `RELAY_WEATHER_UNIT` | `weather.unit` | `celsius` | `celsius` or `fahrenheit` |
+| `RELAY_WEATHER_REFRESH_INTERVAL` | `weather.refresh-interval` | `5 minutes` | 30 seconds–24 hours; longer than request timeout |
+| `RELAY_WEATHER_FRESHNESS` | `weather.freshness` | `15 minutes` | 1 second–30 minutes, whole milliseconds |
+| `RELAY_WEATHER_REQUEST_TIMEOUT` | `weather.request-timeout` | `10 seconds` | 100 ms–60 seconds; shorter than refresh interval |
+
+The fixed HTTPS provider origin refuses redirects and bounds response size. Failed refreshes preserve the last good value's original expiry. No provider request is issued while disabled. The latest slot remains readable through `/api/v1/weather` and the admin feed. Dashboard selection is separate durable display intent; turn off the Twitch display override to show weather while live Twitch monitoring continues.
 
 ## Activity and alerts 🚨
 

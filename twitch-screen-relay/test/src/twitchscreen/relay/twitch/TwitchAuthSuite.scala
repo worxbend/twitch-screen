@@ -351,23 +351,23 @@ class TwitchAuthSuite extends munit.FunSuite:
 
   private val bothScopes = List(TwitchScopes.Followers, TwitchScopes.Subscriptions)
 
-  tempDir.test("the broadcaster token provider supplies a scoped token only for the configured channel's own grant"): dir =>
+  tempDir.test("the broadcaster token provider supplies a scoped token only for the resolved numeric broadcaster's own grant"): dir =>
     supervised:
       val clock = MovableClock(start)
       val auth = newAuth(dir, clock, ScriptedTwitch(clock))
       auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
-      val own = TokenProvider.broadcaster(auth, "somechannel")
+      val own = TokenProvider.broadcaster(auth, "1234")
       assertEquals(bothScopes.map(own.tokenFor), List(Some(FirstAccess), Some(FirstAccess)))
-      assertEquals(TokenProvider.broadcaster(auth, "SomeChannel").tokenFor(TwitchScopes.Followers), Some(FirstAccess))
-      val other = TokenProvider.broadcaster(auth, "otherchannel")
-      assertEquals(bothScopes.map(other.tokenFor), List(None, None), "a grant owned by another login must not be used")
+      assertEquals(TokenProvider.broadcaster(auth, "1234").tokenFor(TwitchScopes.Followers), Some(FirstAccess))
+      val other = TokenProvider.broadcaster(auth, "9999")
+      assertEquals(bothScopes.map(other.tokenFor), List(None, None), "a grant owned by another numeric identity must not be used")
 
   tempDir.test("the broadcaster token provider withholds a scope the grant lacks"): dir =>
     supervised:
       val clock = MovableClock(start)
       val auth = newAuth(dir, clock, ScriptedTwitch(clock))
       auth.completeAuthorization("partial", stateOf(auth.beginAuthorization())).discard
-      val provider = TokenProvider.broadcaster(auth, "somechannel")
+      val provider = TokenProvider.broadcaster(auth, "1234")
       assertEquals(provider.tokenFor(TwitchScopes.Followers), None)
       assertEquals(provider.tokenFor(TwitchScopes.Subscriptions), Some(FirstAccess))
 
@@ -377,7 +377,7 @@ class TwitchAuthSuite extends munit.FunSuite:
       val auth = newAuth(dir, clock, ScriptedTwitch(clock))
       auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
       clock.now = start.plusSeconds(4 * 3600)
-      val provider = TokenProvider.broadcaster(auth, "somechannel")
+      val provider = TokenProvider.broadcaster(auth, "1234")
       assertEquals(bothScopes.map(provider.tokenFor), List(None, None))
       assert(auth.view.held.isDefined, "the grant is retained for refresh, just not supplied")
 
@@ -386,7 +386,7 @@ class TwitchAuthSuite extends munit.FunSuite:
       val clock = MovableClock(start)
       val auth = newAuth(dir, clock, ScriptedTwitch(clock))
       auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
-      val provider = TokenProvider.broadcaster(auth, "somechannel")
+      val provider = TokenProvider.broadcaster(auth, "1234")
       provider.reject("access-unrelated")
       assertEquals(provider.tokenFor(TwitchScopes.Followers), Some(FirstAccess), "rejecting a token nobody holds changes nothing")
       provider.reject(FirstAccess)
@@ -399,7 +399,7 @@ class TwitchAuthSuite extends munit.FunSuite:
       val clock = MovableClock(start)
       val auth = newAuth(dir, clock, ScriptedTwitch(clock))
       auth.completeAuthorization("good", stateOf(auth.beginAuthorization())).discard
-      val provider = TokenProvider.broadcaster(auth, "somechannel")
+      val provider = TokenProvider.broadcaster(auth, "1234")
       clock.now = start.plusSeconds(4 * 3600 - 10 * 60)
       auth.maintain()
       assertEquals(provider.tokenFor(TwitchScopes.Followers), Some(SecondAccess))

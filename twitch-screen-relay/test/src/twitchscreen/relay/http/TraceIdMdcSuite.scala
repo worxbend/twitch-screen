@@ -7,11 +7,7 @@ import io.opentelemetry.sdk.OpenTelemetrySdk
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import java.net.URI
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
-import java.nio.charset.StandardCharsets.UTF_8
-import java.util.Base64
 import java.util.concurrent.atomic.AtomicReference
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.PBEKeySpec
 import org.slf4j.MDC
 import ox.{fork, supervised}
 import sttp.client4.*
@@ -32,11 +28,7 @@ class TraceIdMdcSuite extends munit.FunSuite:
   private val incomingTraceId = "4bf92f3577b34da6a3ce929d0e0e4736"
   private val traceparent = s"00-$incomingTraceId-00f067aa0ba902b7-01"
 
-  private val salt = "deterministic-test-salt".getBytes(UTF_8)
-  private val key =
-    SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(PBEKeySpec("password".toCharArray, salt, 600000, 256)).getEncoded
-  private val hash = s"pbkdf2-sha256$$600000$$${Base64.getEncoder.encodeToString(salt)}$$${Base64.getEncoder.encodeToString(key)}"
-  private val auth = HttpAuthConfig("operator", Some(Sensitive(hash)), Some(Sensitive("test-token-is-deliberately-at-least-32-bytes")))
+  private val auth = HttpAuthConfig()
 
   /** What one request saw: the MDC in its handler, the MDC in a fork of that handler, and the handler's current span. */
   private final case class Seen(handlerMdc: String, forkMdc: String, spanTraceId: String)
@@ -84,8 +76,18 @@ class TraceIdMdcSuite extends munit.FunSuite:
         val capture = Capture()
         val api = new ServerEndpoints:
           override val endpoints: List[ServerEndpoint[Any, Identity]] = List(endpoint(capture))
-        val config = HttpConfig(Hostname("127.0.0.1").toOption.get, Port(8080).toOption.get, auth)
-        val binding = HttpApi(List(api), config, sdk).startOnPort(0)
+        val reservation = java.net.ServerSocket(0)
+        val port = reservation.getLocalPort
+        reservation.close()
+        val config = HttpConfig(
+          Hostname("127.0.0.1").toOption.get,
+          Port(port).toOption.get,
+          auth,
+          allowedHosts = List(s"127.0.0.1:$port"),
+          allowedOrigins = List(s"http://127.0.0.1:$port")
+        )
+        val binding = HttpApi(List(api), config, sdk).startOnPort(port)
+        val _ = ox.useInScope(binding)(_.stop())
 
         assertEquals(get(binding.port, List("traceparent" -> traceparent)).statusCode(), 200)
         val traced = capture.take()

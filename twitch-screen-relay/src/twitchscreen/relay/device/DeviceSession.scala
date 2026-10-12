@@ -40,7 +40,10 @@ private[device] object DeviceSession:
   /** §7: a version mismatch needs a reflash, not a retry. Hammering the relay buries the one log line that explains it. */
   private val VersionMismatchBackoff: FiniteDuration = 30.seconds
 
-  def run(socket: Socket, config: DeviceLinkConfig, hub: DeviceHub, clock: Clock): Unit =
+  /** Negotiate the complete DESK profile only with a valid capability/tail; classic peers keep their exact legacy path. Tests may
+    * explicitly disable negotiation to exercise the old-relay/new-device fallback.
+    */
+  def run(socket: Socket, config: DeviceLinkConfig, hub: DeviceHub, clock: Clock, deskEnabled: Boolean = true): Unit =
     val remote = String.valueOf(socket.getRemoteSocketAddress)
     supervised:
       try
@@ -57,14 +60,14 @@ private[device] object DeviceSession:
         // §11.1 rule 2 / §12: both timeouts are budgets for one COMPLETE frame, not per-read waits. SO_TIMEOUT alone restarts
         // on every byte, so a peer trickling one byte every few seconds could hold the handshake, or a half-sent frame, open forever.
         def budget(timeout: FiniteDuration) = FrameBudget(timeout, millis => socket.setSoTimeout(millis))
-        handshake(reader, budget(config.handshakeTimeout), config, counters) match
+        handshake(reader, budget(config.handshakeTimeout), config, counters, deskEnabled) match
           case Left(refusal) =>
             logger.info(s"Refused device at $remote: ${refusal.reason.describe}")
             refuse(sink, refusal)
           case Right(accepted) =>
-            writeBudget.set(config.idleTimeout)
+            writeBudget.set(if accepted.desk.isDefined then 3.seconds else config.idleTimeout)
             val io = SessionIo(socket, remote, sink, counters, config, accepted.caps, accepted.text)
-            serve(reader, budget(config.idleTimeout), io, accepted.hello, hub, clock)
+            serve(reader, budget(config.idleTimeout), io, accepted.hello, hub, clock, accepted.desk)
       finally
         // Closed here in the scope body rather than through a scope finalizer: a finalizer runs only once the scope
         // has joined its forks, and unblocking those forks is exactly what this close is for.
@@ -75,7 +78,12 @@ private[device] object DeviceSession:
     socket.setKeepAlive(true) // second net under the application heartbeat, per §12
 
   /** The accepted `HELLO`, the capabilities negotiated from it, and the text policy those capabilities imply. */
-  private final case class Handshake(hello: DeviceMessage.Hello, caps: Capabilities, text: TextPolicy)
+  private final case class Handshake(
+      hello: DeviceMessage.Hello,
+      caps: Capabilities,
+      text: TextPolicy,
+      desk: Option[DeskGreetingCodec.HelloTail]
+  )
 
   private final case class SessionIo(
       socket: Socket,
@@ -84,7 +92,8 @@ private[device] object DeviceSession:
       counters: LinkCounters,
       config: DeviceLinkConfig,
       caps: Capabilities,
-      text: TextPolicy
+      text: TextPolicy,
+      desk: Option[DeskConnection] = None
   )
 
   /** Why a device was turned away, and the `BYE` it is owed. `version` is the version byte of the frame that provoked the refusal (§6.7),
@@ -105,7 +114,8 @@ private[device] object DeviceSession:
       reader: FrameReader,
       budget: FrameBudget,
       config: DeviceLinkConfig,
-      counters: LinkCounters
+      counters: LinkCounters,
+      deskEnabled: Boolean
   ): Either[Refusal, Handshake] =
     readFrame(reader, budget) match
       case Left(Inbound.Timeout) =>
@@ -117,12 +127,16 @@ private[device] object DeviceSession:
         val version = frame.header.version
         Tsb3Decoder.fromDevice(frame) match
           case Right(hello: DeviceMessage.Hello) =>
-            val caps = Capabilities.RelaySupported.intersect(hello.caps)
+            val desk = if deskEnabled then DeskGreetingCodec.decodeHello(frame).toOption.flatten else None
+            val supported =
+              if desk.isDefined then Capabilities.RelaySupported | Capabilities.fromWire(DeskGreetingCodec.CapabilityBit)
+              else Capabilities.RelaySupported
+            val caps = supported.intersect(hello.caps)
             logger.debug(
               s"Device ${hello.deviceId.value} on firmware '${WireStrings.sanitise(hello.fwVersion.value)}' asked for caps 0x${hello.caps.value.toHexString}, " +
                 s"granted 0x${caps.value.toHexString}, rx_max ${hello.rxMax.value}"
             )
-            Right(Handshake(hello, caps, TextPolicy.forCapabilities(caps)))
+            Right(Handshake(hello, caps, TextPolicy.forCapabilities(caps), desk))
 
           case Right(other) =>
             Left(
@@ -147,22 +161,59 @@ private[device] object DeviceSession:
       io: SessionIo,
       hello: DeviceMessage.Hello,
       hub: DeviceHub,
-      clock: Clock
+      clock: Clock,
+      deskHello: Option[DeskGreetingCodec.HelloTail]
   )(using Ox): Unit =
     import io.*
     val outbound = Channel.buffered[Outbound](config.outboundQueueCapacity)
     val drained = Channel.buffered[Unit](1)
     val connection = attachAndAnnounce(
       hub,
-      AttachRequest(hello.deviceId, remote, Tsb3.Version, hello.lastSeq, caps, outbound, counters, socket, drained)
+      AttachRequest(
+        hello.deviceId,
+        remote,
+        Tsb3.Version,
+        hello.lastSeq,
+        caps,
+        outbound,
+        counters,
+        socket,
+        drained,
+        deskHello,
+        hello.fwVersion.value
+      )
     )
+    val selected = io.copy(desk = hub.desk(connection))
     try
       forkDiscard:
-        try writeLoop(io, outbound)
+        try
+          selected.desk match
+            case Some(owner) => writeDesk(selected, owner)
+            case None        => writeLoop(selected, outbound)
         finally drained.doneOrClosed().discard
-      forkDiscard(heartbeat(outbound, config, counters, clock))
-      hub.detach(connection, readLoop(reader, idle, io))
-    finally outbound.doneOrClosed().discard
+      forkDiscard:
+        selected.desk match
+          case Some(owner) =>
+            forever:
+              sleep(config.pingInterval)
+              if !owner.heartbeat(RelayMessage.Ping(Token.fromWire(clock.instant().getEpochSecond))) then closeQuietly(socket)
+          case None => heartbeat(outbound, config, counters, clock)
+      hub.detach(connection, readLoop(reader, idle, selected))
+    finally
+      selected.desk.foreach(_.close())
+      outbound.doneOrClosed().discard
+
+  @tailrec
+  private def writeDesk(io: SessionIo, owner: DeskConnection): Unit =
+    owner.next() match
+      case None => closeQuietly(io.socket)
+      case Some(value) =>
+        val valid = value.bytes.size <= io.config.maxFrameLength
+        val result =
+          if !valid then WriteResult.Failed
+          else io.sink.writeBytes(value.bytes, (value.bytes(3) & 0xff) == MessageType.Bye.code)
+        owner.written(value, result == WriteResult.Written)
+        if result == WriteResult.Written then writeDesk(io, owner) else closeQuietly(io.socket)
 
   /** Attaches the connection and logs it. `hub.attach` returns a fresh [[ConnectionId]] even when it refuses (stopping / reclaim limit) and
     * queues a final BYE instead; only an admitted connection is logged (K-148).
@@ -188,6 +239,7 @@ private[device] object DeviceSession:
   private def writeLoop(io: SessionIo, outbound: Source[Outbound]): Unit =
     outbound.receiveOrClosed() match
       case frame: Outbound =>
+        io.counters.dequeued()
         writeFrame(io, frame) match
           case WriteResult.Written => writeLoop(io, outbound)
           case WriteResult.Failed  => closeQuietly(io.socket) // a write or encoding failure ends the session
@@ -222,7 +274,7 @@ private[device] object DeviceSession:
 
   /** One heartbeat tick. A full queue counts as a dropped frame (K-151); a closed queue is teardown, not a drop. */
   private[device] def offerPing(outbound: Channel[Outbound], counters: LinkCounters, clock: Clock): Unit =
-    outbound.trySendOrClosed(Outbound(RelayMessage.Ping(Token.fromWire(clock.instant().getEpochSecond)))) match
+    counters.offerQueued(outbound, Outbound(RelayMessage.Ping(Token.fromWire(clock.instant().getEpochSecond)))) match
       case false => counters.recordDropped()
       case _     => ()
 
@@ -255,6 +307,14 @@ private[device] object DeviceSession:
       refuse(sink, refusal)
       Some(refusal.reason)
     else if frame.header.typeCode.known.contains(MessageType.Hello) then duplicateHello(sink, frame)
+    else if desk.isDefined && frame.header.typeCode.value == 0x06 then
+      DeskReportCodec.decode(frame).flatMap(desk.get.report) match
+        case Right(_)     => None
+        case Left(detail) => Some(DisconnectReason.ProtocolViolation(detail))
+    else if desk.isDefined && frame.header.typeCode.value == DeskTimeCodec.RequestCode then
+      DeskTimeCodec.decodeRequest(frame) match
+        case Right(probe) if desk.get.time(probe) => None
+        case _                                    => Some(DisconnectReason.ProtocolViolation("invalid or overflowing TIME request"))
     else
       Tsb3Decoder.fromDevice(frame) match
         case Right(DeviceMessage.Ping(token)) =>
@@ -399,6 +459,22 @@ private[device] final class FrameSink(target: OutputStream, counters: LinkCounte
   /** §6.7: `BYE` is always the last frame on the connection. Every write after this one is refused, so an `EVENT`, `STATS` or `PING` still
     * queued for the writer fork can never follow it onto the wire; the writer then closes the socket, as a refused write always does.
     */
+  def writeBytes(bytes: Vector[Byte], finalWrite: Boolean): WriteResult = synchronized:
+    if closed then WriteResult.Failed
+    else
+      try
+        deadline.begin()
+        target.write(bytes.toArray)
+        target.flush()
+        counters.recordSent(bytes.size)
+        if finalWrite then closed = true
+        WriteResult.Written
+      catch
+        case _: IOException =>
+          closed = true
+          WriteResult.Failed
+      finally deadline.end()
+
   def writeFinal(frame: EncodedFrame): WriteResult = synchronized:
     val written = write(frame)
     closed = true

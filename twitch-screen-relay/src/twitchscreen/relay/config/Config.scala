@@ -6,9 +6,19 @@ import com.typesafe.config.{Config as HoconConfig, ConfigFactory}
 import scala.concurrent.duration.FiniteDuration
 
 /** Where the management/monitoring HTTP API listens. */
-final case class HttpConfig(host: Hostname, port: Port, auth: HttpAuthConfig)
+final case class HttpConfig(
+    host: Hostname,
+    port: Port,
+    auth: HttpAuthConfig = HttpAuthConfig(),
+    allowedHosts: List[String] = HttpBoundaryConfig.DefaultHosts,
+    allowedOrigins: List[String] = HttpBoundaryConfig.DefaultOrigins,
+    publicOrigin: String = "",
+    trustedProxies: List[String] = Nil
+):
+  HttpBoundaryConfig.validate(allowedHosts, allowedOrigins, publicOrigin, trustedProxies)
 
 object HttpConfig:
+  private given ConfigReader[List[String]] = StringListReader.listOrCommaSeparated
   given ConfigReader[HttpConfig] = ValidatedConfigReader.derivedValidated[HttpConfig]
 
 /** The TCP listener the firmware connects to, and the parameters of TSB/3 (see `twitch-screen-firmware/docs/PROTOCOL.md`). */
@@ -116,17 +126,22 @@ final case class TwitchConfig(
     pollInterval: FiniteDuration,
     simulation: SimulationConfig
 ):
-  validate()
+  // Parse deployment structure before persisted monitoring intent selects the effective provider mode.
+  require(pollInterval.toMillis >= 1, "twitch.poll-interval must be at least 1 ms")
 
-  /** Fails startup rather than at the first Helix call, so a half-configured relay never looks healthy. */
-  private def validate(): Unit =
-    require(pollInterval.toMillis >= 1, "twitch.poll-interval must be at least 1 ms")
-    if mode == TwitchMode.Live then
-      require(channel.trim.nonEmpty, "twitch.channel is required when twitch.mode = live")
-      require(clientId.trim.nonEmpty, "twitch.client-id is required when twitch.mode = live")
-      require(clientSecret.isSet, "twitch.client-secret is required when twitch.mode = live")
-      oauth.validateLive()
-      eventSub.validateLive()
+  /** Validate selected live ingestion before creating provider clients, never obsolete startup intent during decoding. */
+  private[relay] def validateLive(): Unit =
+    require(channel.trim.nonEmpty, "twitch.channel is required when twitch.mode = live")
+    require(clientId.trim.nonEmpty, "twitch.client-id is required when twitch.mode = live")
+    require(clientSecret.isSet, "twitch.client-secret is required when twitch.mode = live")
+    validateOAuth()
+    eventSub.validateLive()
+
+  /** OAuth belongs to the application, independently of a selected monitoring channel or EventSub transport. */
+  private[relay] def validateOAuth(): Unit =
+    require(clientId.trim.nonEmpty, "twitch.client-id is required for OAuth")
+    require(clientSecret.isSet, "twitch.client-secret is required for OAuth")
+    oauth.validateLive()
 
 /** How Twitch events are turned into what the screen shows.
   *
@@ -197,6 +212,12 @@ final case class AlertsConfig(
 final case class ObservabilityConfig(logBufferSize: Int):
   ConfigLimits.buffer(logBufferSize, "observability.log-buffer-size")
 
+final case class RuntimeConfig(settingsFile: String = "data/runtime-state.json"):
+  require(settingsFile.trim.nonEmpty, "runtime.settings-file must not be empty")
+
+object RuntimeConfig:
+  given ConfigReader[RuntimeConfig] = ValidatedConfigReader.derivedValidated[RuntimeConfig]
+
 final case class Config(
     http: HttpConfig,
     deviceLink: DeviceLinkConfig,
@@ -206,7 +227,9 @@ final case class Config(
     stats: StatsConfig,
     activity: ActivityConfig,
     alerts: AlertsConfig,
-    observability: ObservabilityConfig
+    observability: ObservabilityConfig,
+    runtime: RuntimeConfig = RuntimeConfig(),
+    weather: WeatherConfig = WeatherConfig()
 ) derives ConfigReader
 
 object Config:
@@ -229,10 +252,16 @@ object Config:
         leaves("twitch.simulation", ConfigKeys.of[SimulationConfig]) ++ leaves("notifications", ConfigKeys.of[NotificationsConfig]) ++
         leaves("bus", ConfigKeys.of[BusConfig]) ++ leaves("stats", ConfigKeys.of[StatsConfig]) ++
         leaves("activity", ConfigKeys.of[ActivityConfig]) ++ leaves("alerts", ConfigKeys.of[AlertsConfig]) ++
-        leaves("observability", ConfigKeys.of[ObservabilityConfig])
+        leaves("observability", ConfigKeys.of[ObservabilityConfig]) ++ leaves("runtime", ConfigKeys.of[RuntimeConfig]) ++
+        leaves("weather", ConfigKeys.of[WeatherConfig])
     )
 
   def load(): (Config, HoconConfig) =
+    val obsolete = sys.env.collect { case (key, value) if key.startsWith("RELAY_HTTP_AUTH_") && value.nonEmpty => key }.toList.sorted
+    require(
+      obsolete.isEmpty,
+      s"Obsolete management authentication environment keys: ${obsolete.mkString(", ")}; remove them and restrict network access"
+    )
     val source = ConfigFactory.load()
     (ConfigSource.fromConfig(source).loadOrThrow[Config], source)
 

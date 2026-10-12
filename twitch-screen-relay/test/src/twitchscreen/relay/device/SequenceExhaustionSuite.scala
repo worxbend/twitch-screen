@@ -108,7 +108,7 @@ class SequenceExhaustionSuite extends munit.FunSuite:
       assert(hub.publishTransition(follow("refused"), StreamStats.Unknown).isLeft)
       bus.publish(RelayEvent.Followed("routed"))
 
-      val failures = drain(events).map(_.event).collect { case failure @ RelayEvent.RelayFailure("device-hub", _) => failure }
+      val failures = drain(events).map(_.event).collect { case failure @ RelayEvent.RelayFailure("device-hub", _, _) => failure }
       assertEquals(failures.size, 1, failures)
       assertEquals(hub.snapshot.notificationsPublished, 1L)
 

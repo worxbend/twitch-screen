@@ -46,12 +46,23 @@ class SubscriptionPlanSuite extends munit.FunSuite:
     assertEquals(plan.authorizationFailure, None)
 
   test("a grant from another account cannot authorize broadcaster subscriptions"):
-    val other = token.copy(login = "other", scopes = List(TwitchScopes.Followers))
+    val other = token.copy(userId = "999", scopes = List(TwitchScopes.Followers))
     val plan =
       SubscriptionPlan.build(config(EventSubTransport.WebSocket, other.scopes), "123", AuthorizationView(Some(other), Some(other), Nil))
     assertEquals(plan.token, None)
     assertEquals(plan.subscriptions.size, 3)
     assert(plan.authorizationFailure.isDefined)
+
+  test("a renamed login with the same numeric identity keeps scoped eligibility on both transports"):
+    val renamed = token.copy(login = "renamed", scopes = List(TwitchScopes.Followers))
+    EventSubTransport.values.foreach: transport =>
+      val plan = SubscriptionPlan.build(config(transport, renamed.scopes), "123", AuthorizationView(Some(renamed), Some(renamed), Nil))
+      assertEquals(plan.token, Some("access"))
+      assertEquals(plan.subscriptions.size, 4)
+      assertEquals(plan.authorizationFailure, None)
+      assertEquals(AuthorizationView(Some(renamed), Some(renamed), Nil).tokenFor("123", TwitchScopes.Followers), Some("access"))
+      assertEquals(AuthorizationView(Some(renamed), Some(renamed), Nil).tokenFor("999", TwitchScopes.Followers), None)
+      assertEquals(AuthorizationView(Some(renamed), None, Nil).tokenFor("123", TwitchScopes.Followers), None)
 
   test("unscoped webhooks work without a user grant"):
     val plan = SubscriptionPlan.build(config(EventSubTransport.Webhook, Nil), "123", AuthorizationView(None, None, Nil))

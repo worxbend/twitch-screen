@@ -74,19 +74,23 @@ class EventSubTransportParitySuite extends munit.FunSuite:
       val received = bus.subscribe("webhook")
       val api =
         EventSubWebhookApi.create(config, bus, ChannelStateTracker(config.channel, clock), BotFilter.from(notifications), clock)
+      WebhookIdentityFixtures.bind(api)
       val backend = TapirSyncStubInterpreter().whenServerEndpointsRunLogic(api.endpoints).backend()
-      webhookBodies.zipWithIndex.foreach: (body, index) =>
-        val messageId = s"parity-$index"
-        val timestamp = now.toString
-        val response = basicRequest
-          .post(url)
-          .header("Twitch-Eventsub-Message-Id", messageId)
-          .header("Twitch-Eventsub-Message-Timestamp", timestamp)
-          .header("Twitch-Eventsub-Message-Signature", EventSubSigning.sign(secret, messageId, timestamp, body))
-          .header("Twitch-Eventsub-Message-Type", "notification")
-          .body(body)
-          .send(backend)
-        assertEquals(response.code, StatusCode.Ok, body)
+      webhookBodies
+        .map(WebhookIdentityFixtures.body(_))
+        .zipWithIndex
+        .foreach: (body, index) =>
+          val messageId = s"parity-$index"
+          val timestamp = now.toString
+          val response = basicRequest
+            .post(url)
+            .header("Twitch-Eventsub-Message-Id", messageId)
+            .header("Twitch-Eventsub-Message-Timestamp", timestamp)
+            .header("Twitch-Eventsub-Message-Signature", EventSubSigning.sign(secret, messageId, timestamp, body))
+            .header("Twitch-Eventsub-Message-Type", "notification")
+            .body(body)
+            .send(backend)
+          assertEquals(response.code, StatusCode.Ok, body)
       drain(received)
 
   test("K-042: the WebSocket and webhook transports publish identical events for the same notifications"):

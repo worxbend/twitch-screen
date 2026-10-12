@@ -21,9 +21,14 @@ would not authenticate a rogue relay or hide credentials on the LAN.
 
 Use H2's explicit trusted-home-LAN option for the existing protocol. Document the
 trust boundary and impersonation consequences in [PROTOCOL §2](../../twitch-screen-firmware/docs/PROTOCOL.md#2-transport-and-endianness).
-Operators must restrict the listener to a segment whose hosts they trust. HTTP
-management authentication is a separate boundary and requires HTTPS when
-credentials cross an untrusted network.
+Operators must restrict both listeners to a segment whose hosts they trust. The
+2026 desk-update decision removes HTTP management authentication: every reachable
+peer can read and control the relay. Exact Host/Origin/Fetch-Metadata checks are
+independent browser defenses, not authentication. Provider OAuth/callback and
+webhook verification remain mandatory. Native/Compose loopback is the default;
+LAN publishing requires explicit settings and firewall/VPN isolation. Trusted
+private HTTPS proxy/mobile consent is planned, not yet verified. Do not expose
+management or plain device TCP to the internet.
 
 Retain the protocol's uncapped `retry_after_s` minimum, including its maximum
 65535-second suppression, as a trusted-relay instruction. Bound local queue

@@ -1,0 +1,1611 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:twitch-screen:desk:1:http",
+  "$defs": {
+    "Deadline": {
+      "type": "object",
+      "properties": {
+        "relayEpoch": {
+          "type": "string",
+          "pattern": "^(?!0000000000000000$)[0-9a-f]{16}$"
+        },
+        "monotonicMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "relayEpoch",
+        "monotonicMs"
+      ],
+      "additionalProperties": false
+    },
+    "NotificationRequest": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "info",
+            "message",
+            "warning",
+            "alert",
+            "stream_start",
+            "stream_end",
+            "follow",
+            "sub",
+            "gift",
+            "raid",
+            "chat",
+            "bits"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "x-maxUtf16CodeUnits": 4096,
+          "x-validUnicode": true,
+          "x-nonblank": true
+        },
+        "body": {
+          "type": "string",
+          "x-maxUtf16CodeUnits": 4096,
+          "x-validUnicode": true
+        },
+        "ttlMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000,
+          "default": 8000
+        },
+        "expiresInMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000,
+          "default": 60000
+        },
+        "deadline": {
+          "$ref": "#/$defs/Deadline"
+        }
+      },
+      "required": [
+        "type",
+        "title",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "DisplayPatch": {
+      "type": "object",
+      "properties": {
+        "twitchDisplayEnabled": {
+          "type": "boolean"
+        },
+        "preferredDashboard": {
+          "type": "string",
+          "enum": [
+            "generic",
+            "weather",
+            "cpu"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "WeatherRequest": {
+      "type": "object",
+      "properties": {
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "x-nonblank": true
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": -148,
+          "maximum": 212
+        },
+        "condition": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "clear",
+            "partly_cloudy",
+            "cloudy",
+            "fog",
+            "drizzle",
+            "rain",
+            "snow",
+            "thunderstorm"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "celsius",
+            "fahrenheit"
+          ],
+          "default": "celsius"
+        },
+        "humidityPercent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        },
+        "freshnessMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 1800000,
+          "default": 600000
+        },
+        "deadline": {
+          "$ref": "#/$defs/Deadline"
+        }
+      },
+      "required": [
+        "sourceId",
+        "location",
+        "temperature",
+        "condition"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "unit": {
+                "const": "fahrenheit"
+              }
+            },
+            "required": [
+              "unit"
+            ]
+          },
+          "then": {
+            "properties": {
+              "temperature": {
+                "type": "number",
+                "minimum": -148,
+                "maximum": 212
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "temperature": {
+                "type": "number",
+                "minimum": -100,
+                "maximum": 100
+              }
+            }
+          }
+        }
+      ]
+    },
+    "CpuRequest": {
+      "type": "object",
+      "properties": {
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "x-nonblank": true
+        },
+        "cpuPercent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "memoryPercent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "temperatureCelsius": {
+          "type": "number",
+          "minimum": -20,
+          "maximum": 150
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        },
+        "freshnessMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000,
+          "default": 10000
+        },
+        "deadline": {
+          "$ref": "#/$defs/Deadline"
+        }
+      },
+      "required": [
+        "sourceId",
+        "host",
+        "cpuPercent"
+      ],
+      "additionalProperties": false
+    },
+    "MonitoringPatch": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "simulated",
+            "live"
+          ]
+        },
+        "channel": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]{1,25}$"
+        }
+      },
+      "required": [],
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "ClockResponse": {
+      "type": "object",
+      "properties": {
+        "relayEpoch": {
+          "type": "string",
+          "pattern": "^(?!0000000000000000$)[0-9a-f]{16}$"
+        },
+        "monotonicMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "relayEpoch",
+        "monotonicMs"
+      ],
+      "additionalProperties": false
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "NotificationResponse": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "info",
+            "message",
+            "warning",
+            "alert",
+            "stream_start",
+            "stream_end",
+            "follow",
+            "sub",
+            "gift",
+            "raid",
+            "chat",
+            "bits"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "x-maxUtf16CodeUnits": 4096,
+          "x-validUnicode": true,
+          "x-nonblank": true
+        },
+        "body": {
+          "type": "string",
+          "x-maxUtf16CodeUnits": 4096,
+          "x-validUnicode": true
+        },
+        "at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ttlMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000
+        },
+        "relayEpoch": {
+          "type": "string",
+          "pattern": "^(?!0000000000000000$)[0-9a-f]{16}$"
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "external",
+            "twitch",
+            "relay"
+          ]
+        },
+        "sourceGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "twitchEpisode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "expiresInMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "remainingExpiryMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        }
+      },
+      "required": [
+        "seq",
+        "id",
+        "type",
+        "title",
+        "body",
+        "at",
+        "ttlMs",
+        "relayEpoch",
+        "origin",
+        "sourceGeneration",
+        "twitchEpisode",
+        "expiresInMs",
+        "remainingExpiryMs"
+      ],
+      "additionalProperties": false
+    },
+    "Readiness": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "missing",
+            "fresh",
+            "stale"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "never_supplied",
+            "fresh",
+            "expired",
+            "clock_unavailable"
+          ]
+        },
+        "remainingFreshnessMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1800000
+        }
+      },
+      "required": [
+        "revision",
+        "status",
+        "reason",
+        "remainingFreshnessMs"
+      ],
+      "additionalProperties": false
+    },
+    "DisplayResponse": {
+      "type": "object",
+      "properties": {
+        "relayEpoch": {
+          "type": "string",
+          "pattern": "^(?!0000000000000000$)[0-9a-f]{16}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "twitchDisplayEnabled": {
+          "type": "boolean"
+        },
+        "preferredDashboard": {
+          "type": "string",
+          "enum": [
+            "generic",
+            "weather",
+            "cpu"
+          ]
+        },
+        "weather": {
+          "$ref": "#/$defs/Readiness"
+        },
+        "cpu": {
+          "$ref": "#/$defs/Readiness"
+        }
+      },
+      "required": [
+        "relayEpoch",
+        "revision",
+        "twitchDisplayEnabled",
+        "preferredDashboard",
+        "weather",
+        "cpu"
+      ],
+      "additionalProperties": false
+    },
+    "WeatherData": {
+      "type": "object",
+      "properties": {
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "x-nonblank": true
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": -148,
+          "maximum": 212
+        },
+        "condition": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "clear",
+            "partly_cloudy",
+            "cloudy",
+            "fog",
+            "drizzle",
+            "rain",
+            "snow",
+            "thunderstorm"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "celsius",
+            "fahrenheit"
+          ],
+          "default": "celsius"
+        },
+        "humidityPercent": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        },
+        "freshnessMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 1800000,
+          "default": 600000
+        }
+      },
+      "required": [
+        "sourceId",
+        "location",
+        "temperature",
+        "condition",
+        "unit",
+        "humidityPercent",
+        "observedAt",
+        "freshnessMs"
+      ],
+      "additionalProperties": false
+    },
+    "WeatherResponse": {
+      "type": "object",
+      "properties": {
+        "relayEpoch": {
+          "type": "string",
+          "pattern": "^(?!0000000000000000$)[0-9a-f]{16}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "missing",
+            "fresh",
+            "stale"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "never_supplied",
+            "fresh",
+            "expired",
+            "clock_unavailable"
+          ]
+        },
+        "receivedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAtSource": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "producer",
+                "relay_receipt"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remainingFreshnessMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1800000
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WeatherData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "relayEpoch",
+        "revision",
+        "status",
+        "reason",
+        "receivedAt",
+        "observedAtSource",
+        "remainingFreshnessMs",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "CpuData": {
+      "type": "object",
+      "properties": {
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "x-nonblank": true
+        },
+        "cpuPercent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "memoryPercent": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "temperatureCelsius": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": -20,
+              "maximum": 150
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        },
+        "freshnessMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000,
+          "default": 10000
+        }
+      },
+      "required": [
+        "sourceId",
+        "host",
+        "cpuPercent",
+        "memoryPercent",
+        "temperatureCelsius",
+        "observedAt",
+        "freshnessMs"
+      ],
+      "additionalProperties": false
+    },
+    "CpuResponse": {
+      "type": "object",
+      "properties": {
+        "relayEpoch": {
+          "type": "string",
+          "pattern": "^(?!0000000000000000$)[0-9a-f]{16}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "missing",
+            "fresh",
+            "stale"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "never_supplied",
+            "fresh",
+            "expired",
+            "clock_unavailable"
+          ]
+        },
+        "receivedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAtSource": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "producer",
+                "relay_receipt"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remainingFreshnessMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1800000
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CpuData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "relayEpoch",
+        "revision",
+        "status",
+        "reason",
+        "receivedAt",
+        "observedAtSource",
+        "remainingFreshnessMs",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "MonitorSetting": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "simulated",
+            "live"
+          ]
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z0-9_]{1,25}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "channel"
+      ],
+      "additionalProperties": false
+    },
+    "ResolvedChannel": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9]{1,32}$"
+        },
+        "login": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]{1,25}$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "x-nonblank": true
+        }
+      },
+      "required": [
+        "id",
+        "login",
+        "displayName"
+      ],
+      "additionalProperties": false
+    },
+    "FeatureEligibility": {
+      "type": "object",
+      "properties": {
+        "feature": {
+          "type": "string",
+          "enum": [
+            "public_stream",
+            "public_chat",
+            "followers",
+            "subscribers",
+            "eventsub"
+          ]
+        },
+        "eligible": {
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "feature",
+        "eligible",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "GrantCompatibility": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_required",
+            "missing",
+            "expired",
+            "mismatched",
+            "partial",
+            "usable"
+          ]
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FeatureEligibility"
+          },
+          "maxItems": 5
+        },
+        "missingScopes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "maxItems": 32
+        }
+      },
+      "required": [
+        "status",
+        "features",
+        "missingScopes"
+      ],
+      "additionalProperties": false
+    },
+    "MonitoringResponse": {
+      "type": "object",
+      "properties": {
+        "relayEpoch": {
+          "type": "string",
+          "pattern": "^(?!0000000000000000$)[0-9a-f]{16}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "settingsSource": {
+          "type": "string",
+          "enum": [
+            "persisted",
+            "startup"
+          ]
+        },
+        "desired": {
+          "$ref": "#/$defs/MonitorSetting"
+        },
+        "effective": {
+          "$ref": "#/$defs/MonitorSetting"
+        },
+        "transition": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "applying",
+            "ready",
+            "failed"
+          ]
+        },
+        "sourceGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "resolvedChannel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResolvedChannel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "grantCompatibility": {
+          "$ref": "#/$defs/GrantCompatibility"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "relayEpoch",
+        "revision",
+        "settingsSource",
+        "desired",
+        "effective",
+        "transition",
+        "sourceGeneration",
+        "resolvedChannel",
+        "grantCompatibility",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "CardIdentity": {
+      "type": "object",
+      "properties": {
+        "originalRelayEpoch": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "kind": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "external",
+            "twitch",
+            "relay",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "originalRelayEpoch",
+        "seq",
+        "kind",
+        "origin"
+      ],
+      "additionalProperties": false
+    },
+    "ActiveCard": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/CardIdentity"
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "entrance",
+            "hold",
+            "exit"
+          ]
+        },
+        "remainingMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        }
+      },
+      "required": [
+        "identity",
+        "phase",
+        "remainingMs"
+      ],
+      "additionalProperties": false
+    },
+    "DeviceObservation": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 31
+        },
+        "connectionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(?!0000000000000000$)[0-9a-f]{16}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deviceBootId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(?!0000000000000000$)[0-9a-f]{16}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "firmwareVersion": {
+          "type": "string",
+          "maxLength": 15
+        },
+        "caps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "connected": {
+          "type": "boolean"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "desiredDisplayRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "appliedDisplayRevision": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reportStatus": {
+          "type": "string",
+          "enum": [
+            "unsupported",
+            "unknown",
+            "fresh",
+            "stale",
+            "historical"
+          ]
+        },
+        "reportRevision": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receivedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observationAgeUpperMs": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "baseScreen": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "connected_orbit",
+                "disconnected_orbit",
+                "twitch",
+                "weather",
+                "cpu"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "selected",
+                "relay_down",
+                "synchronizing",
+                "generic_selected",
+                "data_missing",
+                "data_stale",
+                "twitch_override",
+                "legacy",
+                "clock_unavailable"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pendingCapacity": {
+          "const": 8
+        },
+        "pending": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/CardIdentity"
+              },
+              "maxItems": 8
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActiveCard"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transportQueuedFrames": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "transportReservedEvents": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "expiredTotal": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "suppressedTotal": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "refusedTotal": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "chartAvailable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "deviceId",
+        "connectionId",
+        "deviceBootId",
+        "firmwareVersion",
+        "caps",
+        "connected",
+        "ready",
+        "desiredDisplayRevision",
+        "appliedDisplayRevision",
+        "reportStatus",
+        "reportRevision",
+        "receivedAt",
+        "observationAgeUpperMs",
+        "baseScreen",
+        "reason",
+        "pendingCapacity",
+        "pending",
+        "active",
+        "transportQueuedFrames",
+        "transportReservedEvents",
+        "expiredTotal",
+        "suppressedTotal",
+        "refusedTotal",
+        "chartAvailable"
+      ],
+      "additionalProperties": false
+    },
+    "ChartSeries": {
+      "type": "object",
+      "properties": {
+        "startAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        },
+        "bucketMs": {
+          "const": 5000
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxItems": 180
+        }
+      },
+      "required": [
+        "startAt",
+        "bucketMs",
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "DeviceCharts": {
+      "type": "object",
+      "properties": {
+        "deviceId": {
+          "type": "string",
+          "maxLength": 31
+        },
+        "queueDepth": {
+          "$ref": "#/$defs/ChartSeries"
+        },
+        "expired": {
+          "$ref": "#/$defs/ChartSeries"
+        },
+        "suppressed": {
+          "$ref": "#/$defs/ChartSeries"
+        },
+        "refused": {
+          "$ref": "#/$defs/ChartSeries"
+        }
+      },
+      "required": [
+        "deviceId",
+        "queueDepth",
+        "expired",
+        "suppressed",
+        "refused"
+      ],
+      "additionalProperties": false
+    },
+    "Charts": {
+      "type": "object",
+      "properties": {
+        "sourceGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "notificationArrivals": {
+          "$ref": "#/$defs/ChartSeries"
+        },
+        "viewers": {
+          "$ref": "#/$defs/ChartSeries"
+        },
+        "chatRate": {
+          "$ref": "#/$defs/ChartSeries"
+        },
+        "devices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeviceCharts"
+          },
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "sourceGeneration",
+        "notificationArrivals",
+        "viewers",
+        "chatRate",
+        "devices"
+      ],
+      "additionalProperties": false
+    },
+    "NotificationPreview": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/CardIdentity"
+        },
+        "sourceGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "twitchEpisode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "remainingExpiryMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        }
+      },
+      "required": [
+        "identity",
+        "sourceGeneration",
+        "twitchEpisode",
+        "title",
+        "body",
+        "remainingExpiryMs"
+      ],
+      "additionalProperties": false
+    },
+    "AdminLimits": {
+      "type": "object",
+      "properties": {
+        "maxDevices": {
+          "const": 64
+        },
+        "maxChartDevices": {
+          "const": 16
+        },
+        "maxNotifications": {
+          "const": 80
+        },
+        "maxSnapshotBytes": {
+          "const": 524288
+        },
+        "maxSseConnections": {
+          "const": 8
+        },
+        "maxSsePerIp": {
+          "const": 2
+        },
+        "chartBucketMs": {
+          "const": 5000
+        },
+        "chartBuckets": {
+          "const": 180
+        }
+      },
+      "required": [
+        "maxDevices",
+        "maxChartDevices",
+        "maxNotifications",
+        "maxSnapshotBytes",
+        "maxSseConnections",
+        "maxSsePerIp",
+        "chartBucketMs",
+        "chartBuckets"
+      ],
+      "additionalProperties": false
+    },
+    "AdminSnapshot": {
+      "type": "object",
+      "properties": {
+        "relayEpoch": {
+          "type": "string",
+          "pattern": "^(?!0000000000000000$)[0-9a-f]{16}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "capturedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        },
+        "display": {
+          "$ref": "#/$defs/DisplayResponse"
+        },
+        "monitoring": {
+          "$ref": "#/$defs/MonitoringResponse"
+        },
+        "sources": {
+          "type": "object",
+          "properties": {
+            "weather": {
+              "$ref": "#/$defs/WeatherResponse"
+            },
+            "cpu": {
+              "$ref": "#/$defs/CpuResponse"
+            }
+          },
+          "required": [
+            "weather",
+            "cpu"
+          ],
+          "additionalProperties": false
+        },
+        "devices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeviceObservation"
+          },
+          "maxItems": 64
+        },
+        "notifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NotificationPreview"
+          },
+          "maxItems": 80
+        },
+        "charts": {
+          "$ref": "#/$defs/Charts"
+        },
+        "limits": {
+          "$ref": "#/$defs/AdminLimits"
+        }
+      },
+      "required": [
+        "relayEpoch",
+        "revision",
+        "capturedAt",
+        "display",
+        "monitoring",
+        "sources",
+        "devices",
+        "notifications",
+        "charts",
+        "limits"
+      ],
+      "additionalProperties": false
+    },
+    "RuntimeState": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "display": {
+          "type": "object",
+          "properties": {
+            "twitchDisplayEnabled": {
+              "type": "boolean"
+            },
+            "preferredDashboard": {
+              "type": "string",
+              "enum": [
+                "generic",
+                "weather",
+                "cpu"
+              ]
+            }
+          },
+          "required": [
+            "twitchDisplayEnabled",
+            "preferredDashboard"
+          ],
+          "additionalProperties": false
+        },
+        "monitoring": {
+          "$ref": "#/$defs/MonitorSetting"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "display",
+        "monitoring"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "description": "Normative target contract, not a claim that routes exist. x-maxUtf16CodeUnits, x-validUnicode and x-nonblank MUST also be enforced."
+}

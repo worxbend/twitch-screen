@@ -3,7 +3,7 @@ package twitchscreen.relay.bus
 import java.time.Instant
 import scala.concurrent.duration.FiniteDuration
 import twitchscreen.relay.device.ConnectionId
-import twitchscreen.relay.protocol.{ChatColour, Count, DeviceId, Notification, SubTier}
+import twitchscreen.relay.protocol.{ChatColour, Count, DeskMessageCodec, DeviceId, Notification, SubTier}
 
 /** Everything that happens in the relay, in one vocabulary. Producers (the Twitch source, the device link, the HTTP API) publish these;
   * consumers (notification routing, statistics, the activity log, alerting, metrics) each decide what to do with them. No consumer knows
@@ -43,7 +43,7 @@ private[relay] enum RelayEvent:
 
   // The relay itself.
   case NotificationPublished(notification: Notification)
-  case RelayFailure(source: String, message: String)
+  case RelayFailure(source: String, message: String, origin: DeskMessageCodec.Origin = DeskMessageCodec.Origin.Relay)
 
 private[relay] object RelayEvent:
   /** For log lines and the activity feed only. The wire carries the `tier` byte of §6.4, never this string: Twitch's own plan ids
@@ -77,7 +77,7 @@ private[relay] object RelayEvent:
       case DeviceDisconnected(device, connection, reason) => s"device ${device.value} (#${connection.value}) disconnected: $reason"
       case NotificationPublished(notification) =>
         s"notification #${notification.seq.value} ${notification.kind.wire}: ${notification.title}"
-      case RelayFailure(source, message) => s"$source failed: $message"
+      case RelayFailure(source, message, _) => s"$source failed: $message"
 
     /** Which part of the relay the event came from; the activity log and the alert rules filter on this. */
     def category: EventCategory = event match

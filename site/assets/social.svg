@@ -1,0 +1,7 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0; Original illustration, Twitch Screen contributors. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-labelledby="title desc">
+<title id="title">Twitch Screen</title><desc id="desc">A small display for your whole desk. Original orbital illustration; not a physical capture.</desc>
+<rect width="1200" height="630" fill="#080C12"/>
+<g fill="none" transform="translate(940 315)"><circle r="185" stroke="#185B63" stroke-width="8" stroke-dasharray="800 362"/><circle r="215" stroke="#326F91" stroke-width="8" stroke-dasharray="1050 301"/><circle r="245" stroke="#6B598B" stroke-width="5" stroke-dasharray="1200 340"/></g>
+<g fill="#EDF5F7" font-family="system-ui, sans-serif"><text x="65" y="245" font-size="78">Twitch Screen</text><text x="65" y="330" font-size="38">A small display for</text><text x="65" y="380" font-size="38">your whole desk.</text><text x="65" y="520" font-size="25" fill="#A6BDC7">DIY ESP32 desk display · Update in development</text></g>
+</svg>

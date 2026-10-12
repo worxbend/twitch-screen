@@ -14,3 +14,8 @@ object Fail:
 
   /** A dependency the relay needs is not currently usable — Twitch is disconnected, a device has gone away. */
   final case class Unavailable(msg: String) extends Fail
+  final case class MonitoringUnavailable(code: String) extends Fail
+  case object ConfigurationMissing extends Fail
+  case object ClockEpochChanged extends Fail
+  case object Expired extends Fail
+  case object RateLimited extends Fail

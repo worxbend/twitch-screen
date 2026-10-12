@@ -1,0 +1,414 @@
+{
+  "examples": [
+    {
+      "name": "notification_bodyless",
+      "schema": "NotificationRequest",
+      "value": {
+        "type": "message",
+        "title": "Build finished",
+        "body": ""
+      }
+    },
+    {
+      "name": "notification_unicode",
+      "schema": "NotificationRequest",
+      "value": {
+        "type": "raid",
+        "title": "Pawe\u0142 \ud83c\udf89",
+        "body": "Independent manual card",
+        "ttlMs": 101,
+        "expiresInMs": 60000,
+        "deadline": {
+          "relayEpoch": "0123456789abcdef",
+          "monotonicMs": 65000
+        }
+      }
+    },
+    {
+      "name": "display_cpu",
+      "schema": "DisplayPatch",
+      "value": {
+        "twitchDisplayEnabled": false,
+        "preferredDashboard": "cpu"
+      }
+    },
+    {
+      "name": "display_override",
+      "schema": "DisplayPatch",
+      "value": {
+        "twitchDisplayEnabled": true
+      }
+    },
+    {
+      "name": "weather",
+      "schema": "WeatherRequest",
+      "value": {
+        "sourceId": "weather.home",
+        "location": "Desk",
+        "temperature": -12.345,
+        "condition": "snow",
+        "humidityPercent": 0
+      }
+    },
+    {
+      "name": "fahrenheit",
+      "schema": "WeatherRequest",
+      "value": {
+        "sourceId": "weather.home",
+        "location": "Desk",
+        "temperature": 212,
+        "unit": "fahrenheit",
+        "condition": "clear"
+      }
+    },
+    {
+      "name": "cpu_absent_memory",
+      "schema": "CpuRequest",
+      "value": {
+        "sourceId": "desktop-01",
+        "host": "workstation",
+        "cpuPercent": 0,
+        "deadline": {
+          "relayEpoch": "0123456789abcdef",
+          "monotonicMs": 15000
+        }
+      }
+    },
+    {
+      "name": "cpu_zero_memory",
+      "schema": "CpuRequest",
+      "value": {
+        "sourceId": "desktop-01",
+        "host": "workstation",
+        "cpuPercent": 12.345,
+        "memoryPercent": 0
+      }
+    },
+    {
+      "name": "monitor_disabled",
+      "schema": "MonitoringPatch",
+      "value": {
+        "mode": "disabled"
+      }
+    },
+    {
+      "name": "monitor_live",
+      "schema": "MonitoringPatch",
+      "value": {
+        "mode": "live",
+        "channel": "worxbend"
+      }
+    },
+    {
+      "name": "clock",
+      "schema": "ClockResponse",
+      "value": {
+        "relayEpoch": "0123456789abcdef",
+        "monotonicMs": 5000
+      }
+    },
+    {
+      "name": "clock_epoch_changed",
+      "schema": "Error",
+      "value": {
+        "error": "clock epoch changed",
+        "code": "clock_epoch_changed"
+      }
+    },
+    {
+      "name": "expired",
+      "schema": "Error",
+      "value": {
+        "error": "expired",
+        "code": "expired"
+      }
+    },
+    {
+      "name": "rate_limited",
+      "schema": "Error",
+      "value": {
+        "error": "rate limited",
+        "code": "rate_limited"
+      }
+    },
+    {
+      "name": "configuration_missing",
+      "schema": "Error",
+      "value": {
+        "error": "configuration missing",
+        "code": "configuration_missing"
+      }
+    },
+    {
+      "name": "invalid_request",
+      "schema": "Error",
+      "value": {
+        "error": "invalid request",
+        "code": "invalid_request"
+      }
+    },
+    {
+      "name": "notification_accepted",
+      "schema": "NotificationResponse",
+      "value": {
+        "seq": 121,
+        "id": "fixture-card-121",
+        "type": "raid",
+        "title": "Pawe\u0142 \ud83c\udf89",
+        "body": "Independent manual card",
+        "at": "2026-10-11T10:00:00.000Z",
+        "ttlMs": 200,
+        "relayEpoch": "0123456789abcdef",
+        "origin": "external",
+        "sourceGeneration": 0,
+        "twitchEpisode": 0,
+        "expiresInMs": 60000,
+        "remainingExpiryMs": 60000
+      }
+    },
+    {
+      "name": "display_response",
+      "schema": "DisplayResponse",
+      "value": {
+        "relayEpoch": "0123456789abcdef",
+        "revision": 1,
+        "twitchDisplayEnabled": false,
+        "preferredDashboard": "generic",
+        "weather": {
+          "revision": 1,
+          "status": "missing",
+          "reason": "never_supplied",
+          "remainingFreshnessMs": 0
+        },
+        "cpu": {
+          "revision": 1,
+          "status": "missing",
+          "reason": "never_supplied",
+          "remainingFreshnessMs": 0
+        }
+      }
+    },
+    {
+      "name": "monitor_response",
+      "schema": "MonitoringResponse",
+      "value": {
+        "relayEpoch": "0123456789abcdef",
+        "revision": 1,
+        "settingsSource": "startup",
+        "desired": {
+          "mode": "disabled",
+          "channel": null
+        },
+        "effective": {
+          "mode": "disabled",
+          "channel": null
+        },
+        "transition": "idle",
+        "sourceGeneration": 1,
+        "resolvedChannel": null,
+        "grantCompatibility": {
+          "status": "not_required",
+          "features": [],
+          "missingScopes": []
+        },
+        "error": null
+      }
+    },
+    {
+      "name": "weather_missing",
+      "schema": "WeatherResponse",
+      "value": {
+        "relayEpoch": "0123456789abcdef",
+        "revision": 1,
+        "status": "missing",
+        "reason": "never_supplied",
+        "receivedAt": null,
+        "observedAtSource": null,
+        "remainingFreshnessMs": 0,
+        "data": null
+      }
+    },
+    {
+      "name": "cpu_missing",
+      "schema": "CpuResponse",
+      "value": {
+        "relayEpoch": "0123456789abcdef",
+        "revision": 1,
+        "status": "missing",
+        "reason": "never_supplied",
+        "receivedAt": null,
+        "observedAtSource": null,
+        "remainingFreshnessMs": 0,
+        "data": null
+      }
+    },
+    {
+      "name": "cpu_fresh",
+      "schema": "CpuResponse",
+      "value": {
+        "relayEpoch": "0123456789abcdef",
+        "revision": 2,
+        "status": "fresh",
+        "reason": "fresh",
+        "receivedAt": "2026-10-11T10:00:00.000Z",
+        "observedAtSource": "producer",
+        "remainingFreshnessMs": 9500,
+        "data": {
+          "sourceId": "desktop-01",
+          "host": "workstation",
+          "cpuPercent": 0,
+          "memoryPercent": null,
+          "temperatureCelsius": null,
+          "observedAt": "2026-10-11T10:00:00.000Z",
+          "freshnessMs": 10000
+        }
+      }
+    },
+    {
+      "name": "weather_stale",
+      "schema": "WeatherResponse",
+      "value": {
+        "relayEpoch": "0123456789abcdef",
+        "revision": 2,
+        "status": "stale",
+        "reason": "expired",
+        "receivedAt": "2026-10-11T10:00:00.000Z",
+        "observedAtSource": "relay_receipt",
+        "remainingFreshnessMs": 0,
+        "data": {
+          "sourceId": "weather.home",
+          "location": "Desk",
+          "temperature": -12.35,
+          "unit": "celsius",
+          "condition": "snow",
+          "humidityPercent": 0,
+          "observedAt": "2026-10-11T10:00:00.000Z",
+          "freshnessMs": 600000
+        }
+      }
+    },
+    {
+      "name": "admin_empty",
+      "schema": "AdminSnapshot",
+      "value": {
+        "relayEpoch": "0123456789abcdef",
+        "revision": 1,
+        "capturedAt": "2026-10-11T10:00:00.000Z",
+        "display": {
+          "relayEpoch": "0123456789abcdef",
+          "revision": 1,
+          "twitchDisplayEnabled": false,
+          "preferredDashboard": "generic",
+          "weather": {
+            "revision": 1,
+            "status": "missing",
+            "reason": "never_supplied",
+            "remainingFreshnessMs": 0
+          },
+          "cpu": {
+            "revision": 1,
+            "status": "missing",
+            "reason": "never_supplied",
+            "remainingFreshnessMs": 0
+          }
+        },
+        "monitoring": {
+          "relayEpoch": "0123456789abcdef",
+          "revision": 1,
+          "settingsSource": "startup",
+          "desired": {
+            "mode": "disabled",
+            "channel": null
+          },
+          "effective": {
+            "mode": "disabled",
+            "channel": null
+          },
+          "transition": "idle",
+          "sourceGeneration": 1,
+          "resolvedChannel": null,
+          "grantCompatibility": {
+            "status": "not_required",
+            "features": [],
+            "missingScopes": []
+          },
+          "error": null
+        },
+        "sources": {
+          "weather": {
+            "relayEpoch": "0123456789abcdef",
+            "revision": 1,
+            "status": "missing",
+            "reason": "never_supplied",
+            "receivedAt": null,
+            "observedAtSource": null,
+            "remainingFreshnessMs": 0,
+            "data": null
+          },
+          "cpu": {
+            "relayEpoch": "0123456789abcdef",
+            "revision": 1,
+            "status": "missing",
+            "reason": "never_supplied",
+            "receivedAt": null,
+            "observedAtSource": null,
+            "remainingFreshnessMs": 0,
+            "data": null
+          }
+        },
+        "devices": [],
+        "notifications": [],
+        "charts": {
+          "sourceGeneration": 1,
+          "notificationArrivals": {
+            "startAt": "2026-10-11T10:00:00.000Z",
+            "bucketMs": 5000,
+            "values": [
+              null
+            ]
+          },
+          "viewers": {
+            "startAt": "2026-10-11T10:00:00.000Z",
+            "bucketMs": 5000,
+            "values": [
+              null
+            ]
+          },
+          "chatRate": {
+            "startAt": "2026-10-11T10:00:00.000Z",
+            "bucketMs": 5000,
+            "values": [
+              null
+            ]
+          },
+          "devices": []
+        },
+        "limits": {
+          "maxDevices": 64,
+          "maxChartDevices": 16,
+          "maxNotifications": 80,
+          "maxSnapshotBytes": 524288,
+          "maxSseConnections": 8,
+          "maxSsePerIp": 2,
+          "chartBucketMs": 5000,
+          "chartBuckets": 180
+        }
+      }
+    },
+    {
+      "name": "runtime_first_run",
+      "schema": "RuntimeState",
+      "value": {
+        "schemaVersion": 1,
+        "display": {
+          "twitchDisplayEnabled": false,
+          "preferredDashboard": "generic"
+        },
+        "monitoring": {
+          "mode": "disabled",
+          "channel": null
+        }
+      }
+    }
+  ]
+}

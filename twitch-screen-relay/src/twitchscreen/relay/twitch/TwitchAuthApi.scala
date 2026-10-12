@@ -26,7 +26,7 @@ final case class TwitchAuthorization_OUT(
 object TwitchAuthorization_OUT:
   given JsonValueCodec[TwitchAuthorization_OUT] = JsonCodecMaker.make(ApiJson.config)
 
-/** The consent flow's endpoints. Mounted in `live` mode only; there is no Twitch account to authorize otherwise. */
+/** Stable application-scoped consent endpoints, independent of monitoring mode and channel. */
 private[twitch] final class TwitchAuthApi(auth: TwitchAuth) extends ServerEndpoints:
   private val logger = LoggerFactory.getLogger(getClass)
 

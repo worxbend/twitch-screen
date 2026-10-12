@@ -7,7 +7,7 @@
 
 #include "presentation.h"
 #include "ui_common.h"
-#include "ui_idle.h"
+#include "ui_base.h"
 
 // Full-screen event card for the 240x240 round panel. Content stays inside
 // the circle: nothing wider than ~170 px below the vertical center, and the
@@ -46,6 +46,7 @@ struct CardState {
   uint32_t holdMs = HOLD_DEFAULT_MS;    // how long the current card stays up
 };
 CardState card;
+const NotifyLifecycle *lifecycle = nullptr;
 
 void animY(void *var, int32_t v) { lv_obj_set_y(static_cast<lv_obj_t *>(var), v); }
 void animOpa(void *var, int32_t v) {
@@ -66,16 +67,18 @@ void animate(lv_obj_t *obj, lv_anim_exec_xcb_t cb, int32_t from, int32_t to,
 }
 
 void hideReady(lv_anim_t *) {
+  if (lifecycle && lifecycle->complete) lifecycle->complete();
   lv_obj_set_hidden(overlay, true);
   card.busy = false;
-  uiIdleSetCovered(false);
+  uiBaseSetCovered(false);
 }
 
 void hideStart() {
+  if (lifecycle && lifecycle->beginExit) lifecycle->beginExit();
   lv_anim_delete(ring, animOpa);  // stop the severe-card ring pulse, if any
   lv_obj_set_style_opa(ring, LV_OPA_COVER, 0);
   if (card.entrance == Entrance::None) { hideReady(nullptr); return; }  // replay leaves at once
-  uiIdleSetCovered(false);
+  uiBaseSetCovered(false);
   animate(overlay, animY, 0, PANEL, SLIDE_OUT_MS, lv_anim_path_ease_in, hideReady);
 }
 
@@ -84,7 +87,10 @@ void holdTimerCb(lv_timer_t *t) {
   hideStart();
 }
 
-void showReady(lv_anim_t *) { lv_timer_create(holdTimerCb, card.holdMs, nullptr); }
+void showReady(lv_anim_t *) {
+  if (lifecycle && lifecycle->hold) lifecycle->hold();
+  lv_timer_create(holdTimerCb, card.holdMs, nullptr);
+}
 
 // Slide the card in. Only WARNING/ALERT keep the accent ring breathing while it
 // is up (ringPulses, K-118); routine rings stay static at full opacity. Reached
@@ -221,7 +227,17 @@ void layoutChat() {
   lv_obj_align(bodyLabel, LV_ALIGN_CENTER, 0, 32);
 }
 
+void layoutHeadline() {
+  layoutChat();
+  lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_28, 0);
+  lv_obj_set_height(titleLabel, 90); // at most three wrapped headline lines
+  lv_obj_align(titleLabel, LV_ALIGN_CENTER, 0, 12);
+  lv_obj_set_hidden(bodyLabel, true);
+}
+
 }  // namespace
+
+void uiNotifySetLifecycle(const NotifyLifecycle *value) { lifecycle = value; }
 
 void uiNotifyInit() {
   overlay = lv_obj_create(lv_layer_top());
@@ -286,11 +302,23 @@ void uiNotifyInit() {
   lv_obj_set_hidden(flash, true);
 }
 
+bool uiNotifyReady() {
+  return overlay && flash && ring && iconCircle && iconLabel && kindTxt &&
+      titleLabel && bodyLabel && seqLabel && lifecycle && lifecycle->hold &&
+      lifecycle->beginExit && lifecycle->complete;
+}
+
 bool uiNotifyBusy() { return card.busy; }
 
 namespace {
-void applyKindPresentation(const Notification &n) {
-  if (n.kind == NotifyKind::Chat) layoutChat();
+void applyKindPresentation(const Notification &n, bool deskLayout) {
+  // Layout follows content/kind only. It never determines provenance or card
+  // eligibility; those remain Controller policy from the negotiated envelope.
+  lv_obj_set_hidden(bodyLabel, false);
+  if (deskLayout && static_cast<uint8_t>(n.kind) <= static_cast<uint8_t>(NotifyKind::Alert)) {
+    if (n.text[0]) layoutChat();
+    else layoutHeadline();
+  } else if (n.kind == NotifyKind::Chat) layoutChat();
   else layoutDefault();
   const KindPresentation &presentation = kindPresentation(n.kind);
   const lv_color_t accent = lv_color_hex(presentation.color);
@@ -355,13 +383,13 @@ void playEntrance(const Notification &n) {
 
 }  // namespace
 
-void uiNotifyShow(const Notification &n) {
+void uiNotifyShow(const Notification &n, bool deskLayout) {
   if (card.busy || !overlay) return;
   card.busy = true;
   card.entrance = entranceFor(n.replay, n.kind);
-  uiIdleSetCovered(true);
+  uiBaseSetCovered(true);
   card.holdMs = holdMsFor(n);
-  applyKindPresentation(n);
+  applyKindPresentation(n, deskLayout);
   applyTexts(n);
   playEntrance(n);
 }

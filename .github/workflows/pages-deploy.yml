@@ -1,0 +1,70 @@
+name: Manually publish product site
+
+# Preparation only. Running this workflow requires separate release authorization.
+# Maintainer must configure github-pages environment approval/protection first.
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Choose publish only after explicit release authorization and F/G review'
+        required: true
+        type: choice
+        default: do-not-publish
+        options:
+          - do-not-publish
+          - publish
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-publication
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.confirmation == 'publish' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12.12'
+      - name: Recheck selected workflow revision
+        run: python -m unittest discover -s site/tests -v
+      - name: Install test-only browser dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r site/requirements-browser.lock
+          python -m playwright install-deps chromium
+          python site/tools/install_browser.py
+      - name: Real-browser checks
+        run: python site/tests/browser_check.py
+      - name: Build and verify project-path artifact
+        run: |
+          python site/tools/build.py --base-path /twitch-screen/ --canonical https://worxbend.github.io/twitch-screen/
+          python site/tools/verify_artifact.py site/dist
+      - name: Real-browser checks of exact publication bytes
+        run: python site/tests/browser_check.py --artifact site/dist
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: site/dist/
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish authorized validated artifact
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

@@ -38,8 +38,10 @@ venv/
 *.p12
 *.pfx
 
-# Runtime logs
+# Runtime logs and local build/workflow evidence
 *.log
+.agent-workflow/
+/out/
 
 # Claude Code per-user settings
 .claude/settings.local.json

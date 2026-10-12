@@ -43,7 +43,8 @@ private[twitch] sealed trait EventSubTransportPolicy:
       health: TwitchRuntimeHealth,
       restart: AtomicBoolean,
       acceptingCallbacks: AtomicBoolean,
-      appTokenRejected: () => Unit
+      appTokenRejected: () => Unit,
+      bindSubscription: (String, String) => Unit = (_, _) => ()
   ): EventSubTransportStrategy
 
 private[twitch] object EventSubTransportPolicy:
@@ -69,8 +70,9 @@ private[twitch] object EventSubTransportPolicy:
         health: TwitchRuntimeHealth,
         restart: AtomicBoolean,
         acceptingCallbacks: AtomicBoolean,
-        appTokenRejected: () => Unit
-    ): EventSubTransportStrategy = EventSubTransportStrategy.WebhookTransport(client, config, health, appTokenRejected)
+        appTokenRejected: () => Unit,
+        bindSubscription: (String, String) => Unit
+    ): EventSubTransportStrategy = EventSubTransportStrategy.WebhookTransport(client, config, health, appTokenRejected, bindSubscription)
 
   private object WebSocket extends EventSubTransportPolicy:
     override val requiresGrant = true
@@ -90,7 +92,8 @@ private[twitch] object EventSubTransportPolicy:
         health: TwitchRuntimeHealth,
         restart: AtomicBoolean,
         acceptingCallbacks: AtomicBoolean,
-        appTokenRejected: () => Unit
+        appTokenRejected: () => Unit,
+        bindSubscription: (String, String) => Unit
     ): EventSubTransportStrategy = EventSubTransportStrategy.SocketTransport(client, health, restart, acceptingCallbacks)
 
 /** Owns transport-specific subscription installation. Grant tracking remains local to the session maintenance loop. */
@@ -103,10 +106,18 @@ private[twitch] object EventSubTransportStrategy:
       client: TwitchClient,
       config: TwitchConfig,
       health: TwitchRuntimeHealth,
-      appTokenRejected: () => Unit
+      appTokenRejected: () => Unit,
+      bindSubscription: (String, String) => Unit = (_, _) => ()
   ) extends EventSubTransportStrategy:
     override def maintain(plan: SubscriptionPlan, registeredGrant: Option[String]): Option[String] =
-      EventSubWebhookApi.reconcileSubscriptions(client.getHelix, config, plan.subscriptions, health.recordSubscription, appTokenRejected)
+      EventSubWebhookApi.reconcileSubscriptions(
+        client.getHelix,
+        config,
+        plan.subscriptions,
+        health.recordSubscription,
+        appTokenRejected,
+        bindSubscription
+      )
       registeredGrant
 
   /** Construction is the session-start hook: it wires this session's socket callbacks into health before anything can emit them. */

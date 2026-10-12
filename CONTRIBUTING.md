@@ -18,7 +18,7 @@ Thanks for helping make this little screen easier to build, use, and understand.
 3. Create a short-lived branch from the branch your change targets.
 4. Keep unrelated fixes and formatting in separate changes.
 
-No `LICENSE` file is currently checked in. This guide documents the contribution workflow; it does not select a project license.
+See the [licensing map](LICENSE.md) for original contributions and the [third-party notices](THIRD_PARTY_NOTICES.md) for exclusions and unresolved release rights.
 
 ## Make the change reviewable
 
@@ -57,6 +57,6 @@ For a security-sensitive report, avoid posting credentials in a public issue. Us
 
 ## Agent-assisted contributions
 
-Project skills live in [`.agents/skills/`](.agents/skills). They cover Scala quality, architecture and tooling, firmware workflow, protocol testing, and display debugging. Compatibility symlinks are provided under `.claude/skills/`, `.kimi/skills/`, `.kimi-code/skills/`, and `.codex/skills/`; edit the canonical source once.
+Project skills live in `.agents/skills/` (directory unavailable in this checkout). They cover Scala quality, architecture and tooling, firmware workflow, protocol testing, and display debugging. Compatibility symlinks are provided under `.claude/skills/`, `.kimi/skills/`, `.kimi-code/skills/`, and `.codex/skills/`; edit the canonical source once.
 
 Agent work also follows the root [AGENTS.md](AGENTS.md), including its commit, rebase, and publication instructions. Use the relevant skills, inspect the current source, and respect the requested scope. Documentation work should not silently alter firmware, runtime configuration, or deployment state. Verify generated text and commands just as carefully as code.

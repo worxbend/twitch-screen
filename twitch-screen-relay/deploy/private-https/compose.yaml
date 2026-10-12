@@ -1,0 +1,37 @@
+# Merge with ../../compose.yaml from the relay directory. The dedicated network
+# makes Caddy's immediate peer identity explicit; loopback publishing is not that identity.
+services:
+  relay:
+    ports: !override
+      - "127.0.0.1:${RELAY_PUBLISHED_HTTP_PORT:-8080}:8080"
+      - "${RELAY_BIND_IP:-127.0.0.1}:${RELAY_PUBLISHED_DEVICE_PORT:-8099}:8099"
+    environment:
+      RELAY_HTTP_TRUSTED_PROXIES: ${RELAY_PROXY_IP:-172.30.80.2}
+    networks:
+      private-proxy:
+        ipv4_address: ${RELAY_UPSTREAM_IP:-172.30.80.3}
+  private-https:
+    image: caddy:2.11.7-alpine@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772
+    ports:
+      - "${CADDY_BIND_IP:?Set a trusted LAN or VPN interface IP}:${CADDY_HTTPS_PORT:-443}:443"
+    environment:
+      RELAY_PRIVATE_HOST: ${RELAY_PRIVATE_HOST:?Set an exact private DNS hostname}
+      CADDY_BIND_IP: 0.0.0.0
+      RELAY_PROXY_UPSTREAM: relay:8080
+    networks:
+      private-proxy:
+        ipv4_address: ${RELAY_PROXY_IP:-172.30.80.2}
+    volumes:
+      - ./deploy/private-https/Caddyfile:/etc/caddy/Caddyfile:ro
+      - private-caddy-data:/data
+      - private-caddy-config:/config
+    restart: unless-stopped
+    mem_limit: 128m
+networks:
+  private-proxy:
+    ipam:
+      config:
+        - subnet: ${RELAY_PROXY_SUBNET:-172.30.80.0/29}
+volumes:
+  private-caddy-data:
+  private-caddy-config:

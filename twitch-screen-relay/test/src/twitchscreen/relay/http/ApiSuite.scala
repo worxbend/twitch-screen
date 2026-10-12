@@ -83,7 +83,7 @@ class ApiSuite extends munit.FunSuite:
     supervised:
       val config = ConfigSource
         .fromConfig(
-          ConfigFactory.parseString("http.auth.api-token = \"status-test-token-at-least-32-bytes-long\"").withFallback(ConfigFactory.load())
+          ConfigFactory.load()
         )
         .loadOrThrow[Config]
       val bus = EventBus(clock, queueCapacity = 32)
@@ -127,7 +127,7 @@ class ApiSuite extends munit.FunSuite:
         .toRequestThrowDecodeFailures(NotificationApi.createEndpoint, basePath)
         .apply(Notification_IN(NotificationKind.Alert, AlertTitle, "78C", None))
         .send(backend)
-      assertEquals(response.body.map(_.seq.value), Right(1L))
+      assertEquals(response.body.map(_._1.seq.value), Right(1L))
 
   test("a notification with no title is refused"):
     withApi: (backend, _, _) =>
@@ -155,13 +155,13 @@ class ApiSuite extends munit.FunSuite:
       assert(response.body.left.exists(_.isInstanceOf[Fail.IncorrectInput]))
       assertEquals(hub.snapshot.notificationsPublished, 0L)
 
-  test("the largest wire TTL is accepted without wrapping"):
+  test("the DESK API maximum hold is accepted without wrapping"):
     withApi: (backend, _, _) =>
       val response = SttpClientInterpreter()
         .toRequestThrowDecodeFailures(NotificationApi.createEndpoint, basePath)
-        .apply(Notification_IN(NotificationKind.Alert, AlertTitle, "78C", Some(6553500L)))
+        .apply(Notification_IN(NotificationKind.Alert, AlertTitle, "78C", Some(30000L)))
         .send(backend)
-      assertEquals(response.body.map(_.ttlMs), Right(6553500L))
+      assertEquals(response.body.map(_._1.ttlMs), Right(30000L))
 
   test("oversized notification text is rejected before publication"):
     withApi: (backend, hub, _) =>

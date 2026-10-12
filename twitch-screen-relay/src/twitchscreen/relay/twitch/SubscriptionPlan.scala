@@ -15,7 +15,7 @@ private[twitch] final case class SubscriptionPlan(
 
 private[twitch] object SubscriptionPlan:
   def build(config: TwitchConfig, broadcasterId: String, view: AuthorizationView): SubscriptionPlan =
-    val broadcaster = view.broadcaster(config.channel)
+    val broadcaster = view.broadcaster(broadcasterId)
     val missing = config.oauth.scopes.diff(broadcaster.toList.flatMap(_.scopes))
     val followRequested = config.oauth.scopes.contains(TwitchScopes.Followers)
     val canFollow = followRequested && broadcaster.exists(_.scopes.contains(TwitchScopes.Followers))

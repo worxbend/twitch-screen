@@ -1,6 +1,5 @@
 #include "ui_idle.h"
 
-#include <Arduino.h>
 #include <array>
 #include <lvgl.h>
 
@@ -45,8 +44,7 @@ lv_obj_t *chipSubs = nullptr;
 lv_obj_t *offChipChat = nullptr;
 lv_obj_t *offChipFoll = nullptr;
 lv_obj_t *offChipSubs = nullptr;
-lv_obj_t *connectGroup = nullptr;
-lv_obj_t *connLabel = nullptr;
+
 
 // The three inputs that decide which screen is up (visibleStatsGroup).
 struct ScreenState {
@@ -55,10 +53,7 @@ struct ScreenState {
   bool live = false;
 };
 ScreenState screen;
-lv_timer_t *dotsTimer = nullptr;
 lv_timer_t *uptimeTimer = nullptr;
-lv_obj_t *connectSpinner = nullptr;
-lv_obj_t *connectLogo = nullptr;
 StreamStats latestStats;
 char viewersText[8] = {};
 char uptimeText[16] = {};
@@ -74,7 +69,7 @@ StatsShown shown;
 
 // §6.5 local uptime ticking. uptime_s is a snapshot taken at server_time and
 // STATS only arrives every 5 s, so the label would step in 5 s jumps. Anchor
-// the value against millis() on receipt and re-anchor on every STATS, which
+// the value against lv_tick_get() on receipt and re-anchor on every STATS, which
 // makes it tick once a second without ever drifting away from the relay.
 struct UptimeClock {
   uint32_t base = 0;
@@ -158,8 +153,12 @@ void formatUptime(char *buf, size_t n, uint32_t sec) {
 }
 
 void renderUptime() {
+  if (latestStats.availability != 1) {
+    setStaticLabel(uptimeLabel, uptimeText, "--");
+    return;
+  }
   if (!uptime.valid) return;
-  const uint32_t sec = uptime.base + (millis() - uptime.anchorMs) / 1000;
+  const uint32_t sec = uptime.base + (lv_tick_get() - uptime.anchorMs) / 1000;
   std::array<char, sizeof(uptimeText)> buf;
   formatUptime(buf.data(), buf.size(), sec);
   setStaticLabel(uptimeLabel, uptimeText, buf.data());
@@ -287,56 +286,6 @@ void buildOffline(lv_obj_t *scr) {
   lv_obj_set_hidden(offlineGroup, true);
 }
 
-lv_obj_t *makeGroup(lv_obj_t *scr) {
-  lv_obj_t *g = lv_obj_create(scr);
-  lv_obj_set_size(g, PANEL, PANEL);
-  lv_obj_center(g);
-  lv_obj_set_style_bg_opa(g, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_pad_all(g, 0, 0);
-  clearDecor(g);
-  return g;
-}
-
-void spinAnim(void *var, int32_t v) {
-  lv_arc_set_rotation(static_cast<lv_obj_t *>(var), v);
-}
-
-void dotsCb(lv_timer_t *) {
-  static const std::array<const char *, 4> labels = {
-      {"CONNECTING", "CONNECTING.", "CONNECTING..", "CONNECTING..."}};
-  static size_t n = 0;
-  n = (n + 1) % labels.size();
-  lv_label_set_text_static(connLabel, labels[n]);
-}
-
-void buildConnect(lv_obj_t *scr) {
-  connectGroup = makeGroup(scr);
-
-  // Purple spinner arc orbiting the logo.
-  lv_obj_t *spinner = connectSpinner = lv_arc_create(connectGroup);
-  lv_obj_set_size(spinner, 140, 140);
-  lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -14);
-  lv_arc_set_bg_angles(spinner, 0, 80);
-  lv_arc_set_range(spinner, 0, 100);
-  lv_arc_set_value(spinner, 100);
-  lv_obj_set_style_arc_width(spinner, 5, LV_PART_MAIN);
-  lv_obj_set_style_arc_width(spinner, 5, LV_PART_INDICATOR);
-  lv_obj_set_style_arc_color(spinner, COL_TRACK, LV_PART_MAIN);
-  lv_obj_set_style_arc_color(spinner, COL_PURPLE, LV_PART_INDICATOR);
-  lv_obj_set_style_arc_rounded(spinner, true, LV_PART_INDICATOR);
-  lv_obj_remove_style(spinner, nullptr, LV_PART_KNOB);
-  lv_obj_set_clickable(spinner, false);
-
-  lv_obj_t *logo = connectLogo = lv_image_create(connectGroup);
-  lv_image_set_src(logo, &glitch84);
-  lv_obj_align(logo, LV_ALIGN_CENTER, 0, -14);
-
-  connLabel = makeLabel(connectGroup, &lv_font_montserrat_20, COL_DIM,
-                        LV_ALIGN_CENTER, 72);
-  lv_label_set_text_static(connLabel, "CONNECTING");
-  dotsTimer = lv_timer_create(dotsCb, 450, nullptr);
-}
-
 // Applies the plan for the cached STATS: only the visible group, only the
 // fields whose shown text or value changed.
 void renderVisibleStats() {
@@ -351,39 +300,23 @@ void renderVisibleStats() {
   if (plan.foll) lv_label_set_text_static(live ? chipFoll : offChipFoll, texts.foll);
   if (plan.subs) lv_label_set_text_static(live ? chipSubs : offChipSubs, texts.subs);
   if (plan.uptime) renderUptime();
-  if (plan.viewers) setViewers(previousViewers, plan.viewersValue);
+  if (plan.viewers) {
+    if (plan.measurementsKnown) setViewers(previousViewers, plan.viewersValue);
+    else {
+      lv_anim_delete(viewersValue, viewersAnim);
+      setStaticLabel(viewersValue, viewersText, "--");
+    }
+  }
   if (plan.arc) lv_arc_set_value(edgeArc, plan.arcValue);
-}
-
-void startSpinner() {
-  lv_anim_t a;
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, connectSpinner);
-  lv_anim_set_values(&a, 0, 360);
-  lv_anim_set_duration(&a, 1400);
-  lv_anim_set_exec_cb(&a, spinAnim);
-  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-  lv_anim_start(&a);
-
 }
 
 void applyVisibility() {
   const StatsGroup group = visibleStatsGroup(screen.linkUp, screen.covered, screen.live);
-  const bool connecting = !screen.covered && !screen.linkUp;
   const bool live = group == StatsGroup::Live;
-  lv_obj_set_hidden(connectGroup, !connecting);
   lv_obj_set_hidden(liveGroup, !live);
   lv_obj_set_hidden(offlineGroup, group != StatsGroup::Offline);
-  lv_timer_pause(dotsTimer);
   lv_timer_pause(uptimeTimer);
-  lv_anim_delete(connectSpinner, spinAnim);
-  lv_anim_delete(connectLogo, pulseAnim);
   lv_anim_delete(liveDot, pulseAnim);
-  if (connecting) {
-    lv_timer_resume(dotsTimer);
-    startSpinner();
-    startPulse(connectLogo, 110, 255, 1200);
-  }
   if (live) {
     lv_timer_resume(uptimeTimer);
     startPulse(liveDot, 255, 60, 700);
@@ -405,31 +338,41 @@ void uiIdleBuild() {
 
   buildLive(scr);
   buildOffline(scr);
-  buildConnect(scr);
   initStatsShown(shown);
-  applyVisibility();  // starts in CONNECTING state until the link is up
+  applyVisibility();  // hidden until the Controller selects Twitch
 }
 
 void uiIdleSetStats(const StreamStats &s) {
   latestStats = s;
   const bool changed = screen.live != (s.live != 0);
   screen.live = s.live != 0;
-  uptime.valid = screen.live;
+  uptime.valid = screen.live && s.availability == 1;
   uptime.base = (s.streamStartedAt != 0 && s.serverTime >= s.streamStartedAt)
                     ? (s.serverTime - s.streamStartedAt) : s.uptimeSec;
-  uptime.anchorMs = millis();
+  uptime.anchorMs = lv_tick_get();
   if (changed) applyVisibility();
   else renderVisibleStats();
 }
 
-void uiIdleSetOnline(bool online) {
-  if (!connectGroup || online == screen.linkUp) return;
-  screen.linkUp = online;
-  applyVisibility();
+void uiIdleApplyStats(const StreamStats &s) {
+  if (s.viewers == latestStats.viewers && s.msgTotal == latestStats.msgTotal &&
+      s.uptimeSec == latestStats.uptimeSec && s.followers == latestStats.followers &&
+      s.subs == latestStats.subs && s.serverTime == latestStats.serverTime &&
+      s.streamStartedAt == latestStats.streamStartedAt && s.chatRate == latestStats.chatRate &&
+      s.live == latestStats.live && s.sflags == latestStats.sflags &&
+      s.availability == latestStats.availability) return;
+  uiIdleSetStats(s);
 }
 
+void uiIdleSetVisible(bool visible) {
+  if (!liveGroup || visible == screen.linkUp) return;
+  screen.linkUp = visible;
+  applyVisibility();
+}
+bool uiIdleVisible() { return screen.linkUp && !screen.covered; }
+
 void uiIdleSetCovered(bool value) {
-  if (!connectGroup || screen.covered == value) return;
+  if (!liveGroup || screen.covered == value) return;
   screen.covered = value;
   applyVisibility();
 }

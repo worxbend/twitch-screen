@@ -26,14 +26,25 @@ import twitchscreen.relay.observability.DiagnosticText
 private[relay] object NotificationRouter:
   private val logger = LoggerFactory.getLogger(getClass)
 
-  def start(config: NotificationsConfig, bus: EventBus, hub: DeviceHub)(using Ox): Unit =
+  def start(config: NotificationsConfig, bus: EventBus, hub: DeviceHub, sourceOwned: Boolean = false)(using Ox): Unit =
     logger.info(s"Routing Twitch events to devices (chat ${config.chat}); display time is per kind, per §6.4.1")
     bus.consume("device-notifications"): message =>
       message.event match
+        case event if sourceOwned && sourceEvent(event) => ()
         // The statistics fold owns these cards so EVENT and its resulting STATS share one actor operation.
         case _: (RelayEvent.StreamStarted | RelayEvent.StreamEnded) => ()
         // A refusal (§10.1 exhaustion) is reported by the hub itself, once; there is nothing more to do with it here.
         case event => toRequest(event).foreach(hub.publish(_).discard)
+
+  /** Events already admitted by the source reducer or application OAuth diagnostic path. Local failures remain independent. */
+  private[device] def sourceEvent(event: RelayEvent): Boolean = event match
+    case _: (RelayEvent.StreamStarted | RelayEvent.StreamEnded | RelayEvent.ChannelUpdated | RelayEvent.ViewersObserved |
+          RelayEvent.FollowersObserved | RelayEvent.SubscribersObserved | RelayEvent.Followed | RelayEvent.Subscribed |
+          RelayEvent.SubscriptionGifted | RelayEvent.Raided | RelayEvent.BitsCheered | RelayEvent.ChatMessaged | RelayEvent.TwitchLinkUp |
+          RelayEvent.TwitchLinkDown) =>
+      true
+    case RelayEvent.RelayFailure(_, _, DeskMessageCodec.Origin.Twitch) => true
+    case _                                                             => false
 
   /** Chat is mapped unconditionally, `notifications.chat` notwithstanding. §10.3 requires every `EVENT` to be sequenced and replayable,
     * including chat: a kind skipped by the sequence space lets a later event hold the high-water mark past a lost durable one, which
@@ -105,9 +116,9 @@ private[relay] object NotificationRouter:
 
       // The two relay-internal cards. §6.4.3's generic kinds: a title and a body, every numeric field 0.
       case RelayEvent.TwitchLinkDown(reason) =>
-        Some(EventRequest.of(NotificationKind.Warning, actor = "Twitch link lost", text = DiagnosticText(reason)))
+        Some(EventRequest.diagnostic(NotificationKind.Warning, "Twitch link lost", DiagnosticText(reason), DeskMessageCodec.Origin.Twitch))
 
-      case RelayEvent.RelayFailure(source, message) =>
-        Some(EventRequest.of(NotificationKind.Alert, actor = DiagnosticText(s"$source failed"), text = DiagnosticText(message)))
+      case RelayEvent.RelayFailure(source, message, origin) =>
+        Some(EventRequest.diagnostic(NotificationKind.Alert, DiagnosticText(s"$source failed"), DiagnosticText(message), origin))
 
       case _ => None

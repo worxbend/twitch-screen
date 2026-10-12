@@ -9,9 +9,12 @@ void uiIdleBuild();
 
 // Feed the latest stream stats (updates widgets, animates transitions).
 void uiIdleSetStats(const StreamStats &s);
+// Pre-render projection compare-skips identical samples without reanchoring uptime.
+void uiIdleApplyStats(const StreamStats &s);
 
-// Full-screen CONNECTING until WiFi and the TSB/3 WELCOME handshake are ready.
-void uiIdleSetOnline(bool online);
+// Rendering selection only. The Controller owns connectivity/base arbitration.
+void uiIdleSetVisible(bool visible);
+bool uiIdleVisible();
 
 // Suspend hidden timers/animations while a notification covers the screen.
 void uiIdleSetCovered(bool covered);

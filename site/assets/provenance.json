@@ -1,0 +1,8 @@
+{
+  "assets": [
+    {"path":"assets/orbit.svg","creator":"Twitch Screen contributors","license":"CC-BY-4.0","kind":"original authored vector illustration","physicalEvidence":false},
+    {"path":"assets/social.svg","creator":"Twitch Screen contributors","license":"CC-BY-4.0","kind":"original authored social preview","physicalEvidence":false}
+  ],
+  "codeLicense":"MIT",
+  "scope":"Only original site code and illustrations are covered here. The root original-contribution license map is present; complete third-party asset rights remain pending. No existing photos, logos, fonts or CAD media are bundled."
+}

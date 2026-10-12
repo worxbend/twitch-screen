@@ -16,6 +16,7 @@ import twitchscreen.relay.http.{ApiJson, Fail, Http, ServerEndpoints}
 import twitchscreen.relay.observability.LogBuffer
 import twitchscreen.relay.protocol.SeqNo
 import twitchscreen.relay.twitch.{TwitchSource, TwitchStatus}
+import twitchscreen.relay.settings.StartupMonitoringStatus
 
 final case class DeviceLink_OUT(
     connectedDevices: Int,
@@ -41,7 +42,8 @@ final case class Status_OUT(
     subscribers: List[SubscriberStats],
     activityEntries: Int,
     activeAlerts: Int,
-    bufferedLogRecords: Int
+    bufferedLogRecords: Int,
+    startupMonitoring: Option[StartupMonitoringStatus] = None
 ) derives Schema
 
 object Status_OUT:
@@ -54,7 +56,8 @@ final class StatusApi(
     activity: ActivityLog,
     alerts: AlertStore,
     clock: Clock,
-    startedAt: Instant
+    startedAt: Instant,
+    startupMonitoringStatus: Option[StartupMonitoringStatus] = None
 ) extends ServerEndpoints:
 
   override val endpoints: List[ServerEndpoint[Any, Identity]] = List(StatusApi.getEndpoint.handleSuccess(_ => status()))
@@ -78,7 +81,8 @@ final class StatusApi(
       subscribers = bus.subscriberStats,
       activityEntries = activity.size,
       activeAlerts = alerts.activeCount,
-      bufferedLogRecords = LogBuffer.size
+      bufferedLogRecords = LogBuffer.size,
+      startupMonitoring = startupMonitoringStatus
     )
 
 object StatusApi:

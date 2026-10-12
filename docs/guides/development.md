@@ -1,5 +1,7 @@
 # Development and verification
 
+> Desk-update migration notice: management Basic/Bearer instructions in this historical guide are obsolete for this checkout. Nonempty `RELAY_HTTP_AUTH_*` settings fail startup; Authorization confers no privilege. Use the [current root quickstart](../../README.md#first-success-without-twitch), [migration guide](migration.md) and [implementation status](../implementation-status.md). Trusted-network isolation is mandatory. Clock/display/weather/CPU ingress and durable desired display intent are mounted. Complete DESK delivery, admin and runtime-channel behavior remain pending.
+
 Each project has its own build directory. There is no root build that compiles the relay, firmware, and CAD together. Use the root-level Python checks to verify shared contracts, and use the component tools for compilation and tests.
 
 For a first run, follow [your first simulated stream](first-simulated-stream.md). For the system model and ownership boundaries, read [architecture](../reference/architecture.md).
@@ -66,7 +68,7 @@ Run these in `twitch-screen-relay/`:
 | `./mill test.testOnly twitchscreen.relay.http.ApiSuite` | Run one named suite; replace the class with the relevant test. |
 | `./mill mill.scalalib.scalafmt/checkFormatAll` | Check Scala formatting without changing files. |
 | `./mill mill.scalalib.scalafmt/` | Format Scala sources; review the resulting diff. |
-| `./mill run` | Run using the current environment and HOCON defaults. Management credentials are required. |
+| `./mill run` | Run with current environment/HOCON defaults; no management credentials. Keep the listener private. |
 | `./mill --no-server run` | Run without a persistent Mill server, used by the local tutorial. |
 | `./mill assembly` | Produce the application assembly used by the container build. |
 | `./mill show resolvedRunMvnDeps` | Print resolved runtime artifacts for dependency inspection or auditing. |
@@ -94,14 +96,13 @@ Useful focused suites include:
 
 The test sources under [relay/test/src](../../twitch-screen-relay/test/src/twitchscreen/relay) are the full inventory. A scripted Twitch adapter test does not validate provider acceptance of a real account's application or grant.
 
-For an interactive local relay, configure credentials and choose the simulated source:
+For an interactive local relay, choose the simulated source without management credentials:
 
 ```sh
-export RELAY_HTTP_AUTH_API_TOKEN="$(openssl rand -hex 32)"
-RELAY_TWITCH_MODE=simulated ./mill run
+RELAY_TWITCH_MODE=simulated ./mill --no-server run
 ```
 
-The first line creates a management token in the shell; the second selects the simulator for this run. The default listeners bind to all interfaces on ports 8080 and 8099. Use the [local tutorial](first-simulated-stream.md) for loopback-only operation or [relay setup](relay-setup.md) for LAN and persistent settings. Stop the foreground process with Ctrl+C.
+This selects the simulator without management credentials. Native listeners default to loopback on ports 8080 and 8099. Use the [local tutorial](first-simulated-stream.md) for loopback-only operation or [relay setup](relay-setup.md) for LAN and persistent settings. Stop the foreground process with Ctrl+C.
 
 New endpoint groups belong to their feature package, extend `ServerEndpoints`, use the synchronous `.handle` or `.handleSuccess` API, and are collected through [Apis.scala](../../twitch-screen-relay/src/twitchscreen/relay/Apis.scala). Select the appropriate management, public, or callback endpoint base in `Http`; unclassified endpoints fail assembly. Update documentation when an endpoint's input, output, access, or failure behavior changes.
 
@@ -114,6 +115,7 @@ Run these in `twitch-screen-firmware/`, after creating the root `.venv-pio` envi
 | `../.venv-pio/bin/pio test -e native` | Compile and run host tests for the codec, wire handling, link session, presentation, and deterministic parser fuzz cases. |
 | `../.venv-pio/bin/pio test -e native -f test_link_session` | Run a single test directory while working on link behavior. |
 | `../.venv-pio/bin/pio test -e native-sanitized` | Run native suites with AddressSanitizer and UndefinedBehaviorSanitizer; this is the Linux host gate used in CI. |
+| `../.venv-pio/bin/pio test -e native-lvgl` | Exercise actual LVGL lifecycle and orbital adapter on a memory-only display under sanitizers; not physical pixels. |
 | `../.venv-pio/bin/pio run -e esp32dev` | Compile the ESP32 application. |
 | `../.venv-pio/bin/pio run -e esp32dev -t upload` | Flash a connected board over USB; select the intended device before running. |
 | `../.venv-pio/bin/pio device list` | List detected serial ports. |
@@ -160,7 +162,7 @@ python3 tools/audit_relay_dependencies.py
 
 The first command tests the audit tool. The second resolves the relay's runtime dependencies with Mill, checks them against OSV, and applies the exact reviewed exceptions in [relay_dependency_exceptions.json](../../tools/relay_dependency_exceptions.json).
 
-The audit returns `0` when all findings have valid exceptions, `1` for unexcepted advisories, and `2` when the scan or its inputs are incomplete or invalid. Network failures are not a clean audit. Exception records are constrained to a package, version, advisory, review date, expiry, owner, and reason; expired or stale exceptions fail validation. The currently recorded legacy exceptions expire on 2026-10-25; [the dependency assessment](../../tasks/review-dependencies.md) explains their disposition.
+The audit returns `0` when all findings have valid exceptions, `1` for unexcepted advisories, and `2` when the scan or its inputs are incomplete or invalid. Network failures are not a clean audit. Exception records are constrained to a package, version, advisory, review date, expiry, owner, and reason; expired or stale exceptions fail validation. The currently recorded legacy exceptions expire on 2026-10-25; the dependency assessment (historical report unavailable in this checkout) explains their disposition.
 
 For a reusable input and full JSON report, first run this in the relay directory:
 
@@ -188,7 +190,7 @@ docker build -t twitch-screen-relay:review twitch-screen-relay
 python3 tools/smoke_container.py twitch-screen-relay:review
 ```
 
-The first command checks Dockerfile build configuration. The second builds the image. The third starts an isolated simulated container with a generated management token, ephemeral loopback ports, and a 512 MiB memory limit. It checks public/protected HTTP, credential redaction, a real TSB/3 `WELCOME`, and `SERVER_SHUTDOWN` BYE followed by EOF after SIGTERM. It removes its container in cleanup. Omitting the image argument uses `twitch-screen-relay:review`.
+The first command checks Dockerfile build configuration. The second builds the image. The third starts an isolated simulated container with ephemeral loopback ports and a 512 MiB memory limit. It checks credential-free HTTP, provider-secret redaction, real classic TSB/3 delivery and shutdown. No management credential is generated. It removes its container in cleanup. Omitting the image argument uses `twitch-screen-relay:review`.
 
 This smoke does not flash hardware, call live Twitch, or prove memory requirements for a sustained real workload. A healthy container also does not establish that an ESP32 can reach the host's LAN port.
 
@@ -230,7 +232,8 @@ This overwrites `src/assets/twitch_glitch.h` and the 48- and 84-pixel PNG previe
 |---|---|
 | `relay` | JDK 25 setup; `./mill compile`; audit-tool unit tests; resolved runtime dependency audit; `./mill test`; Scalafmt check. |
 | `protocol` | Golden-vector drift check; Python syntax compilation for CAD scripts, firmware tools, and root tools. |
-| `firmware` | Python 3.13 and PlatformIO 6.1.18; native tests; native sanitizer tests; copy example credentials into the fresh checkout; ESP32 compilation. |
+| `firmware` | Python 3.13 and PlatformIO 6.1.18; runner contract; native, sanitizer and actual-LVGL memory-display tests; refuse existing credentials header before example-only ESP32 compilation. |
+| `companion` | Hash-locked isolated environment; source tests, wheel build/allowlist parity, installed-wheel tests and safe configuration CLI. |
 | `container` | Docker build configuration check; build `twitch-screen-relay:ci`; run the container smoke against that image. |
 
 The Python syntax gate can be reproduced from the repository root:
@@ -249,6 +252,6 @@ Run `git status --short` before and after a change. Local `.env` files, Twitch t
 
 CAD `output/` is intentionally versioned: geometry changes can produce a large but necessary deliverable diff. The generated release gallery, manifest, and ZIP are excluded. Review source, validation reports, and generated outputs together when changing geometry.
 
-Repository-specific agent skills live under [`.agents/skills/`](../../.agents/skills). They document workflows and conventions; they do not replace the configured compiler, tests, or CI gates. Record the commands actually run and distinguish them from checks that require physical hardware or a real Twitch account.
+Repository-specific agent skills live under `.agents/skills/` (directory unavailable in this checkout). They document workflows and conventions; they do not replace the configured compiler, tests, or CI gates. Record the commands actually run and distinguish them from checks that require physical hardware or a real Twitch account.
 
 Use [troubleshooting](troubleshooting.md) to investigate a failed stage, and return to the [guidebook](../README.md) for the complete setup path.

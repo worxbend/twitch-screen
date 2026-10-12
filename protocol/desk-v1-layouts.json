@@ -1,0 +1,1142 @@
+{
+  "profile": 1,
+  "capability": 16,
+  "maxPayloadBytes": 248,
+  "headerBytes": 8,
+  "records": [
+    {
+      "name": "HELLO",
+      "code": 1,
+      "payloadBytes": 92,
+      "legacyBaseBytes": 60,
+      "fields": [
+        {
+          "name": "lastSeq",
+          "type": "u32",
+          "offset": 0,
+          "width": 4
+        },
+        {
+          "name": "caps",
+          "type": "u32",
+          "offset": 4,
+          "width": 4
+        },
+        {
+          "name": "rxMax",
+          "type": "u16",
+          "offset": 8,
+          "width": 2
+        },
+        {
+          "name": "reserved0",
+          "type": "u16",
+          "offset": 10,
+          "width": 2
+        },
+        {
+          "name": "deviceId",
+          "type": "bytes32",
+          "offset": 12,
+          "width": 32
+        },
+        {
+          "name": "fwVersion",
+          "type": "bytes16",
+          "offset": 44,
+          "width": 16
+        },
+        {
+          "name": "profile",
+          "type": "u16",
+          "offset": 60,
+          "width": 2
+        },
+        {
+          "name": "reserved",
+          "type": "u16",
+          "offset": 62,
+          "width": 2
+        },
+        {
+          "name": "previousRelayEpoch",
+          "type": "u64",
+          "offset": 64,
+          "width": 8
+        },
+        {
+          "name": "processedSeq",
+          "type": "u32",
+          "offset": 72,
+          "width": 4
+        },
+        {
+          "name": "deviceBootId",
+          "type": "u64",
+          "offset": 76,
+          "width": 8
+        },
+        {
+          "name": "probeDeviceMs",
+          "type": "u64",
+          "offset": 84,
+          "width": 8
+        }
+      ]
+    },
+    {
+      "name": "WELCOME",
+      "code": 32,
+      "payloadBytes": 60,
+      "legacyBaseBytes": 24,
+      "fields": [
+        {
+          "name": "latestSeq",
+          "type": "u32",
+          "offset": 0,
+          "width": 4
+        },
+        {
+          "name": "serverTime",
+          "type": "u32",
+          "offset": 4,
+          "width": 4
+        },
+        {
+          "name": "sessionId",
+          "type": "u32",
+          "offset": 8,
+          "width": 4
+        },
+        {
+          "name": "maxFrame",
+          "type": "u16",
+          "offset": 12,
+          "width": 2
+        },
+        {
+          "name": "pingIntervalS",
+          "type": "u16",
+          "offset": 14,
+          "width": 2
+        },
+        {
+          "name": "idleTimeoutS",
+          "type": "u16",
+          "offset": 16,
+          "width": 2
+        },
+        {
+          "name": "replayWindow",
+          "type": "u16",
+          "offset": 18,
+          "width": 2
+        },
+        {
+          "name": "caps",
+          "type": "u32",
+          "offset": 20,
+          "width": 4
+        },
+        {
+          "name": "profile",
+          "type": "u16",
+          "offset": 24,
+          "width": 2
+        },
+        {
+          "name": "reserved",
+          "type": "u16",
+          "offset": 26,
+          "width": 2
+        },
+        {
+          "name": "relayEpoch",
+          "type": "u64",
+          "offset": 28,
+          "width": 8
+        },
+        {
+          "name": "connectionId",
+          "type": "u64",
+          "offset": 36,
+          "width": 8
+        },
+        {
+          "name": "sampledRelayMs",
+          "type": "u64",
+          "offset": 44,
+          "width": 8
+        },
+        {
+          "name": "echoedProbeDeviceMs",
+          "type": "u64",
+          "offset": 52,
+          "width": 8
+        }
+      ]
+    },
+    {
+      "name": "STATS",
+      "code": 34,
+      "payloadBytes": 60,
+      "legacyBaseBytes": 32,
+      "fields": [
+        {
+          "name": "viewers",
+          "type": "u32",
+          "offset": 0,
+          "width": 4
+        },
+        {
+          "name": "msgTotal",
+          "type": "u32",
+          "offset": 4,
+          "width": 4
+        },
+        {
+          "name": "uptimeS",
+          "type": "u32",
+          "offset": 8,
+          "width": 4
+        },
+        {
+          "name": "followers",
+          "type": "u32",
+          "offset": 12,
+          "width": 4
+        },
+        {
+          "name": "subs",
+          "type": "u32",
+          "offset": 16,
+          "width": 4
+        },
+        {
+          "name": "serverTime",
+          "type": "u32",
+          "offset": 20,
+          "width": 4
+        },
+        {
+          "name": "streamStartedAt",
+          "type": "u32",
+          "offset": 24,
+          "width": 4
+        },
+        {
+          "name": "chatRate",
+          "type": "u16",
+          "offset": 28,
+          "width": 2
+        },
+        {
+          "name": "live",
+          "type": "u8",
+          "offset": 30,
+          "width": 1
+        },
+        {
+          "name": "sflags",
+          "type": "u8",
+          "offset": 31,
+          "width": 1
+        },
+        {
+          "name": "relayEpoch",
+          "type": "u64",
+          "offset": 32,
+          "width": 8
+        },
+        {
+          "name": "connectionId",
+          "type": "u64",
+          "offset": 40,
+          "width": 8
+        },
+        {
+          "name": "sourceGeneration",
+          "type": "u32",
+          "offset": 48,
+          "width": 4
+        },
+        {
+          "name": "statsRevision",
+          "type": "u32",
+          "offset": 52,
+          "width": 4
+        },
+        {
+          "name": "availability",
+          "type": "u8",
+          "offset": 56,
+          "width": 1
+        },
+        {
+          "name": "reserved",
+          "type": "bytes3",
+          "offset": 57,
+          "width": 3
+        }
+      ]
+    },
+    {
+      "name": "TIME_REQUEST",
+      "code": 5,
+      "payloadBytes": 8,
+      "legacyBaseBytes": 0,
+      "fields": [
+        {
+          "name": "probeDeviceMs",
+          "type": "u64",
+          "offset": 0,
+          "width": 8
+        }
+      ]
+    },
+    {
+      "name": "DEVICE_REPORT",
+      "code": 6,
+      "payloadBytes": 244,
+      "legacyBaseBytes": 0,
+      "fields": [
+        {
+          "name": "relayEpoch",
+          "type": "u64",
+          "offset": 0,
+          "width": 8
+        },
+        {
+          "name": "connectionId",
+          "type": "u64",
+          "offset": 8,
+          "width": 8
+        },
+        {
+          "name": "deviceBootId",
+          "type": "u64",
+          "offset": 16,
+          "width": 8
+        },
+        {
+          "name": "reportRevision",
+          "type": "u32",
+          "offset": 24,
+          "width": 4
+        },
+        {
+          "name": "observedDeviceMs",
+          "type": "u64",
+          "offset": 28,
+          "width": 8
+        },
+        {
+          "name": "observedRelayLowerMs",
+          "type": "u64",
+          "offset": 36,
+          "width": 8
+        },
+        {
+          "name": "grantTotal",
+          "type": "u64",
+          "offset": 44,
+          "width": 8
+        },
+        {
+          "name": "processedSeq",
+          "type": "u32",
+          "offset": 52,
+          "width": 4
+        },
+        {
+          "name": "enqueuedSeq",
+          "type": "u32",
+          "offset": 56,
+          "width": 4
+        },
+        {
+          "name": "displayRevision",
+          "type": "u32",
+          "offset": 60,
+          "width": 4
+        },
+        {
+          "name": "sourceGeneration",
+          "type": "u32",
+          "offset": 64,
+          "width": 4
+        },
+        {
+          "name": "twitchEpisode",
+          "type": "u32",
+          "offset": 68,
+          "width": 4
+        },
+        {
+          "name": "weatherRevision",
+          "type": "u32",
+          "offset": 72,
+          "width": 4
+        },
+        {
+          "name": "cpuRevision",
+          "type": "u32",
+          "offset": 76,
+          "width": 4
+        },
+        {
+          "name": "baseScreen",
+          "type": "u8",
+          "offset": 80,
+          "width": 1
+        },
+        {
+          "name": "reason",
+          "type": "u8",
+          "offset": 81,
+          "width": 1
+        },
+        {
+          "name": "activePhase",
+          "type": "u8",
+          "offset": 82,
+          "width": 1
+        },
+        {
+          "name": "pendingCount",
+          "type": "u8",
+          "offset": 83,
+          "width": 1
+        },
+        {
+          "name": "activeRemainingMs",
+          "type": "u32",
+          "offset": 84,
+          "width": 4
+        },
+        {
+          "name": "expiredTotal",
+          "type": "u32",
+          "offset": 88,
+          "width": 4
+        },
+        {
+          "name": "suppressedTotal",
+          "type": "u32",
+          "offset": 92,
+          "width": 4
+        },
+        {
+          "name": "refusedTotal",
+          "type": "u32",
+          "offset": 96,
+          "width": 4
+        },
+        {
+          "name": "entry0.originalRelayEpoch",
+          "type": "u64",
+          "offset": 100,
+          "width": 8
+        },
+        {
+          "name": "entry0.seq",
+          "type": "u32",
+          "offset": 108,
+          "width": 4
+        },
+        {
+          "name": "entry0.kind",
+          "type": "u8",
+          "offset": 112,
+          "width": 1
+        },
+        {
+          "name": "entry0.origin",
+          "type": "u8",
+          "offset": 113,
+          "width": 1
+        },
+        {
+          "name": "entry0.reserved",
+          "type": "u16",
+          "offset": 114,
+          "width": 2
+        },
+        {
+          "name": "entry1.originalRelayEpoch",
+          "type": "u64",
+          "offset": 116,
+          "width": 8
+        },
+        {
+          "name": "entry1.seq",
+          "type": "u32",
+          "offset": 124,
+          "width": 4
+        },
+        {
+          "name": "entry1.kind",
+          "type": "u8",
+          "offset": 128,
+          "width": 1
+        },
+        {
+          "name": "entry1.origin",
+          "type": "u8",
+          "offset": 129,
+          "width": 1
+        },
+        {
+          "name": "entry1.reserved",
+          "type": "u16",
+          "offset": 130,
+          "width": 2
+        },
+        {
+          "name": "entry2.originalRelayEpoch",
+          "type": "u64",
+          "offset": 132,
+          "width": 8
+        },
+        {
+          "name": "entry2.seq",
+          "type": "u32",
+          "offset": 140,
+          "width": 4
+        },
+        {
+          "name": "entry2.kind",
+          "type": "u8",
+          "offset": 144,
+          "width": 1
+        },
+        {
+          "name": "entry2.origin",
+          "type": "u8",
+          "offset": 145,
+          "width": 1
+        },
+        {
+          "name": "entry2.reserved",
+          "type": "u16",
+          "offset": 146,
+          "width": 2
+        },
+        {
+          "name": "entry3.originalRelayEpoch",
+          "type": "u64",
+          "offset": 148,
+          "width": 8
+        },
+        {
+          "name": "entry3.seq",
+          "type": "u32",
+          "offset": 156,
+          "width": 4
+        },
+        {
+          "name": "entry3.kind",
+          "type": "u8",
+          "offset": 160,
+          "width": 1
+        },
+        {
+          "name": "entry3.origin",
+          "type": "u8",
+          "offset": 161,
+          "width": 1
+        },
+        {
+          "name": "entry3.reserved",
+          "type": "u16",
+          "offset": 162,
+          "width": 2
+        },
+        {
+          "name": "entry4.originalRelayEpoch",
+          "type": "u64",
+          "offset": 164,
+          "width": 8
+        },
+        {
+          "name": "entry4.seq",
+          "type": "u32",
+          "offset": 172,
+          "width": 4
+        },
+        {
+          "name": "entry4.kind",
+          "type": "u8",
+          "offset": 176,
+          "width": 1
+        },
+        {
+          "name": "entry4.origin",
+          "type": "u8",
+          "offset": 177,
+          "width": 1
+        },
+        {
+          "name": "entry4.reserved",
+          "type": "u16",
+          "offset": 178,
+          "width": 2
+        },
+        {
+          "name": "entry5.originalRelayEpoch",
+          "type": "u64",
+          "offset": 180,
+          "width": 8
+        },
+        {
+          "name": "entry5.seq",
+          "type": "u32",
+          "offset": 188,
+          "width": 4
+        },
+        {
+          "name": "entry5.kind",
+          "type": "u8",
+          "offset": 192,
+          "width": 1
+        },
+        {
+          "name": "entry5.origin",
+          "type": "u8",
+          "offset": 193,
+          "width": 1
+        },
+        {
+          "name": "entry5.reserved",
+          "type": "u16",
+          "offset": 194,
+          "width": 2
+        },
+        {
+          "name": "entry6.originalRelayEpoch",
+          "type": "u64",
+          "offset": 196,
+          "width": 8
+        },
+        {
+          "name": "entry6.seq",
+          "type": "u32",
+          "offset": 204,
+          "width": 4
+        },
+        {
+          "name": "entry6.kind",
+          "type": "u8",
+          "offset": 208,
+          "width": 1
+        },
+        {
+          "name": "entry6.origin",
+          "type": "u8",
+          "offset": 209,
+          "width": 1
+        },
+        {
+          "name": "entry6.reserved",
+          "type": "u16",
+          "offset": 210,
+          "width": 2
+        },
+        {
+          "name": "entry7.originalRelayEpoch",
+          "type": "u64",
+          "offset": 212,
+          "width": 8
+        },
+        {
+          "name": "entry7.seq",
+          "type": "u32",
+          "offset": 220,
+          "width": 4
+        },
+        {
+          "name": "entry7.kind",
+          "type": "u8",
+          "offset": 224,
+          "width": 1
+        },
+        {
+          "name": "entry7.origin",
+          "type": "u8",
+          "offset": 225,
+          "width": 1
+        },
+        {
+          "name": "entry7.reserved",
+          "type": "u16",
+          "offset": 226,
+          "width": 2
+        },
+        {
+          "name": "entry8.originalRelayEpoch",
+          "type": "u64",
+          "offset": 228,
+          "width": 8
+        },
+        {
+          "name": "entry8.seq",
+          "type": "u32",
+          "offset": 236,
+          "width": 4
+        },
+        {
+          "name": "entry8.kind",
+          "type": "u8",
+          "offset": 240,
+          "width": 1
+        },
+        {
+          "name": "entry8.origin",
+          "type": "u8",
+          "offset": 241,
+          "width": 1
+        },
+        {
+          "name": "entry8.reserved",
+          "type": "u16",
+          "offset": 242,
+          "width": 2
+        }
+      ]
+    },
+    {
+      "name": "TIME_RESPONSE",
+      "code": 38,
+      "payloadBytes": 32,
+      "legacyBaseBytes": 0,
+      "fields": [
+        {
+          "name": "relayEpoch",
+          "type": "u64",
+          "offset": 0,
+          "width": 8
+        },
+        {
+          "name": "connectionId",
+          "type": "u64",
+          "offset": 8,
+          "width": 8
+        },
+        {
+          "name": "echoedProbeDeviceMs",
+          "type": "u64",
+          "offset": 16,
+          "width": 8
+        },
+        {
+          "name": "sampledRelayMs",
+          "type": "u64",
+          "offset": 24,
+          "width": 8
+        }
+      ]
+    },
+    {
+      "name": "DISPLAY_STATE",
+      "code": 39,
+      "payloadBytes": 32,
+      "legacyBaseBytes": 0,
+      "fields": [
+        {
+          "name": "relayEpoch",
+          "type": "u64",
+          "offset": 0,
+          "width": 8
+        },
+        {
+          "name": "connectionId",
+          "type": "u64",
+          "offset": 8,
+          "width": 8
+        },
+        {
+          "name": "revision",
+          "type": "u32",
+          "offset": 16,
+          "width": 4
+        },
+        {
+          "name": "sourceGeneration",
+          "type": "u32",
+          "offset": 20,
+          "width": 4
+        },
+        {
+          "name": "twitchEpisode",
+          "type": "u32",
+          "offset": 24,
+          "width": 4
+        },
+        {
+          "name": "enabled",
+          "type": "u8",
+          "offset": 28,
+          "width": 1
+        },
+        {
+          "name": "preferred",
+          "type": "u8",
+          "offset": 29,
+          "width": 1
+        },
+        {
+          "name": "reserved",
+          "type": "u16",
+          "offset": 30,
+          "width": 2
+        }
+      ]
+    },
+    {
+      "name": "WEATHER",
+      "code": 40,
+      "payloadBytes": 68,
+      "legacyBaseBytes": 0,
+      "fields": [
+        {
+          "name": "relayEpoch",
+          "type": "u64",
+          "offset": 0,
+          "width": 8
+        },
+        {
+          "name": "connectionId",
+          "type": "u64",
+          "offset": 8,
+          "width": 8
+        },
+        {
+          "name": "revision",
+          "type": "u32",
+          "offset": 16,
+          "width": 4
+        },
+        {
+          "name": "deadlineRelayMs",
+          "type": "u64",
+          "offset": 20,
+          "width": 8
+        },
+        {
+          "name": "status",
+          "type": "u8",
+          "offset": 28,
+          "width": 1
+        },
+        {
+          "name": "unit",
+          "type": "u8",
+          "offset": 29,
+          "width": 1
+        },
+        {
+          "name": "condition",
+          "type": "u8",
+          "offset": 30,
+          "width": 1
+        },
+        {
+          "name": "presence",
+          "type": "u8",
+          "offset": 31,
+          "width": 1
+        },
+        {
+          "name": "temperatureCenti",
+          "type": "i16",
+          "offset": 32,
+          "width": 2
+        },
+        {
+          "name": "humidityPercent",
+          "type": "u8",
+          "offset": 34,
+          "width": 1
+        },
+        {
+          "name": "reserved",
+          "type": "u8",
+          "offset": 35,
+          "width": 1
+        },
+        {
+          "name": "location",
+          "type": "bytes32",
+          "offset": 36,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "name": "CPU",
+      "code": 41,
+      "payloadBytes": 68,
+      "legacyBaseBytes": 0,
+      "fields": [
+        {
+          "name": "relayEpoch",
+          "type": "u64",
+          "offset": 0,
+          "width": 8
+        },
+        {
+          "name": "connectionId",
+          "type": "u64",
+          "offset": 8,
+          "width": 8
+        },
+        {
+          "name": "revision",
+          "type": "u32",
+          "offset": 16,
+          "width": 4
+        },
+        {
+          "name": "deadlineRelayMs",
+          "type": "u64",
+          "offset": 20,
+          "width": 8
+        },
+        {
+          "name": "status",
+          "type": "u8",
+          "offset": 28,
+          "width": 1
+        },
+        {
+          "name": "presence",
+          "type": "u8",
+          "offset": 29,
+          "width": 1
+        },
+        {
+          "name": "cpuBasisPoints",
+          "type": "u16",
+          "offset": 30,
+          "width": 2
+        },
+        {
+          "name": "memoryBasisPoints",
+          "type": "u16",
+          "offset": 32,
+          "width": 2
+        },
+        {
+          "name": "temperatureCenti",
+          "type": "i16",
+          "offset": 34,
+          "width": 2
+        },
+        {
+          "name": "host",
+          "type": "bytes32",
+          "offset": 36,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "name": "SYNC_END",
+      "code": 42,
+      "payloadBytes": 40,
+      "legacyBaseBytes": 0,
+      "fields": [
+        {
+          "name": "relayEpoch",
+          "type": "u64",
+          "offset": 0,
+          "width": 8
+        },
+        {
+          "name": "connectionId",
+          "type": "u64",
+          "offset": 8,
+          "width": 8
+        },
+        {
+          "name": "displayRevision",
+          "type": "u32",
+          "offset": 16,
+          "width": 4
+        },
+        {
+          "name": "weatherRevision",
+          "type": "u32",
+          "offset": 20,
+          "width": 4
+        },
+        {
+          "name": "cpuRevision",
+          "type": "u32",
+          "offset": 24,
+          "width": 4
+        },
+        {
+          "name": "statsRevision",
+          "type": "u32",
+          "offset": 28,
+          "width": 4
+        },
+        {
+          "name": "sourceGeneration",
+          "type": "u32",
+          "offset": 32,
+          "width": 4
+        },
+        {
+          "name": "twitchEpisode",
+          "type": "u32",
+          "offset": 36,
+          "width": 4
+        }
+      ]
+    },
+    {
+      "name": "DESK_EVENT",
+      "code": 43,
+      "payloadBytes": 196,
+      "legacyBaseBytes": 168,
+      "fields": [
+        {
+          "name": "seq",
+          "type": "u32",
+          "offset": 0,
+          "width": 4
+        },
+        {
+          "name": "ts",
+          "type": "u32",
+          "offset": 4,
+          "width": 4
+        },
+        {
+          "name": "value",
+          "type": "u32",
+          "offset": 8,
+          "width": 4
+        },
+        {
+          "name": "reserved1",
+          "type": "bytes4",
+          "offset": 12,
+          "width": 4
+        },
+        {
+          "name": "months",
+          "type": "u16",
+          "offset": 16,
+          "width": 2
+        },
+        {
+          "name": "ttlDs",
+          "type": "u16",
+          "offset": 18,
+          "width": 2
+        },
+        {
+          "name": "kind",
+          "type": "u8",
+          "offset": 20,
+          "width": 1
+        },
+        {
+          "name": "tier",
+          "type": "u8",
+          "offset": 21,
+          "width": 1
+        },
+        {
+          "name": "eflags",
+          "type": "u8",
+          "offset": 22,
+          "width": 1
+        },
+        {
+          "name": "reserved2",
+          "type": "u8",
+          "offset": 23,
+          "width": 1
+        },
+        {
+          "name": "actor",
+          "type": "bytes48",
+          "offset": 24,
+          "width": 48
+        },
+        {
+          "name": "text",
+          "type": "bytes96",
+          "offset": 72,
+          "width": 96
+        },
+        {
+          "name": "relayEpoch",
+          "type": "u64",
+          "offset": 168,
+          "width": 8
+        },
+        {
+          "name": "sourceGeneration",
+          "type": "u32",
+          "offset": 176,
+          "width": 4
+        },
+        {
+          "name": "twitchEpisode",
+          "type": "u32",
+          "offset": 180,
+          "width": 4
+        },
+        {
+          "name": "deadlineRelayMs",
+          "type": "u64",
+          "offset": 184,
+          "width": 8
+        },
+        {
+          "name": "origin",
+          "type": "u8",
+          "offset": 192,
+          "width": 1
+        },
+        {
+          "name": "reserved",
+          "type": "bytes3",
+          "offset": 193,
+          "width": 3
+        }
+      ]
+    },
+    {
+      "name": "PROGRESS_BARRIER",
+      "code": 44,
+      "payloadBytes": 20,
+      "legacyBaseBytes": 0,
+      "fields": [
+        {
+          "name": "relayEpoch",
+          "type": "u64",
+          "offset": 0,
+          "width": 8
+        },
+        {
+          "name": "connectionId",
+          "type": "u64",
+          "offset": 8,
+          "width": 8
+        },
+        {
+          "name": "throughSeq",
+          "type": "u32",
+          "offset": 16,
+          "width": 4
+        }
+      ]
+    }
+  ]
+}

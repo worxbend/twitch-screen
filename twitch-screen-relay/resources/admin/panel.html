@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Twitch Screen · Desk control</title>
+  <link rel="stylesheet" href="/admin/assets/v1/panel.css">
+  <script type="module" src="/admin/assets/v1/panel.js"></script>
+</head>
+<body>
+  <header><p class="eyebrow">TWITCH SCREEN / PRIVATE RELAY</p><h1>Your desk, at a glance.</h1>
+    <p>Desired control, accepted sources and firmware observations. Not proof of physical pixels.</p>
+    <p id="feed-status" role="status" aria-live="polite">Loading authoritative state…</p>
+  </header>
+  <main>
+    <section aria-labelledby="display-heading"><h2 id="display-heading">Display intent</h2>
+      <div id="display-controls" class="choices" role="group" aria-label="Choose desired base display">
+        <button type="button" data-display="twitch" aria-pressed="false">Twitch</button>
+        <button type="button" data-display="generic" aria-pressed="false">Generic</button>
+        <button type="button" data-display="weather" aria-pressed="false">Weather</button>
+        <button type="button" data-display="cpu" aria-pressed="false">CPU</button>
+      </div>
+      <p id="display-detail">No control snapshot yet.</p>
+      <p>Selection never starts a broadcast, changes monitoring or interrupts an active card.</p>
+    </section>
+    <section aria-labelledby="monitor-heading"><h2 id="monitor-heading">Twitch monitoring</h2>
+      <form id="monitor-form">
+        <label for="monitor-mode">Ingestion mode</label>
+        <select id="monitor-mode" name="mode"><option value="disabled">Disabled</option><option value="simulated">Simulated · demo</option><option value="live">Live provider</option></select>
+        <label for="monitor-channel">Channel login</label>
+        <input id="monitor-channel" name="channel" maxlength="25" pattern="[a-zA-Z0-9_]{1,25}" autocomplete="off" placeholder="worxbend">
+        <button type="submit">Apply monitoring</button>
+      </form>
+      <p id="monitor-detail">No monitoring snapshot yet.</p><p id="grant-detail">Grant compatibility unknown.</p>
+      <a id="connect-twitch" href="/api/v1/twitch/authorize">Connect Twitch</a>
+      <p id="consent-detail">Remote consent needs configured, browser-trusted private HTTPS. Display and source controls do not need a grant.</p>
+    </section>
+    <section aria-labelledby="source-heading"><h2 id="source-heading">Current sources</h2>
+      <div class="source-grid"><article><h3>CPU / memory</h3><p id="cpu-value">No accepted observation.</p></article>
+        <article><h3>Weather</h3><p id="weather-value">No accepted observation.</p></article></div>
+      <p>Hidden updates remain accepted. Missing and stale sources use the connected orbit; relay loss uses the disconnected orbit.</p>
+    </section>
+    <section aria-labelledby="device-heading"><h2 id="device-heading">Device observation</h2>
+      <label for="device-select">Device</label><select id="device-select"><option value="">No device</option></select>
+      <p id="device-detail">No device connected or retained.</p>
+      <ol id="device-queue" aria-label="Firmware-reported active card followed by pending FIFO"></ol>
+      <p id="transport-detail">Transport backlog unavailable.</p>
+      <button id="test-card" type="button">Send one synthetic test card</button>
+      <p>Publication acceptance is not presentation. Test cards are not retried after an ambiguous response.</p>
+    </section>
+    <section class="wide" aria-labelledby="chart-heading"><h2 id="chart-heading">Observed history</h2>
+      <p>RAM only · 15 minutes · 5-second buckets. Gaps are unavailable observations, not zero. Device session changes create gaps.</p>
+      <div id="charts" class="chart-grid"></div>
+    </section>
+    <section class="wide" aria-labelledby="history-heading"><h2 id="history-heading">Relay publication history</h2>
+      <p>Newest 80 retained records. Separate from transport backlog and firmware FIFO.</p>
+      <ol id="history"><li>No retained records.</li></ol>
+    </section>
+    <p class="wide" id="action-status" role="status" aria-live="polite"></p>
+  </main>
+  <footer>Anyone reaching this relay can control it. Use a trusted LAN/VPN and firewall; never expose management publicly. <a href="/docs">API reference</a></footer>
+</body>
+</html>

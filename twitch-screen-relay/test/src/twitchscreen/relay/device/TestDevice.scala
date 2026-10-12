@@ -89,7 +89,7 @@ private[device] object TestRelay:
     timeoutOption(budget):
       Iterator
         .continually(events.receive())
-        .collectFirst { case BusEvent(_, RelayEvent.DeviceDisconnected(_, _, reason)) => reason }
+        .collectFirst { case BusEvent(_, RelayEvent.DeviceDisconnected(_, _, reason), _) => reason }
         .get
 
   val config: DeviceLinkConfig = DeviceLinkConfig(

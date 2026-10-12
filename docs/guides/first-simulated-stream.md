@@ -11,6 +11,8 @@ keywords:
 
 # Your first simulated stream
 
+> Desk-update migration notice: management Basic/Bearer instructions in this historical guide are obsolete for this checkout. Nonempty `RELAY_HTTP_AUTH_*` settings fail startup; Authorization confers no privilege. Use the [current root quickstart](../../README.md#first-success-without-twitch), [migration guide](migration.md) and [implementation status](../implementation-status.md). Trusted-network isolation is mandatory. Clock/display/weather/CPU ingress and durable desired display intent are mounted. Complete DESK delivery, admin and runtime-channel behavior remain pending.
+
 Welcome! This tutorial is for someone who can run commands in a terminal and wants to understand what the relay does before wiring a display or registering a Twitch application. You do not need an ESP32, Twitch account, Docker, or Scala knowledge.
 
 By the end, you will understand how to:
@@ -74,7 +76,7 @@ Device link listening on 127.0.0.1:8099 (protocol v3, max 64 sessions)
 Management API on http://127.0.0.1:8080/docs
 ```
 
-Timestamps, thread names, and the API's endpoint count surround these messages. A download or compilation phase may precede them. A configuration error or `Address already in use` means startup has failed; resolve the message using [troubleshooting](troubleshooting.md) before continuing. Missing management credentials are a startup error even in simulated mode.
+Timestamps, thread names, and the API's endpoint count surround these messages. A download or compilation phase may precede them. A configuration error or `Address already in use` means startup has failed; resolve the message using [troubleshooting](troubleshooting.md) before continuing. No management credentials are required in simulated mode; nonempty obsolete authentication settings fail startup.
 
 ## 2. Ask whether the relay is running
 

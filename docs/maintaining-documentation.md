@@ -61,4 +61,4 @@ Keep old records when a decision changes and link a superseding record. Document
 6. Use a separate reviewer for factual claims and tutorial structure. Fix findings in the documentation and run the focused checks again.
 7. Report what was executed, what was source-reviewed, and what still requires live Twitch or a physical device.
 
-The [documentation review record](../tasks/docs-quality-review.md) applies the requested documentation skills to this revision and records explicit exceptions to their ZIO-specific tooling requirements.
+The documentation review record (historical report unavailable in this checkout) applies the requested documentation skills to this revision and records explicit exceptions to their ZIO-specific tooling requirements.

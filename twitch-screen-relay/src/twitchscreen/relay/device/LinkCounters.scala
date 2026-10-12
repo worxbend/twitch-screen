@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 import ox.discard
 import sttp.tapir.Schema
 import twitchscreen.relay.protocol.{FrameCounters, ProtocolError}
+import ox.channels.{Channel, ChannelClosed}
 
 /** Throughput of one device link, reported by `GET /api/v1/devices`.
   *
@@ -53,6 +54,15 @@ private[device] final class LinkCounters(clock: Clock) extends FrameCounters:
   private val receivedBytes = AtomicLong(0)
   private val acknowledged = AtomicLong(0)
   private val lastSeen = AtomicReference(clock.instant())
+  private var queued = 0
+
+  /** Classic writer queue only. Admission and receive bookkeeping share this short monitor; socket I/O never holds it. */
+  def offerQueued(outbound: Channel[Outbound], value: Outbound): Boolean | ChannelClosed = synchronized:
+    val result = outbound.trySendOrClosed(value)
+    if result == true then queued += 1
+    result
+  def dequeued(): Unit = synchronized { queued = math.max(0, queued - 1) }
+  def queuedFrames: Int = synchronized(queued)
 
   def recordSent(bytes: Int): Unit =
     sentFrames.incrementAndGet().discard

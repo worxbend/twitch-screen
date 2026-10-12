@@ -12,6 +12,7 @@ import ox.discard
 private[http] final class RequestBodyLimit(maxBytes: Long) extends ChannelInboundHandlerAdapter:
   private val received = AtomicLong(0L)
   private val rejected = AtomicBoolean(false)
+  private val limit = maxBytes
 
   override def channelRead(context: ChannelHandlerContext, message: Object): Unit =
     if rejected.get() then ReferenceCountUtil.release(message).discard
@@ -19,13 +20,13 @@ private[http] final class RequestBodyLimit(maxBytes: Long) extends ChannelInboun
       val exceeds = message match
         case request: HttpRequest =>
           received.set(0L)
-          HttpUtil.getContentLength(request, 0L) > maxBytes
-        case content: HttpContent => received.addAndGet(content.content().readableBytes().toLong) > maxBytes
+          HttpUtil.getContentLength(request, 0L) > limit
+        case content: HttpContent => received.addAndGet(content.content().readableBytes().toLong) > limit
         case _                    => false
       if exceeds then
         rejected.set(true)
         ReferenceCountUtil.release(message).discard
-        val bytes = s"{\"error\":\"Request body exceeds $maxBytes bytes\"}".getBytes(UTF_8)
+        val bytes = s"{\"error\":\"Request body exceeds $limit bytes\"}".getBytes(UTF_8)
         val response =
           DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.REQUEST_ENTITY_TOO_LARGE, Unpooled.wrappedBuffer(bytes))
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json").discard

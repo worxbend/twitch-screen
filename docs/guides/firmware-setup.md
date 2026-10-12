@@ -1,5 +1,7 @@
 # ⚡ Configure, build and flash the firmware
 
+> Desk-update migration notice: management Basic/Bearer instructions in this historical guide are obsolete for this checkout. Nonempty `RELAY_HTTP_AUTH_*` settings fail startup; Authorization confers no privilege. Use the [current root quickstart](../../README.md#first-success-without-twitch), [migration guide](migration.md) and [implementation status](../implementation-status.md). Trusted-network isolation is mandatory. Clock/display/weather/CPU ingress and durable desired display intent are mounted. Complete DESK delivery, admin and runtime-channel behavior remain pending.
+
 [← Guidebook](../README.md) · [Build the device](device-build.md) · [Use the device →](device-use.md)
 
 This guide installs the firmware on the classic ESP32 DevKit V1 with the Waveshare GC9A01 LCD. **Flashing** writes the program to the ESP32. Configuration is compiled into that program, so changing Wi-Fi or the relay address requires rebuilding and uploading.

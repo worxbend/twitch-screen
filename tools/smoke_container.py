@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build-independent container smoke: public HTTP, protected HTTP and TSB/3."""
+"""Build-independent credential-free private HTTP and real classic TSB/3 smoke."""
 
 import json
 import os
@@ -37,7 +37,9 @@ def read_frame(connection):
 def http_client(base):
     """Return request(path, credential, payload) -> (status, body), treating HTTP errors as responses."""
     def request(path, credential=None, payload=None):
-        headers = {} if credential is None else {"Authorization": "Bearer " + credential}
+        headers = {"Host": "127.0.0.1:8080"}
+        if credential is not None:
+            headers["Authorization"] = "Bearer " + credential
         data = None if payload is None else json.dumps(payload).encode()
         if data is not None:
             headers["Content-Type"] = "application/json"
@@ -67,13 +69,11 @@ def check_http(request, token):
     for path in ("/api/v1/health", "/api/v1/stats", "/docs/"):
         assert request(path)[0] == 200, path
     for path in ("/api/v1/config", "/api/v1/devices", "/api/v1/status"):
-        for credential in (None, "incorrect"):
+        for credential in (None, token):
             status, body = request(path, credential)
-            assert status == 401, (path, status)
+            assert status == 200, (path, status)
             assert isinstance(json.loads(body), dict), path
-        status, body = request(path, token)
-        assert status == 200, (path, status)
-        assert token.encode() not in body, "Management token leaked in response"
+            assert token.encode() not in body, "Ignored Authorization header leaked in response"
 
 
 def check_device_link(port, request, token, container):
@@ -117,8 +117,9 @@ def main():
     container = docker(
         "run", "-d", "--memory=512m", "--memory-swap=512m",
         "-p", "127.0.0.1::8080", "-p", "127.0.0.1::8099",
-        "-e", "RELAY_HTTP_AUTH_API_TOKEN", "-e", "RELAY_TWITCH_MODE=simulated",
-        image, env={**os.environ, "RELAY_HTTP_AUTH_API_TOKEN": token}
+        "-e", "RELAY_HTTP_ALLOWED_HOSTS=127.0.0.1:8080",
+        "-e", "RELAY_HTTP_ALLOWED_ORIGINS=http://127.0.0.1:8080",
+        "-e", "RELAY_TWITCH_MODE=disabled", image
     )
     try:
         ports = json.loads(docker("inspect", "--format", "{{json .NetworkSettings.Ports}}", container))
@@ -127,9 +128,9 @@ def main():
         check_http(request, token)
         check_device_link(int(ports["8099/tcp"][0]["HostPort"]), request, token, container)
         subprocess.run(["docker", "wait", container], check=True, timeout=15, stdout=subprocess.DEVNULL)
-        print("Container smoke passed: public/protected HTTP, redaction, WELCOME, STATS, EVENT and shutdown BYE (512 MiB limit).")
+        print("Container smoke passed: credential-free private HTTP, ignored-header redaction, classic WELCOME/STATS/EVENT and shutdown BYE (512 MiB limit).")
     except Exception:
-        # The only credential this isolated simulated container knows is generated above.
+        # This disabled-ingestion container has no provider credentials; redact the ignored test header.
         print(docker("logs", container, stderr=subprocess.STDOUT).replace(token, "[test-token]"), file=sys.stderr)
         raise
     finally:

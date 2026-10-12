@@ -65,8 +65,8 @@ class EventBusSuite extends munit.FunSuite:
       val observed = Channel.buffered[String](4)
       bus.foldTimed("fold", 0, 1.hour): (state, input) =>
         input match
-          case Some(BusEvent(_, RelayEvent.Followed("bad"))) => throw IllegalStateException("synthetic failure")
-          case Some(BusEvent(_, RelayEvent.Followed(name))) =>
+          case Some(BusEvent(_, RelayEvent.Followed("bad"), _)) => throw IllegalStateException("synthetic failure")
+          case Some(BusEvent(_, RelayEvent.Followed(name), _)) =>
             observed.send(name)
             state + 1
           case _ => state
@@ -129,7 +129,7 @@ class EventBusSuite extends munit.FunSuite:
       val observed = Channel.buffered[Int](2)
       bus.foldTimed("recoverable", 0, 1.hour): (state, input) =>
         input match
-          case Some(BusEvent(_, RelayEvent.Followed("bad"))) => throw IllegalStateException("synthetic failure")
+          case Some(BusEvent(_, RelayEvent.Followed("bad"), _)) => throw IllegalStateException("synthetic failure")
           case Some(_) =>
             observed.send(state + 1)
             state + 1

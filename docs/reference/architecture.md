@@ -148,7 +148,7 @@ The device's sequence mark tracks **accepted cards**, not cards already shown. A
 
 Replay is best effort within finite memory. Evicted events are lost; a device reboot loses its queue; a relay restart loses its rings and sequence state. After a restart, a numeric sequence overlap cannot establish that the device and relay refer to the same old event history. TSB/3 does not provide durable delivery or an end-to-end exactly-once guarantee.
 
-The relay maintains one active connection per claimed device ID, reclaiming an older session when that ID reconnects and bounding repeated reclaims. IDs are not credentials. The TCP link has no TLS or cryptographic device authentication and belongs on a trusted network. HTTP management authentication protects a different boundary and does not secure port 8099.
+The relay maintains one active connection per claimed device ID, reclaiming an older session when that ID reconnects and bounding repeated reclaims. IDs are not credentials. TCP has no TLS or cryptographic device authentication. HTTP has no application authentication either. Restrict both listeners to a trusted network; browser-origin checks do not protect against arbitrary reachable clients.
 
 ## Firmware ownership and rendering
 
@@ -162,9 +162,9 @@ The idle UI displays connection and stream state plus statistics. The card UI di
 
 ## Management, observability, and persistence
 
-Management endpoints require configured Basic authentication or a Bearer token, including in simulated and disabled modes. Missing or invalid credential configuration fails startup. Health, aggregate statistics, and Swagger UI are public. Live OAuth and EventSub callbacks use their own state/signature checks. [Http](../../twitch-screen-relay/src/twitchscreen/relay/http/Http.scala) classifies each endpoint; [ManagementAuth](../../twitch-screen-relay/src/twitchscreen/relay/http/ManagementAuth.scala) refuses unclassified endpoints during assembly.
+HTTP management requires no application login or token. Anyone who can reach the listener can inspect or control it; trusted LAN/VPN/firewall isolation is mandatory. Nonempty obsolete `RELAY_HTTP_AUTH_*` settings fail startup. Authorization headers confer no privilege. [BrowserBoundary](../../twitch-screen-relay/src/twitchscreen/relay/http/BrowserBoundary.scala) validates Host, Origin, Fetch Metadata and JSON write content types before body buffering. Provider OAuth state and EventSub signatures remain separate checks. The current boundary supports direct HTTP origins; trusted HTTPS/proxy and mobile acceptance remain pending. [Http](../../twitch-screen-relay/src/twitchscreen/relay/http/Http.scala) still classifies endpoint access, but that classification no longer creates management credentials.
 
-Health is deliberately a liveness check. It stays useful when Twitch is unavailable; the richer protected status endpoint reports component health, connected devices, queue drops, and diagnostic counts. Alert acknowledgement records that an operator has seen an alert; it does not make an unresolved condition disappear. OpenTelemetry configuration is supplied through standard `OTEL_*` environment variables. The application installs context propagation for its virtual-thread work so traces and log context can remain connected.
+Health is deliberately a liveness check. It stays useful when Twitch is unavailable; the richer status endpoint reports component health, connected devices, queue drops, and diagnostic counts. Alert acknowledgement records that an operator has seen an alert; it does not make an unresolved condition disappear. OpenTelemetry configuration is supplied through standard `OTEL_*` environment variables. The application installs context propagation for its virtual-thread work so traces and log context can remain connected.
 
 | State | Location | Survives process or device restart? |
 |---|---|---|
@@ -190,7 +190,7 @@ The repository already records design rationale rather than a separate ADR serie
 - Commit `eb00a94` replaced NDJSON v2 with TSB/3 on both sides; the legacy demo remains retired.
 - Commit `12a6737` paired lifecycle cards with their resulting statistics; `fd42e6a` added supervised Twitch recovery and serialized lifecycle transitions.
 - Commit `a9cce0e` closed device connections before event gaps; `390a93f` ordered shutdown so writers can drain before application cancellation.
-- [Review status](../../tasks/review-status.md) and [validation evidence](../../tasks/review-judge.md) record the remaining boundaries of exercised behavior.
+- Review status (historical report unavailable in this checkout) and validation evidence (historical report unavailable in this checkout) record the remaining boundaries of exercised behavior.
 
 Future decisions can be documented when they are made, with their actual alternatives and consequences. Existing source comments and history should remain evidence rather than being rewritten as new decisions.
 

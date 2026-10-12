@@ -12,7 +12,9 @@ import scala.util.control.NonFatal
 import scala.concurrent.duration.FiniteDuration
 
 /** A [[RelayEvent]] together with the moment the bus accepted it. */
-private[relay] final case class BusEvent(at: Instant, event: RelayEvent)
+private[relay] final case class SourceIdentity(relayEpoch: Long, generation: Long)
+
+private[relay] final case class BusEvent(at: Instant, event: RelayEvent, source: Option[SourceIdentity] = None)
 
 /** Per-subscriber bus counters. `enqueued + dropped` is every event offered to the subscriber, and `delivered <= enqueued`, so
   * `enqueued - delivered` is the backlog, including an event whose handler is still running.
@@ -39,13 +41,23 @@ final case class SubscriberStats(
   * depends on cross-producer ordering, because the one place order is observable — the sequence number on the wire — is assigned inside
   * [[twitchscreen.relay.device.DeviceHub]]'s actor.
   */
-private[relay] final class EventBus(clock: Clock, queueCapacity: Int):
+private[relay] final class EventBus(clock: Clock, queueCapacity: Int, forward: Option[BusEvent => Unit] = None):
   private val logger = LoggerFactory.getLogger(getClass)
   private val subscriptions = AtomicReference(Vector.empty[Subscription])
 
   def publish(event: RelayEvent): Unit =
     val message = BusEvent(clock.instant(), event)
-    subscriptions.get().foreach(_.offer(message))
+    forward match
+      case Some(send) => send(message)
+      case None       => fanOut(message)
+
+  /** A producer-scoped ingress view. Admission is synchronous and reliable; optional consumers remain independently lossy. Capture the
+    * source fence when creating the view, never when consuming its queued event. Sources only publish through this view.
+    */
+  def admittedView(admit: BusEvent => Boolean, annotate: BusEvent => BusEvent = identity): EventBus =
+    new EventBus(clock, queueCapacity, Some(message => if admit(message) then fanOut(annotate(message))))
+
+  private def fanOut(message: BusEvent): Unit = subscriptions.get().foreach(_.offer(message))
 
   /** Registers a subscriber and hands back its channel, for callers that want to drive it themselves (e.g. as a Flow). */
   def subscribe(name: String)(using ResourceScope): Source[BusEvent] = register(name).channel

@@ -71,7 +71,9 @@ private final class TwitchHealthState(config: TwitchConfig, bus: EventBus, snaps
       next match
         case Failed(reason) =>
           logger.warn(s"Twitch ${component.label}: $reason")
-          bus.publish(RelayEvent.RelayFailure(s"twitch-${component.label}", reason))
+          bus.publish(
+            RelayEvent.RelayFailure(s"twitch-${component.label}", reason, twitchscreen.relay.protocol.DeskMessageCodec.Origin.Twitch)
+          )
         case Healthy if previous.exists { case Failed(_) => true; case _ => false } =>
           logger.info(s"Twitch ${component.label} recovered")
         case _ => ()

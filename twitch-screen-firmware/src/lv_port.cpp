@@ -11,8 +11,10 @@
 namespace {
 
 
-constexpr int BUF_LINES = 40;
-constexpr size_t DRAW_BYTES = PANEL * BUF_LINES * 2; // RGB565, 19,200 bytes
+// Small partial tiles preserve contiguous byte-addressable DRAM for TLS/JPEG.
+// SPI remains synchronous; native base-view tests exercise this 8-row size.
+constexpr int BUF_LINES = 8;
+constexpr size_t DRAW_BYTES = PANEL * BUF_LINES * 2; // RGB565 partial tile
 uint32_t lastTickAt = 0;
 
 TFT_eSPI tft;

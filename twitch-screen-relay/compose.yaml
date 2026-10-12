@@ -1,22 +1,39 @@
-# A relay on the LAN the ESP32 can reach. Set management credentials before `docker compose up`:
-# with twitch.mode = simulated it generates events itself, so no Twitch credentials are needed to test the firmware.
+# Private-network relay. Loopback publishing is intentional; set RELAY_BIND_IP
+# explicitly to a trusted LAN/VPN interface for a physical device.
 services:
   relay:
     build: .
     # The device connects to a fixed address, so the relay keeps the same ports on the host.
     ports:
-      - "8080:8080"   # management API and Swagger UI
-      - "8099:8099"   # device link
+      - "${RELAY_BIND_IP:-127.0.0.1}:${RELAY_PUBLISHED_HTTP_PORT:-8080}:8080" # private HTTP API
+      - "${RELAY_BIND_IP:-127.0.0.1}:${RELAY_PUBLISHED_DEVICE_PORT:-8099}:8099" # device link
     environment:
-      RELAY_TWITCH_MODE: live
-      RELAY_TWITCH_CHANNEL: worxbend
-      RELAY_TWITCH_CLIENT_ID: ${RELAY_TWITCH_CLIENT_ID:-}
-      RELAY_TWITCH_CLIENT_SECRET: ${RELAY_TWITCH_CLIENT_SECRET:-}
-      RELAY_CHAT_NOTIFICATIONS: ${RELAY_CHAT_NOTIFICATIONS:-}
-      # Configure at least one complete method. Missing/invalid credentials fail startup.
+      # Rejection-only migration inputs. Nonempty values stop startup; these
+      # NEVER enable authentication. The guarded tools/compose.py entry point
+      # also rejects arbitrary obsolete RELAY_HTTP_AUTH_* interpolation keys.
       RELAY_HTTP_AUTH_API_TOKEN: ${RELAY_HTTP_AUTH_API_TOKEN:-}
       RELAY_HTTP_AUTH_BASIC_USERNAME: ${RELAY_HTTP_AUTH_BASIC_USERNAME:-}
       RELAY_HTTP_AUTH_BASIC_PASSWORD_HASH: ${RELAY_HTTP_AUTH_BASIC_PASSWORD_HASH:-}
+      RELAY_WEATHER_ENABLED: ${RELAY_WEATHER_ENABLED:-false}
+      RELAY_WEATHER_LATITUDE: ${RELAY_WEATHER_LATITUDE:-50.45466}
+      RELAY_WEATHER_LONGITUDE: ${RELAY_WEATHER_LONGITUDE:-30.5238}
+      RELAY_WEATHER_LOCATION: ${RELAY_WEATHER_LOCATION:-Kyiv}
+      RELAY_WEATHER_UNIT: ${RELAY_WEATHER_UNIT:-celsius}
+      RELAY_WEATHER_REFRESH_INTERVAL: ${RELAY_WEATHER_REFRESH_INTERVAL:-5 minutes}
+      RELAY_WEATHER_FRESHNESS: ${RELAY_WEATHER_FRESHNESS:-15 minutes}
+      RELAY_WEATHER_REQUEST_TIMEOUT: ${RELAY_WEATHER_REQUEST_TIMEOUT:-10 seconds}
+      RELAY_RUNTIME_STATE_FILE: ${RELAY_RUNTIME_STATE_FILE:-/home/relay/data/runtime-state.json}
+      RELAY_TWITCH_MODE: ${RELAY_TWITCH_MODE:-live}
+      RELAY_TWITCH_CHANNEL: ${RELAY_TWITCH_CHANNEL:-}
+      RELAY_TWITCH_CLIENT_ID: ${RELAY_TWITCH_CLIENT_ID:-}
+      RELAY_TWITCH_CLIENT_SECRET: ${RELAY_TWITCH_CLIENT_SECRET:-}
+      RELAY_CHAT_NOTIFICATIONS: ${RELAY_CHAT_NOTIFICATIONS:-show}
+      RELAY_TWITCH_REDIRECT_URL: ${RELAY_TWITCH_REDIRECT_URL:-http://localhost:8080/api/v1/twitch/callback}
+      RELAY_HTTP_ALLOWED_HOSTS: ${RELAY_HTTP_ALLOWED_HOSTS:-localhost:8080,127.0.0.1:8080,[::1]:8080}
+      RELAY_HTTP_ALLOWED_ORIGINS: ${RELAY_HTTP_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://[::1]:8080}
+      RELAY_HTTP_PUBLIC_ORIGIN: ${RELAY_HTTP_PUBLIC_ORIGIN:-}
+      RELAY_HTTP_TRUSTED_PROXIES: ${RELAY_HTTP_TRUSTED_PROXIES:-}
+      # Optional Twitch credentials stay server-side; management has no login.
       # For a real channel, set these instead and change the mode to `live`:
       # RELAY_TWITCH_MODE: live
       # RELAY_TWITCH_CHANNEL: yourchannel
@@ -24,7 +41,7 @@ services:
       # RELAY_TWITCH_CLIENT_SECRET: ...
       # Then open http://localhost:8080/api/v1/twitch/authorize once to grant the broadcaster token.
     volumes:
-      - relay-data:/home/relay/data   # the granted Twitch token
+      - relay-data:/home/relay/data # the granted Twitch token
     # Starting budget; measure under your stream/device load before raising limits.
     mem_limit: 512m
     restart: unless-stopped

@@ -1,3 +1,5 @@
+> Desk update is incomplete. Start with the [credential-free root quickstart](../README.md#first-success-without-twitch), [migration](guides/migration.md), [companion workbench](../twitch-screen-client/README.md) and [implementation status](implementation-status.md). Older Basic/Bearer setup instructions fail startup. Telemetry ingress, runtime monitoring, default-relay DESK negotiation and the private admin panel/feed are mounted; complete target/desktop/provider/physical acceptance remains pending. Historical `tasks/` reports are absent; do not treat dead links as evidence.
+
 <div align="center">
 <h1>📖 The Twitch Screen guidebook</h1>
 <p><strong>From “cute little screen” to “I built that.” ✨</strong><br>
@@ -25,7 +27,7 @@ Follow these milestones in order. Each guide supplies the detailed steps and che
 | **1 · Meet the software** 🧪 | [First simulated stream](guides/first-simulated-stream.md) | Relay health responds; simulated stats and activity appear |
 | **2 · Gather and measure** 📏 | [Device build](guides/device-build.md) | Your actual ESP32, LCD, connector, and screws match the intended fit |
 | **3 · Wire on the bench** 🔌 | [Wiring and assembly](guides/device-build.md) | Unpowered connections match the firmware pin map |
-| **4 · Host the relay** 🖥️ | [Relay setup](guides/relay-setup.md) | Management auth works and TCP 8099 is reachable from your trusted LAN |
+| **4 · Host the relay** 🖥️ | [Relay setup](guides/relay-setup.md) | Credential-free private HTTP works and TCP 8099 is reachable from your trusted LAN |
 | **5 · Configure and flash** ⚡ | [Firmware setup](guides/firmware-setup.md) | Board joins Wi-Fi and receives simulated stats/cards |
 | **6 · Print and close up** 🖨️ | [Printing and assembly](guides/device-build.md) | Fit, cable routing, and USB access pass a real inspection |
 | **7 · Bring your channel** 🟣 | [Twitch app setup](guides/twitch-app-setup.md) | App registration, callback, and broadcaster consent succeed |
@@ -39,7 +41,10 @@ Test the electronics before closing the enclosure. CAD validation and a render c
 | :--- | :--- |
 | [First simulated stream](guides/first-simulated-stream.md) | A linear, annotated lesson using only your computer |
 | [Register and authorize a Twitch app](guides/twitch-app-setup.md) | Developer Console, client credentials, exact redirect URL, scopes, consent, and optional webhook setup |
-| [Configure and run the relay](guides/relay-setup.md) | Native and Docker startup, authentication, network exposure, storage, and operations |
+| [Configure and run the relay](guides/relay-setup.md) | Native and Docker startup, private-network defenses, storage, and operations |
+| [Backend weather and weather widget](guides/weather.md) | Open-Meteo configuration, Kyiv example, display selection, freshness and provider terms |
+| [Round dashboard widgets](guides/widgets.md) | Generic screensaver, Weather/CPU gauges, honest optional measurements and framebuffer capture |
+| [Standalone Generic screensaver](guides/standalone-generic.md) | Direct Picsum/Kyiv weather, Wi-Fi versus internet states, five-second slides and WROOM limits |
 | [Build the device](guides/device-build.md) | Bill of materials, wiring, measurements, printing, assembly, and fit checks |
 | [Configure and flash firmware](guides/firmware-setup.md) | PlatformIO, Wi-Fi credentials, device identity, upload, serial monitor, and display checks |
 | [Use your screen](guides/device-use.md) | What appears on screen, notification behavior, restarts, and everyday care |
@@ -51,7 +56,7 @@ Test the electronics before closing the enclosure. CAD validation and a render c
 | Reference | Use it when… |
 | :--- | :--- |
 | [Relay configuration](reference/relay-configuration.md) | You need a setting’s exact name, default, or environment override |
-| [HTTP API](reference/http-api.md) | You need endpoints, authentication, request bodies, and response behavior |
+| [HTTP API](reference/http-api.md) | You need endpoints, private-network defenses, request bodies, and response behavior |
 | [Architecture](reference/architecture.md) | You want to understand event flow, ownership, and system limits |
 | [TSB/3 wire protocol](../twitch-screen-firmware/docs/PROTOCOL.md) | You are changing or implementing a device/relay protocol peer |
 | [CAD measurement checklist](../twitch-screen-cad-design/docs/measurement_checklist.md) | You need to confirm dimensions before printing |
@@ -68,4 +73,4 @@ The root README is the tour. This guidebook is the route map. Component READMEs 
 
 The guides describe the checked-in implementation. Historical plans and review reports remain available, but current source and configuration win when they disagree. Configuration defaults and third-party setup instructions were reviewed on **2026-09-25**; official Twitch links are included where the provider’s requirements matter.
 
-The [documentation maintenance guide](maintaining-documentation.md) explains source checking, visuals, tone, and review. [Documentation validation notes](../tasks/docs-quality-review.md) record what was verified and what still requires a real device or Twitch account.
+The [documentation maintenance guide](maintaining-documentation.md) explains source checking, visuals, tone, and review. Documentation validation notes (historical report unavailable in this checkout) record what was verified and what still requires a real device or Twitch account.

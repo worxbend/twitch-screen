@@ -6,6 +6,7 @@
 #include <string.h>
 #include "notification_wire.h"
 #include "proto_codec.h"
+#include "desk_receiver.h"
 
 // TSB/3 device side. Normative reference: docs/PROTOCOL.md. Section numbers in
 // the comments below point at it; where this file and that document disagree,
@@ -62,6 +63,8 @@ struct LinkSession {
   LinkTransport *io = nullptr;
   State state = State::Idle;
   const LinkHooks *hooks = nullptr;
+  desk::Receiver *deskReceiver = nullptr;
+  bool deskActive = false;
 
   tsb::FrameReader reader;
 
@@ -75,7 +78,7 @@ struct LinkSession {
   uint32_t skippedSinceLog = 0;
 
   // A fixed byte FIFO preserves frame order across short/nonblocking writes.
-  std::array<uint8_t, 256> tx;
+  std::array<uint8_t, 512> tx;
   size_t txSize = 0;
   size_t txOffset = 0;
   uint32_t txStartedAt = 0;
@@ -115,6 +118,11 @@ struct LinkSession {
     txSize += n;
     return true;
   }
+
+  // Keep room for ACK and heartbeat ahead of another report. Whole-frame
+  // admission is atomic; partially transmitted FIFO bytes never get replaced.
+  size_t available() const { return tx.size() - txSize > 24 ? tx.size() - txSize - 24 : 0; }
+  bool enqueue(const uint8_t *frame, size_t size) { return size <= available() && writeFrame(frame, size); }
 
   bool sendEncoded(const uint8_t *frame, tsb::EncodeResult result, const char *failure) {
     if (result.ok() && writeFrame(frame, result.size)) return true;
@@ -163,6 +171,8 @@ struct LinkSession {
       logCounters();
     }
     io->close();
+    if (deskReceiver) deskReceiver->disconnected();
+    deskActive = false;
     txSize = 0;
     txOffset = 0;
     rxSize = 0;
@@ -182,6 +192,18 @@ struct LinkSession {
   void sendHello() {
     tsb::TsbHello h;
     tsb::buildHello(h, hooks->getLastSeq(), DEVICE_CAPS, io->deviceId(), io->firmwareVersion());
+    if (deskReceiver && deskReceiver->enabled()) {
+      deskReceiver->hello();
+      desk::wire::Hello hello;
+      // The classic prefix uses the application's legacy sequence space even
+      // after DESK sessions. Capable resume uses only the epoch/processed tail.
+      hello.base = h;
+      hello.previousEpoch = deskReceiver->previousEpoch(); hello.processed = deskReceiver->processed();
+      hello.boot = deskReceiver->boot(); hello.probe = deskReceiver->probe();
+      std::array<uint8_t, 100> frame{};
+      sendEncoded(frame.data(), desk::wire::encodeHello(frame.data(), frame.size(), hello), "desk hello write failed");
+      return;
+    }
     std::array<uint8_t, tsb::HEADER_SIZE + tsb::LEN_HELLO> frame;
     const tsb::EncodeResult n = tsb::encodeHello(frame.data(), frame.size(), h);
     if (!sendEncoded(frame.data(), n, "hello write failed")) return;
@@ -211,7 +233,7 @@ struct LinkSession {
     const uint32_t now = io->now();
     if (now - lastAckAt < ACK_MIN_INTERVAL_MS) return;
 
-    const uint32_t seq = hooks->getLastSeq();
+    const uint32_t seq = deskActive ? deskReceiver->enqueued() : hooks->getLastSeq();
     ackPending = false;
     lastAckAt = now;
     if (seq == 0 || seq == lastAckedSeq) return;
@@ -225,7 +247,7 @@ struct LinkSession {
   void handleWelcome(const tsb::TsbWelcome &w) {
     state = State::Streaming;
     streamingAt = io->now();      // reset the ramp only after a stable interval
-    effectiveCaps = w.caps & DEVICE_CAPS;
+    effectiveCaps = w.caps & (DEVICE_CAPS | (deskActive ? desk::wire::Capability : 0));
     pauseLimitMs = 2u * (w.idle_timeout_s ? w.idle_timeout_s : EXPECTED_RELAY_IDLE_S) * 1000u;
     lastAckedSeq = 0;
 
@@ -284,18 +306,7 @@ struct LinkSession {
   }
 
   void handleStats(const tsb::TsbStats &st) const {
-    StreamStats s;
-    s.viewers         = st.viewers;
-    s.msgTotal        = st.msg_total;
-    s.uptimeSec       = st.uptime_s;
-    s.followers       = st.followers;
-    s.subs            = st.subs;
-    s.serverTime      = st.server_time;
-    s.streamStartedAt = st.stream_started_at;
-    s.chatRate        = st.chat_rate;
-    s.live            = st.live;     // decoder already folded non-zero to 1
-    s.sflags          = st.sflags;
-    hooks->onStats(s);
+    hooks->onStats(projectStats(st));
   }
 
   // §6.7 — BYE is advisory and always the last frame on the connection. Log it,
@@ -376,9 +387,41 @@ struct LinkSession {
 
   void deliverFrame() {
     const tsb::TsbHeader h = reader.header();
-    if (!checkVersion(h) || maybePauseEvent(h)) return;
-    // ANY complete frame, including skipped payloads, proves inbound liveness.
+    if (!checkVersion(h) || (!deskActive && maybePauseEvent(h))) return;
     lastRxAt = io->now();
+    if (h.type == tsb::T_WELCOME && deskReceiver && deskReceiver->enabled()) {
+      if (state != State::Connect) { teardown("duplicate welcome"); return; }
+      desk::wire::Welcome welcome;
+      const desk::wire::Negotiation result = desk::wire::decodeWelcome(
+          reader.payload(), reader.payloadLength(), deskReceiver->probe(), welcome);
+      reader.consumeFrame();
+      if (result == desk::wire::Negotiation::Invalid) { teardown("bad desk welcome"); return; }
+      deskActive = result == desk::wire::Negotiation::Desk;
+      if (deskActive && !deskReceiver->welcome(welcome)) { teardown("welcome calibration failed"); return; }
+      if (!deskActive) deskReceiver->classic();
+      handleWelcome(welcome.base);
+      return;
+    }
+    if (deskActive && (h.type == tsb::T_EVENT || h.type == tsb::T_STATS ||
+        h.type == desk::wire::DeskEvent || desk::wire::length(h.type))) {
+      const bool wasReady = deskReceiver->ready();
+      const desk::Received received = deskReceiver->receive(h.type, h.flags, reader.payload(), reader.payloadLength());
+      reader.consumeFrame();
+      if (received == desk::Received::Fatal) { teardown("desk session violation"); return; }
+      if (received == desk::Received::Invalid) {
+        reader.noteDecode(tsb::DecodeResult::InvalidField);
+        noteSkippedFrame(h, tsb::DecodeResult::InvalidField);
+        return;
+      }
+      reader.noteDecode(tsb::DecodeResult::Ok);
+      if (received == desk::Received::Enqueued) ackPending = true;
+      if (received == desk::Received::Stats || (!wasReady && deskReceiver->ready()) ||
+          (received == desk::Received::Applied && h.type == desk::wire::DisplayState && deskReceiver->ready()))
+        hooks->onStats(deskReceiver->applicationStats());
+      return;
+    }
+    // Classic sessions preserve their exact parser/queue behavior. Unknown DESK
+    // records remain unknown and cannot apply controls without negotiation.
     tsb::InboundFrame frame;
     const tsb::DecodeResult result = tsb::decodeInboundPayload(
         h, reader.payload(), reader.payloadLength(), frame);
@@ -455,9 +498,11 @@ struct LinkSession {
     }
   }
 
-  void init(const LinkHooks *h, LinkTransport &transport) {
+  void init(const LinkHooks *h, LinkTransport &transport, desk::Receiver *receiver) {
     *this = LinkSession{};
     hooks = h;
+    deskReceiver = receiver;
+    if (deskReceiver) deskReceiver->disconnected();
     io = &transport;
     io->begin();
   }
@@ -485,6 +530,9 @@ struct LinkSession {
 
   void loop() {
     if (!hooks || !io) return;
+    if (deskReceiver && !deskReceiver->tick(io->now()) && state != State::Idle) {
+      teardown("desk clock/sync deadline"); return;
+    }
     io->poll();
     const bool wifiLost = io->takeWifiDisconnect();
     if (wifiLost || !io->wifiConnected()) {
@@ -514,6 +562,9 @@ struct LinkSession {
       if (state == State::Idle) return;
     }
     maybeSendAck();
+    if (state != State::Idle && deskActive && !deskReceiver->output(*this)) {
+      teardown("desk report/clock recovery"); return;
+    }
     if (state != State::Idle) flushOutput();
   }
 
@@ -521,6 +572,9 @@ struct LinkSession {
 LinkSession session;
 }  // namespace
 
-void linkInit(const LinkHooks *hooks, LinkTransport &transport) { session.init(hooks, transport); }
+void linkInit(const LinkHooks *hooks, LinkTransport &transport, desk::Receiver *receiver) {
+  session.init(hooks, transport, receiver);
+}
+bool linkDeskReady() { return session.deskActive && session.deskReceiver->ready(); }
 bool linkIsUp() { return session.isUp(); }
 void linkLoop() { session.loop(); }

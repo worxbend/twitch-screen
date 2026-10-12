@@ -18,10 +18,14 @@
 #include <Arduino.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
+#include <esp_heap_caps.h>
+#include "runtime_metrics.h"
 
 #include "app_log.h"
 #include "notification.h"
-#include "notify_queue.h"
+#include "desk_receiver.h"
+#include "desk_application.h"
+#include "desk_ui_application.h"
 #include "link_client.h"
 #include "lv_port.h"
 #include "ui_idle.h"
@@ -34,38 +38,70 @@ constexpr size_t QUEUE_CAP = 8;
 constexpr uint32_t WATCHDOG_TIMEOUT_S = 10;
 constexpr uint32_t STACK_REPORT_MS = 60000;
 
-// The queue and the sequence accounting live in notify_queue.h so that §10.2
-// and §10.5 are covered by the host test rather than only by this comment.
-NotifyQueue<QUEUE_CAP> queue;
+// One controller owns classic and DESK pending cards and active lifecycle.
+// DESK remains disabled until actual UI/lifecycle initialization supplies the
+// boot identity. Session readiness still requires calibrated coherent SYNC_END.
+desk::Controller controller;
+desk::Receiver receiver(controller, 0, true);
+desk::RuntimeMetrics runtimeMetrics;
+
+void reconcileView() {
+  desk::applyApplicationView(receiver, millis());
+  // Transition-only, secret-free diagnostics. Application observations are not
+  // proof of LCD pixels; appLog drops rather than blocks on a full UART.
+  static uint8_t lastBase = UINT8_MAX, lastReason = UINT8_MAX;
+  static uint32_t lastWeather = 0;
+  const desk::Selection selected = controller.selection(receiver.now());
+  const uint8_t base = static_cast<uint8_t>(selected.base);
+  const uint8_t reason = static_cast<uint8_t>(selected.reason);
+  const uint32_t weather = selected.base == desk::Base::Weather ? controller.weatherRevision() : 0;
+  if (base != lastBase || reason != lastReason || weather != lastWeather) {
+    appLog("[view] base=%u reason=%u deskReady=%u weatherRevision=%lu covered=%u\n",
+           (unsigned)base, (unsigned)reason, (unsigned)receiver.ready(),
+           (unsigned long)weather, (unsigned)uiBaseView().covered());
+    lastBase = base; lastReason = reason; lastWeather = weather;
+  }
+}
+void onHold() { receiver.tick(millis()); controller.hold(receiver.now()); }
+void onExit() {
+  reconcileView();
+  controller.beginExit(receiver.now(), receiver.calibrated());
+}
+void onComplete() {
+  reconcileView();
+  controller.complete(receiver.now(), receiver.calibrated());
+}
+const NotifyLifecycle LIFECYCLE = {onHold, onExit, onComplete};
 
 // §10.2, applied in the order the specification gives.
 void onWelcome(const LinkWelcome &w) {
-  const NotifyQueue<QUEUE_CAP>::Greet g = queue.greet(w.latestSeq, w.sessionId);
-  if (queue.sessionChanged()) {
+  const desk::ApplicationGreeting g = desk::applyApplicationGreeting(controller, w);
+  if (g == desk::ApplicationGreeting::Desk) return;
+  if (controller.legacySessionChanged()) {
     appLog("[app] relay session changed: %08lx\n", (unsigned long)w.sessionId);
   }
-  if (g == NotifyQueue<QUEUE_CAP>::Greet::Rebaselined) {
+  if (g == desk::ApplicationGreeting::Rebaselined) {
     appLog("[app] re-baseline: last_seq=%lu session=%08lx\n",
-                  (unsigned long)queue.lastSeq(), (unsigned long)w.sessionId);
+                  (unsigned long)controller.legacySeq(), (unsigned long)w.sessionId);
   } else {
     appLog("[app] resuming at last_seq=%lu, expecting replay of up to %u\n",
-                  (unsigned long)queue.lastSeq(), (unsigned)w.replayWindow);
+                  (unsigned long)controller.legacySeq(), (unsigned)w.replayWindow);
   }
 }
 
 bool onNotify(const Notification &n) {
-  const NotifyQueue<QUEUE_CAP>::Offer r = queue.offer(n);
+  const desk::Admission r = controller.legacyAdmit(n);
 
-  if (r == NotifyQueue<QUEUE_CAP>::Offer::Duplicate) return true;
+  if (r == desk::Admission::Duplicate) return true;
 
-  if (r == NotifyQueue<QUEUE_CAP>::Offer::Refused) {
+  if (r == desk::Admission::Refused) {
     // §10.5 rule 2: the newest is refused and the high-water mark does not move,
     // so the next greet replays this event instead of stepping over it.
     appLog("[app] queue full, refused #%lu %s (last_seq stays %lu, "
-                  "%lu refused, %lu shown)\n",
+                  "%lu refused, %lu enqueued)\n",
                   (unsigned long)n.seq, kindLabel(n.kind),
-                  (unsigned long)queue.lastSeq(), (unsigned long)queue.refused(),
-                  (unsigned long)queue.shown());
+                  (unsigned long)controller.legacySeq(), (unsigned long)controller.refusedTotal(),
+                  (unsigned long)controller.legacyAccepted());
     return false;
   }
 
@@ -80,9 +116,9 @@ bool onNotify(const Notification &n) {
   return true;
 }
 
-bool canReceiveNotify() { return queue.size() < QUEUE_CAP; }
+bool canReceiveNotify() { return controller.pendingCount() < QUEUE_CAP; }
 
-uint32_t getLastSeq() { return queue.lastSeq(); }
+uint32_t getLastSeq() { return controller.legacySeq(); }
 
 void onStats(const StreamStats &s) { uiIdleSetStats(s); }
 
@@ -96,11 +132,20 @@ void setup() {
   appLog("[app] reset reason=%d\n", (int)esp_reset_reason());
 
   lvPortInit();
-  uiIdleBuild();
+  uiBaseView().build(1);
   uiNotifyInit();
+  uiNotifySetLifecycle(&LIFECYCLE);
 
-  lvPortPump(); // render CONNECTING before starting network work
-  linkInit(&HOOKS, linkPlatform());
+  // Ephemeral correlation identity, not a credential. Bind it only when the
+  // real base widgets and notification lifecycle are ready for the full profile.
+  const uint64_t boot = (static_cast<uint64_t>(esp_random()) << 32) | esp_random();
+  const bool initialized = desk::initializeApplicationBoot(receiver, boot ? boot : 1);
+  appLog("[app] desk runtime=%s\n", initialized && receiver.enabled() ? "ready" : "classic fallback");
+  reconcileView();
+  lvPortPump(); // render local disconnected orbit before starting network work
+  // Observe association only; link transport remains the sole Wi-Fi reconnect owner.
+  generic::start();
+  linkInit(&HOOKS, linkPlatform(), &receiver);
   // IDF 4.4 updates an existing TWDT configuration; do not assume success.
   const esp_err_t watchdog = esp_task_wdt_init(WATCHDOG_TIMEOUT_S, true);
   if (watchdog == ESP_OK) enableLoopWDT();
@@ -111,24 +156,41 @@ void setup() {
 }
 
 void loop() {
+  runtimeMetrics.loopStarted(micros());
+  // Dispatch input and reconcile local deadlines before LVGL timers can reveal.
+  linkLoop();
+  const uint32_t uiStartedUs = micros();
+  reconcileView();
   lvPortPump();
 
-  linkLoop();
-
-  uiIdleSetOnline(linkIsUp());
-
-  Notification n;
-  if (!uiNotifyBusy() && queue.take(n)) {
-    uiNotifyShow(n);
+  desk::Card next;
+  if (!uiNotifyBusy() && controller.start(receiver.now(), next)) {
+    uiNotifyShow(next.notification, next.origin != desk::Origin::Unknown);
   }
+
+  runtimeMetrics.uiFinished(uiStartedUs, micros());
 
   static uint32_t lastStackReportAt = 0;
   if (millis() - lastStackReportAt >= STACK_REPORT_MS) {
     lastStackReportAt = millis();
-    // ESP-IDF reports the task high-water mark in bytes. Hardware runs must
-    // exercise rendering/replay to establish the actual minimum headroom.
+    // Sampled minima, not continuous heap/fragmentation observations. ESP-IDF
+    // reports task stack high-water in bytes; hardware acceptance stays separate.
+    runtimeMetrics.sampleResources(heap_caps_get_free_size(MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), uxTaskGetStackHighWaterMark(nullptr));
     appLog("[app] loop stack minimum free=%lu B\n",
-           (unsigned long)uxTaskGetStackHighWaterMark(nullptr));
+           (unsigned long)runtimeMetrics.stackMinimum());
+    appLog("[metrics-loop] uptimeMs=%lu samples=%lu p95UpperUs=%lu maxUs=%lu saturated=%u\n",
+           (unsigned long)lastStackReportAt, (unsigned long)runtimeMetrics.loop().samples(),
+           (unsigned long)runtimeMetrics.loop().p95UpperUs(), (unsigned long)runtimeMetrics.loop().maximum(),
+           (unsigned)runtimeMetrics.loop().saturated());
+    appLog("[metrics-ui] uptimeMs=%lu samples=%lu p95UpperUs=%lu maxUs=%lu saturated=%u\n",
+           (unsigned long)lastStackReportAt, (unsigned long)runtimeMetrics.ui().samples(),
+           (unsigned long)runtimeMetrics.ui().p95UpperUs(), (unsigned long)runtimeMetrics.ui().maximum(),
+           (unsigned)runtimeMetrics.ui().saturated());
+    appLog("[metrics-resources] uptimeMs=%lu sampledFreeHeapMinBytes=%lu "
+           "sampledLargestBlockMinBytes=%lu stackMinBytes=%lu\n",
+           (unsigned long)lastStackReportAt, (unsigned long)runtimeMetrics.freeHeapMinimum(),
+           (unsigned long)runtimeMetrics.largestBlockMinimum(), (unsigned long)runtimeMetrics.stackMinimum());
   }
   delay(5);
 }

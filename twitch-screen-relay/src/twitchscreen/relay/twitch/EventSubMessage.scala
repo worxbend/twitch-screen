@@ -15,11 +15,20 @@ private[twitch] final case class EventSubEnvelope(
     challenge: Option[String]
 )
 
-private[twitch] final case class EventSubSubscriptionRef(kind: String, status: Option[String])
+private[twitch] final case class EventSubSubscriptionRef(
+    kind: String,
+    status: Option[String],
+    id: Option[String] = None,
+    condition: Option[EventSubConditionRef] = None
+)
+
+private[twitch] final case class EventSubConditionRef(broadcasterUserId: Option[String] = None)
 
 private[twitch] final case class EventSubPayload(
     userName: Option[String] = None,
     broadcasterUserName: Option[String] = None,
+    broadcasterUserId: Option[String] = None,
+    broadcasterUserLogin: Option[String] = None,
     title: Option[String] = None,
     categoryName: Option[String] = None,
     startedAt: Option[String] = None

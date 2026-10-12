@@ -1,5 +1,7 @@
 # 🩺 When the tiny circle has opinions
 
+> Desk-update migration notice: management Basic/Bearer instructions in this historical guide are obsolete for this checkout. Nonempty `RELAY_HTTP_AUTH_*` settings fail startup; Authorization confers no privilege. Use the [current root quickstart](../../README.md#first-success-without-twitch), [migration guide](migration.md) and [implementation status](../implementation-status.md). Trusted-network isolation is mandatory. Clock/display/weather/CPU ingress and durable desired display intent are mounted. Complete DESK delivery, admin and runtime-channel behavior remain pending.
+
 [← Guidebook](../README.md) · [Device use](device-use.md) · [Relay setup](relay-setup.md)
 
 Work from the first layer that fails: **power → display → Wi-Fi → relay TCP → Twitch**. One successful layer narrows the next check. A simulated notification is especially useful because it exercises the display path without needing a live Twitch account.

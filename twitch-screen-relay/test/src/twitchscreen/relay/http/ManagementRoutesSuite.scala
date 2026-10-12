@@ -4,13 +4,9 @@ import com.typesafe.config.{ConfigFactory, ConfigValueFactory}
 import io.opentelemetry.api.OpenTelemetry
 import java.net.URI
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
-import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.time.{Clock, Instant, ZoneOffset}
-import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.PBEKeySpec
 import ox.{discard, supervised}
 import pureconfig.ConfigSource
 import twitchscreen.relay.activity.{ActivityApi, ActivityLog}
@@ -21,18 +17,13 @@ import twitchscreen.relay.device.{DeviceApi, DeviceHub, NotificationApi}
 import twitchscreen.relay.health.{HealthApi, StatusApi}
 import twitchscreen.relay.observability.LogsApi
 import twitchscreen.relay.stats.StatsApi
-import twitchscreen.relay.twitch.{BotFilter, EventSubSigning, TwitchSource}
+import twitchscreen.relay.twitch.{BotFilter, EventSubSigning, TwitchSource, WebhookIdentityFixtures}
 
 /** Real assembled API groups, including the live-mode callback/auth routes, without starting external Twitch ingestion. */
 class ManagementRoutesSuite extends munit.FunSuite:
   ox.logback.InheritableMDC.init
-  private val token = "route-test-api-token-with-at-least-32-bytes"
-  private val password = "route-test-password"
-  private val salt = "test-salt-for-route-fixture".getBytes(UTF_8)
-  private val key =
-    SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(PBEKeySpec(password.toCharArray, salt, 600000, 256)).getEncoded
-  private val hash = s"pbkdf2-sha256$$600000$$${Base64.getEncoder.encodeToString(salt)}$$${Base64.getEncoder.encodeToString(key)}"
-  private val basic = "Basic " + Base64.getEncoder.encodeToString(s"operator:$password".getBytes(UTF_8))
+  private val token = "ignored-header"
+  private val basic = "Basic ignored"
   private val secret = "test-eventsub-signing-secret"
   private val now = Instant.parse("2026-09-25T12:00:00Z")
   private val clock = Clock.fixed(now, ZoneOffset.UTC)
@@ -56,12 +47,16 @@ class ManagementRoutesSuite extends munit.FunSuite:
     ("DELETE", "twitch/authorization", "", 404)
   )
 
-  private def withServer(configuredToken: String = token)(test: Int => Unit): Unit = supervised:
+  private def withServer()(test: Int => Unit): Unit = supervised:
+    val reservation = java.net.ServerSocket(0)
+    val port = reservation.getLocalPort
+    reservation.close()
     val directory = Files.createTempDirectory("relay-route-test")
     try
       val source = ConfigFactory
         .parseString(s"""
-        http.auth.api-token = "$configuredToken"
+        http.allowed-hosts = ["127.0.0.1:$port"]
+        http.allowed-origins = ["http://127.0.0.1:$port"]
         twitch.mode = live
         twitch.channel = channel
         twitch.client-id = client
@@ -71,8 +66,6 @@ class ManagementRoutesSuite extends munit.FunSuite:
         twitch.event-sub.secret = "$secret"
       """)
         .withValue("twitch.oauth.token-file", ConfigValueFactory.fromAnyRef(directory.resolve("token.json").toString))
-        .withValue("http.auth.basic-username", ConfigValueFactory.fromAnyRef("operator"))
-        .withValue("http.auth.basic-password-hash", ConfigValueFactory.fromAnyRef(hash))
         .withFallback(ConfigFactory.load())
       val config = ConfigSource.fromConfig(source).loadOrThrow[Config]
       Config.log(config)
@@ -81,6 +74,7 @@ class ManagementRoutesSuite extends munit.FunSuite:
       val activity = ActivityLog.start(config.activity, bus)
       val alerts = AlertStore(config.alerts.bufferSize)
       val twitch = TwitchSource.start(config.twitch, bus, BotFilter.from(config.notifications), clock)
+      WebhookIdentityFixtures.bindSource(twitch, "123") // synthetic resolved provider/accepted subscriptions; no external ingestion
       val apis: List[ServerEndpoints] = List(
         HealthApi(),
         StatusApi(twitch, hub, bus, activity, alerts, clock, now.minusSeconds(300)),
@@ -95,8 +89,9 @@ class ManagementRoutesSuite extends munit.FunSuite:
       )
       val afterBindRan = AtomicBoolean(false)
       val binding = HttpApi(apis, config.http.copy(host = Hostname("127.0.0.1").toOption.get), OpenTelemetry.noop()).startOnPort(
-        0,
-        port =>
+        port,
+        boundPort =>
+          assertEquals(boundPort, port)
           assertEquals(send(port, "GET", "health").statusCode(), 200)
           assertEquals(
             send(port, "GET", "twitch/callback?code=unissued&state=unissued").statusCode(),
@@ -104,7 +99,7 @@ class ManagementRoutesSuite extends munit.FunSuite:
             "callback handler is reachable when ingestion is allowed to start"
           )
           // RLY-43: Twitch verifies a webhook subscription by calling back as soon as ingestion registers it.
-          val challenge = """{"subscription":{"type":"stream.online"},"challenge":"after-bind-challenge"}"""
+          val challenge = WebhookIdentityFixtures.body("""{"subscription":{"type":"stream.online"},"challenge":"after-bind-challenge"}""")
           val verification =
             send(
               port,
@@ -118,7 +113,8 @@ class ManagementRoutesSuite extends munit.FunSuite:
           afterBindRan.set(true)
       )
       assert(afterBindRan.get(), "afterBind hook ran before startOnPort returned")
-      test(binding.port)
+      try test(binding.port)
+      finally binding.stop()
     finally Files.deleteIfExists(directory.resolve("token.json")).discard
     Files.deleteIfExists(directory).discard
 
@@ -140,12 +136,12 @@ class ManagementRoutesSuite extends munit.FunSuite:
     try client.send(builder.build(), HttpResponse.BodyHandlers.ofString())
     finally client.close()
 
-  test("every actual management operation rejects missing credentials and accepts either alternative"):
+  test("every actual management operation works without credentials; Authorization is ignored"):
     withServer(): port =>
       routes.foreach: (method, path, body, expected) =>
-        val denied = send(port, method, path, body = body)
-        assertEquals(denied.statusCode(), 401, s"$method $path")
-        assert(denied.body().startsWith("{\"error\":"))
+        val accepted = send(port, method, path, body = body)
+        assertEquals(accepted.statusCode(), expected, s"$method $path")
+        assert(!accepted.headers().firstValue("WWW-Authenticate").isPresent)
         List(basic, s"Bearer $token").foreach: credential =>
           assertEquals(send(port, method, path, Some(credential), body).statusCode(), expected, s"$method $path")
       assert(send(port, "GET", "status", Some(s"Bearer $token")).body().contains("\"uptimeSeconds\":300"))
@@ -158,34 +154,30 @@ class ManagementRoutesSuite extends munit.FunSuite:
       assertEquals(send(port, "GET", "health").statusCode(), 200)
       assertEquals(send(port, "GET", "stats").statusCode(), 200)
       assertEquals(send(port, "GET", "twitch/callback?code=unissued&state=unissued").statusCode(), 400)
-      val body = """{"subscription":{"type":"stream.online"},"challenge":"verified"}"""
+      val body = WebhookIdentityFixtures.body("""{"subscription":{"type":"stream.online"},"challenge":"verified"}""")
       val headers = EventSubSigning.headers(secret, "delivery", now.toString, body)
       assertEquals(send(port, "POST", EventSubPath, body = body, headers = headers).body(), "verified")
       val forged = headers.filterNot(_._1.endsWith("Signature")) :+ ("Twitch-Eventsub-Message-Signature" -> "forged")
       assertEquals(send(port, "POST", EventSubPath, Some(s"Bearer $token"), body, forged).statusCode(), 401)
 
-  test("credential rotation rejects the old token and secrets are absent from configuration logs and exports"):
-    val rotated = token + "-rotated"
-    withServer(rotated): port =>
-      assertEquals(send(port, "GET", "config", Some(s"Bearer $token")).statusCode(), 401)
+  test("provider secrets remain absent from configuration logs and exports"):
+    withServer(): port =>
       val responses = List(
-        send(port, "GET", "config", Some(s"Bearer $rotated")),
-        send(port, "GET", "logs", Some(s"Bearer $rotated")),
-        send(port, "POST", "activity:export", Some(s"Bearer $rotated"))
+        send(port, "GET", "config"),
+        send(port, "GET", "logs"),
+        send(port, "POST", "activity:export")
       )
       responses.foreach: response =>
         assertEquals(response.statusCode(), 200)
-        List(token, rotated, password, hash, basic, "fixture-client-secret", secret).foreach(value =>
-          assert(!response.body().contains(value))
-        )
+        List("fixture-client-secret", secret).foreach(value => assert(!response.body().contains(value)))
 
   test("OpenAPI requires Basic OR Bearer on every management operation and leaves the public operations unsecured"):
     withServer(): port =>
       val docs = send(port, "GET", "/docs/docs.yaml")
       assertEquals(docs.statusCode(), 200)
       val yaml = docs.body()
-      val alternatives = "security:\\s+- ManagementBasic: \\[\\]\\s+- ManagementToken: \\[\\]".r
-      assertEquals(alternatives.findAllIn(yaml).size, routes.size)
+      assert(!yaml.contains("ManagementBasic"))
+      assert(!yaml.contains("ManagementToken"))
       List("health", "stats", "twitch/callback", EventSubPath).foreach: path =>
         val section = yaml.linesIterator.dropWhile(_ != s"  /api/v1/$path:").drop(1).takeWhile(!_.startsWith("  /")).mkString("\n")
         assert(section.nonEmpty, s"missing public $path")

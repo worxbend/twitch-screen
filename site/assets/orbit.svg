@@ -1,0 +1,11 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0; Original illustration, Twitch Screen contributors. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" role="img" aria-labelledby="title desc">
+  <title id="title">Orbital display illustration</title>
+  <desc id="desc">Three concentric cyan and lavender arcs inside a dark circular display. This is an authored illustration, not a device photograph.</desc>
+  <circle cx="120" cy="120" r="119" fill="#080C12" stroke="#708795"/>
+  <g fill="none" transform="translate(120 120)">
+    <circle r="70" stroke="#185B63" stroke-width="3" stroke-dasharray="330 110"/>
+    <circle r="89" stroke="#326F91" stroke-width="4" stroke-dasharray="420 140" transform="rotate(110)"/>
+    <circle r="108" stroke="#6B598B" stroke-width="2" stroke-dasharray="520 159" transform="rotate(230)"/>
+  </g>
+</svg>

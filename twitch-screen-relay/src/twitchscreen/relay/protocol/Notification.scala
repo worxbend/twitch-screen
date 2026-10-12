@@ -65,8 +65,12 @@ private[relay] final case class EventRequest(
     value: EventValue = EventValue.Zero,
     months: SubMonths = SubMonths.Zero,
     tier: SubTier = SubTier.NotApplicable,
-    flags: EventFlags = EventFlags.Empty
+    flags: EventFlags = EventFlags.Empty,
+    origin: DeskMessageCodec.Origin = DeskMessageCodec.Origin.External,
+    expiresInMs: Long = 60000L
 ):
+  require(expiresInMs >= 1 && expiresInMs <= 600000, "event expiry must be 1–600000 ms")
+
   /** `actor` and `text` are the values *before* truncation: [[Tsb3Encoder]] cuts them to the field widths per §9.2 and sets the matching
     * `eflags` bit, so a record whose flags disagree with its bytes cannot be constructed.
     */
@@ -99,7 +103,12 @@ private[relay] object EventRequest:
       tier: SubTier = SubTier.NotApplicable,
       flags: EventFlags = EventFlags.Empty
   ): EventRequest =
-    EventRequest(kind, actor, text, DisplayTtl.defaultFor(kind), value, months, tier, flags)
+    EventRequest(kind, actor, text, DisplayTtl.defaultFor(kind), value, months, tier, flags, DeskMessageCodec.Origin.Twitch)
+
+  /** Internal diagnostics carry producer provenance, independent of their visual kind. */
+  def diagnostic(kind: NotificationKind, actor: String, text: String, origin: DeskMessageCodec.Origin): EventRequest =
+    require(origin == DeskMessageCodec.Origin.Twitch || origin == DeskMessageCodec.Origin.Relay)
+    EventRequest(kind, actor, text, DisplayTtl.defaultFor(kind), origin = origin)
 
   /** §6.4.3's generic path. Every numeric field stays 0 whatever kind the caller named, and the posted `ttl` is honoured as posted. */
   def card(request: NotificationRequest): EventRequest =

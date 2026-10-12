@@ -13,13 +13,22 @@ private[relay] final class AlertStore(capacity: Int):
   private final case class State(lastId: Long, alerts: Vector[Alert])
   private val state = AtomicReference(State(0L, Vector.empty))
 
-  def raise(rule: AlertRule, message: String, at: Instant): Option[Alert] =
+  def raise(rule: AlertRule, message: String, at: Instant, source: Option[twitchscreen.relay.bus.SourceIdentity] = None): Option[Alert] =
     transition: current =>
       val safeMessage = DiagnosticText(message)
       current.alerts.find(alert => alert.rule == rule.name && alert.status.isOpen) match
         case Some(existing) => (replace(current, existing.copy(message = safeMessage)), None)
         case None =>
-          val alert = Alert(current.lastId + 1, rule.name, rule.severity, safeMessage, at, AlertStatus.Active)
+          val alert = Alert(
+            current.lastId + 1,
+            rule.name,
+            rule.severity,
+            safeMessage,
+            at,
+            AlertStatus.Active,
+            source.map(value => f"${value.relayEpoch}%016x"),
+            source.map(_.generation)
+          )
           (State(alert.id, current.alerts.appendBounded(alert, capacity)), Some(alert))
 
   def resolve(ruleName: String, at: Instant): Option[Alert] =

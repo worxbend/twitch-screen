@@ -58,7 +58,8 @@ class StartupOrderSuite extends munit.FunSuite:
       .parseString(s"""
         http.host = "127.0.0.1"
         http.port = $port
-        http.auth.api-token = "startup-order-test-api-token-with-32-bytes"
+        http.allowed-hosts = ["127.0.0.1:$port"]
+        http.allowed-origins = ["http://127.0.0.1:$port"]
       """)
       .withFallback(ConfigFactory.load())
     val config = ConfigSource.fromConfig(source).loadOrThrow[Config]

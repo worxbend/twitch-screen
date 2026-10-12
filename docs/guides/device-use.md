@@ -1,5 +1,7 @@
 # 💜 Meet your tiny stream sidekick
 
+> Desk-update migration notice: management Basic/Bearer instructions in this historical guide are obsolete for this checkout. Nonempty `RELAY_HTTP_AUTH_*` settings fail startup; Authorization confers no privilege. Use the [current root quickstart](../../README.md#first-success-without-twitch), [migration guide](migration.md) and [implementation status](../implementation-status.md). Trusted-network isolation is mandatory. Clock/display/weather/CPU ingress and durable desired display intent are mounted. Complete DESK delivery, admin and runtime-channel behavior remain pending.
+
 [← Guidebook](../README.md) · [Firmware setup](firmware-setup.md) · [Troubleshooting](troubleshooting.md)
 
 Once configured, the device is an automatic display: plug in USB power, keep the relay running and let it do its thing. No app on your phone, no daily pairing ritual. Just a tiny circle doing the most. ✨
@@ -93,16 +95,14 @@ The firmware queue holds eight waiting notifications and pauses incoming event c
 
 ## Check the relay from your computer
 
-From a shell with the same management token used to start the relay:
+From the relay computer, use the loopback listener without management credentials:
 
 ```sh
-curl --fail-with-body http://127.0.0.1:8080/api/v1/status \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN"
-curl --fail-with-body http://127.0.0.1:8080/api/v1/devices \
-  -H "Authorization: Bearer $RELAY_HTTP_AUTH_API_TOKEN"
+curl --fail-with-body http://127.0.0.1:8080/api/v1/status
+curl --fail-with-body http://127.0.0.1:8080/api/v1/devices
 ```
 
-The first request reports integration and relay readiness; the second lists connected device sessions and counters. An empty device list means the display has not registered a current connection. Basic-auth installations can use the Basic credentials described in [relay setup](relay-setup.md).
+The first request reports integration and relay readiness; the second lists connected sessions and counters. An empty list means the display has no current registered connection. Anyone reaching HTTP can control the relay. Keep it isolated on a trusted LAN/VPN/firewall; Authorization headers do not protect it.
 
 The public `/api/v1/health` endpoint checks that the relay process serves HTTP. It intentionally does not prove Twitch is connected. The built-in API documentation is at `http://127.0.0.1:8080/docs`.
 

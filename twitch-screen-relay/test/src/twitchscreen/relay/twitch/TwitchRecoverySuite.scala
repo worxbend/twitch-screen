@@ -500,6 +500,7 @@ class TwitchRecoverySuite extends munit.FunSuite:
 
   test("a created webhook subscription that is not yet enabled is typed awaiting"):
     var results = List.empty[(String, EventSubOutcome)]
+    var bound = List.empty[(String, String)]
     val client = helix: (method, _) =>
       method match
         case "getEventSubSubscriptions" => command(mapper.readValue(emptyPage, classOf[EventSubSubscriptionList]))
@@ -511,12 +512,15 @@ class TwitchRecoverySuite extends munit.FunSuite:
       config,
       EventSubWebhookApi.unscopedSubscriptions("123").take(1),
       (kind, outcome) => results = results :+ (kind -> outcome),
-      () => fail("no rejection")
+      () => fail("no rejection"),
+      (kind, id) => bound = bound :+ (kind -> id)
     )
     assertEquals(results, List(StreamOnline -> EventSubOutcome.Awaiting))
+    assertEquals(bound, List(StreamOnline -> "p1"))
 
   test("an existing subscription pending verification at our callback is typed awaiting and not recreated"):
     var results = List.empty[(String, EventSubOutcome)]
+    var bound = List.empty[(String, String)]
     var creations = 0
     val client = helix: (method, _) =>
       method match
@@ -531,10 +535,12 @@ class TwitchRecoverySuite extends munit.FunSuite:
       config,
       EventSubWebhookApi.unscopedSubscriptions("123").take(1),
       (kind, outcome) => results = results :+ (kind -> outcome),
-      () => fail("no rejection")
+      () => fail("no rejection"),
+      (kind, id) => bound = bound :+ (kind -> id)
     )
     assertEquals(creations, 0)
     assertEquals(results, List(StreamOnline -> EventSubOutcome.Awaiting))
+    assertEquals(bound, List(StreamOnline -> "p1"))
 
   private def drained(events: ox.channels.Source[twitchscreen.relay.bus.BusEvent]): List[RelayEvent] =
     Iterator.continually(events.tryReceive()).takeWhile(_.isDefined).flatten.map(_.event).toList
@@ -558,7 +564,11 @@ class TwitchRecoverySuite extends munit.FunSuite:
       health.record(HealthComponent.Streams, EventSubOutcome.Failed(CallbackUnreachable))
       assertEquals(health.failure(HealthComponent.Streams), Some(CallbackUnreachable))
       assert(health.status.detail.contains("streams: callback unreachable"), clue(health.status.detail))
-      assert(drained(events).contains(RelayEvent.RelayFailure("twitch-streams", CallbackUnreachable)))
+      assert(
+        drained(events).contains(
+          RelayEvent.RelayFailure("twitch-streams", CallbackUnreachable, twitchscreen.relay.protocol.DeskMessageCodec.Origin.Twitch)
+        )
+      )
 
   test("a typed healthy outcome after a failure logs recovery and clears the failure"):
     supervised:

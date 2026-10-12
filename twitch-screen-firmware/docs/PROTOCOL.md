@@ -8,6 +8,12 @@ The two implementations are written independently from this document. Anything t
 document does not pin down is a defect in this document, not a licence to choose.
 MUST / MUST NOT / SHOULD / MAY carry RFC 2119 force.
 
+Sections 1–18 specify the unchanged classic TSB/3 profile. Section 20 specifies the
+additive, negotiated DESK/1 profile and explicitly overrides classic session policy
+only when CAP_DESK_V1 is negotiated. The original twenty vectors remain unchanged.
+The normative DESK/1 offset tables and fixtures live in `../../protocol/`.
+A materialized specification is not evidence that either runtime implements it.
+
 ## 0. What this replaces
 
 * **This supersedes NDJSON protocol v2** in every respect. v2 and v3 peers cannot
@@ -123,11 +129,14 @@ no real-time constraint pays the swap.
 | `u32` | 4 bytes | unsigned, LE | 0 … 4 294 967 295 |
 | `char[N]` | N bytes | — | NUL-padded UTF-8, at most N−1 content bytes (§9) |
 
-There are **no signed integers, no 64-bit integers, no floating-point values and no
-booleans** on the wire. A boolean is a `u8`; a receiver MUST treat any non-zero value as
-true. The relay's `SeqNo` (a `Long`) is narrowed to `u32` at the wire boundary (§10.1).
+In the classic profile there are **no signed integers, no 64-bit integers, no
+floating-point values and no booleans** on the wire. DESK/1 adds explicit `i16` and
+`u64` byte encodings (§20), not native struct alignment. A classic boolean is a
+`u8`; a receiver MUST treat any non-zero value as true. DISPLAY_STATE `enabled` is
+strictly 0 or 1. The relay's `SeqNo` (a `Long`) is narrowed to `u32` at the wire
+boundary (§10.1).
 
-Alignment rule, which holds for every payload in this document: a field of width *W* starts
+Alignment rule for classic payloads in §6: a field of width *W* starts
 at an offset that is a multiple of *W*, and every payload length is a multiple of 4. With an
 8-byte header and a 4-byte-aligned receive buffer, every payload scalar therefore lands
 naturally aligned. **Decoders MUST still use `memcpy` or explicit byte shifts and MUST NOT
@@ -377,7 +386,8 @@ Validation trims only to detect an all-whitespace identifier; it MUST NOT collap
 | 1 | `0x02` | `CAP_CHAT` | the device renders chat events and wants them |
 | 2 | `0x04` | `CAP_GENERIC` | the device renders the generic kinds `0x00`…`0x03` |
 | 3 | `0x08` | `CAP_UTF8_TEXT` | the device has a font beyond US-ASCII; strings are sent verbatim (§9.3) |
-| 4–31 | | reserved | senders MUST set 0; receivers MUST ignore unknown bits |
+| 4 | `0x10` | `CAP_DESK_V1` | complete DESK/1 profile; valid appended HELLO required (§20) |
+| 5–31 | | reserved | senders MUST set 0; receivers MUST ignore unknown bits |
 
 A capability is in effect only if the relay also supports it; `WELCOME.caps` states the
 intersection and is authoritative for the connection. A missing capability MUST cause
@@ -1733,3 +1743,275 @@ The migration from the NDJSON v2 link to TSB/3 is complete. When the switch was 
 * v2's specification documented a `msg_total` field that the relay never sent. §6.5 now
   covers it: the relay keeps a per-stream cumulative, bot-filtered `messagesTotal` on its
   stats fold and writes it into `STATS.msg_total`.
+
+## 20. DESK/1 — complete additive profile (normative)
+
+This section overrides classic application/session rules only on a connection that
+negotiated `CAP_DESK_V1 = 0x00000010`. Header, version 3, maximum payload 248,
+maximum frame 256, classic field offsets/reserved bytes, BYE, ping/pong and V1–V20
+remain unchanged. No partial implementation may advertise this capability.
+
+The following are normative companion artifacts:
+
+- [Complete byte offset tables](../../protocol/desk-v1-offsets.md).
+- [Machine-readable layouts](../../protocol/desk-v1-layouts.json).
+- [Additive independent vectors](../../protocol/desk-v1-vectors.json) and their
+  [TSV transport](../../protocol/desk-v1-vectors.tsv).
+- [HTTP/state/lifetime reference](../../docs/reference/desk-contract.md).
+
+`u64` is an unsigned eight-byte LE integer. `i16` is a signed two-byte LE two's
+complement integer. Strings retain section 9's fixed NUL-padded representation.
+Offsets are cumulative: NO implicit padding or natural-alignment assumption.
+For example WELCOME.relayEpoch starts at payload offset 28; HELLO.deviceBootId
+starts at 76; DEVICE_REPORT.observedDeviceMs starts at 28. Use byte assembly or
+memcpy into local scalar objects, never reinterpret_cast of a receive buffer.
+
+### 20.1 Record registry and validation
+
+| Code | Record | Direction | Payload bytes | Classic prefix |
+|---|---|---|---:|---:|
+| 0x01 | HELLO | device to relay | 92 | 60 |
+| 0x20 | WELCOME | relay to device | 60 | 24 |
+| 0x22 | STATS | relay to device | 60 | 32 |
+| 0x05 | TIME_REQUEST | device to relay | 8 | — |
+| 0x06 | DEVICE_REPORT | device to relay | 244 | — |
+| 0x26 | TIME_RESPONSE | relay to device | 32 | — |
+| 0x27 | DISPLAY_STATE | relay to device | 32 | — |
+| 0x28 | WEATHER | relay to device | 68 | — |
+| 0x29 | CPU | relay to device | 68 | — |
+| 0x2a | SYNC_END | relay to device | 40 | — |
+| 0x2b | DESK_EVENT | relay to device | 196 | EVENT 168 |
+| 0x2c | PROGRESS_BARRIER | relay to device | 20 | — |
+
+The complete known profile length is the minimum; appended unknown tails remain
+ignored within the 248-byte ceiling. A negotiated truncated known tail is invalid.
+Profile-required reserved fields are sent zero and validated zero; classic prefix
+reserved fields retain their old receiver-ignore rule. Unknown header flag bits
+remain ignored. REPLAY applies to DESK_EVENT as well as classic EVENT.
+
+HELLO requires CAP_DESK_V1 plus at least 92 bytes, profile=1, tail reserved=0 and
+nonzero deviceBootId. Missing/short/unsupported/invalid profile tail clears DESK
+from the effective intersection and selects classic fallback; it does not alter
+classic HELLO validation. An old relay ignores that capability/tail. WELCOME with
+DESK set requires at least 60 bytes, profile=1, reserved=0, nonzero relayEpoch and
+connectionId and matching probe echo. An invalid negotiated WELCOME closes and
+resynchronizes; a WELCOME without DESK uses classic semantics even with extra bytes.
+
+New records require negotiated DESK. State/time/report/barrier identity must match
+current nonzero relayEpoch/connectionId before mutation. DESK_EVENT uses current
+carrying TCP connection and `(relayEpoch, seq)` identity. In a DESK session a plain
+EVENT is a session violation: close/resynchronize. Classic sessions get plain EVENT
+only. New STATS must have the complete tail and matching sourceGeneration.
+
+Snapshot status: missing=0, fresh=1, stale=2. Preferred dashboard: generic=0,
+weather=1, cpu=2. enabled is exactly 0 or 1. Weather units celsius=0, fahrenheit=1;
+condition codes 0–8 are unknown, clear, partly_cloudy, cloudy, fog, drizzle, rain,
+snow, thunderstorm. STATS availability unknown=0, observed=1, unavailable=2.
+Unknown required enums/presence bits make the record invalid: skip/count without
+applying, and let bounded sync/control/clock deadlines force recovery. Unknown
+visual event kind retains classic INFO fallback; it is not a required state enum.
+
+Weather presence bit 0 is humidity. CPU bits 0/1 are memory/temperature. Missing
+optional fields are zero-filled and ignored unless present; measured zero with a
+presence bit is real. Fresh CPU basis points range 0–10000. Weather centi values
+range −10000…10000 C or −14800…21200 F, humidity 0–100. Optional CPU temperature
+ranges −2000…15000 centi C. Fresh snapshots need nonzero absolute deadlines.
+Missing/stale snapshots zero deadline and EVERY value/text/presence field, including
+unit/condition. HTTP may retain old stale payload for diagnostics; firmware hides it.
+
+### 20.2 Revisions, synchronization and compatibility
+
+Epoch is random nonzero u64 per runtime sequence space. Connection IDs are unique
+nonzero u64 within it; deviceBootId is nonzero per boot. Retain classic random
+session_id separately. JSON identities use exactly 16 lowercase hex digits, not
+floating-point numbers. Revisions, sourceGeneration and twitchEpisode start at 1
+within epoch, never wrap; exhaustion requires recovery/restart. Non-Twitch event
+generation/episode are zero. Report revisions start at 1 per connection; boot
+disposition counters saturate at u32 max rather than wrapping.
+
+Equal revision must describe equal full known content and deadline; unequal content
+at equal revision is invalid, never silently overwritten. Lower revision within a
+connection is ignored. Initial coherent hub transaction is exactly WELCOME,
+DISPLAY_STATE, WEATHER, CPU, extended STATS, SYNC_END. Stage state until all SYNC_END
+references (display/weather/CPU/stats revisions, generation and episode) match.
+Explicit missing snapshots satisfy sync. Later accepted changes follow the immutable
+batch, even when newer state is already queued. Initial freshness still expires at
+its original deadline. Controls apply while an active overlay remains visible.
+
+Firmware sync deadline starts at WELCOME receipt and expires at 5000 ms. Relay
+initial DEVICE_REPORT deadline starts when SYNC_END finishes transmission, also
+5000 ms. The writer's separate 3000 ms no-progress budget bounds transmission itself.
+At a deadline boundary (`now >= deadline`) close/resynchronize before further
+admission. Events/replay start only after validated initial current-session report
+matches the coherent applied batch (or a subsequently applied valid newer control).
+Its credit reflects queue state at report observation, not an earlier greeting count.
+
+Classic outbound default remains 128; minimum is replayBufferSize+18 (82 at 64).
+Capable greeting reserves six admissions independently of replay. Never preload
+capable replay before writer startup. Stage at most retained replay capacity
+(default 64 durable +16 chat), then drain using event credits.
+
+| Relay | Device | Required behavior |
+|---|---|---|
+| old | old | unchanged classic greeting, Twitch/cards, ACK and best-effort replay |
+| new | old | exact classic greeting/EVENT/STATS/holds/ACK; no controls or device waiting-expiry guarantee |
+| old | new | linked classic Twitch/cards; down local disconnected orbit; no applied-control claims |
+| new | new | complete DESK/1 six-frame sync, calibrated deadlines, reports, credit and ordered progress |
+
+Legacy retained card origin is unknown=255 and original epoch zero, never inferred
+from kind or correlated with new history. New HTTP validation still applies to old
+receivers, but cannot enforce device waiting expiry after send to them. Relay-first
+rollout preserves old devices; downgrade loses new display/age/report guarantees.
+
+### 20.3 Clock domains and conservative deadlines
+
+Use monotonic elapsed milliseconds, not wall timestamps. Firmware extends wrapping
+u32 millis to u64. Relay uses elapsed nanoTime. Companion uses CLOCK_BOOTTIME so
+suspend ages pending work. Durations are finite, at most 30 minutes. Never regenerate
+an absolute deadline from its original duration on resend/reconnect.
+
+For request-send d0, response-receipt d1 and relay sample r taken during that
+exchange, offset lies in `[r-d1,r-d0]`; no symmetric-network assumption is allowed.
+Accept RTT <=1000 ms, reject obsolete/out-of-order replies, require calibration age
+<=60000 ms. Initial WELCOME echoes HELLO probe; refresh device TIME_REQUEST every
+20000 ms independently of unchanged heartbeat/ACK. Reject unmatched echoes.
+
+Conservative device deadline for relay E is `d0+(E-r)-guard`, using checked signed
+arithmetic, with `guard=50+ceil((abs(E-r)+(d1-d0))/1000)` milliseconds. Already-past
+results expire. Recalibration may shorten, NEVER extend, an accepted local deadline.
+Operational relative-rate budget is 1000 ppm, not a guarantee against broken clocks.
+Expose RTT/calibration age. Companion deadline for local L is
+`L+(r-d1)-guard`; here guard uses `abs(L-d1)+RTT`. Calibration is startup/recovery
+or send-triggered, not a health polling loop. Keep original capture/sample age while
+calibrating; no unaged fallback upload. Device observation lower bound is
+`observedDeviceMs+(r-d1)-guard` with delta `abs(observedDeviceMs-d1)`; zero means
+unavailable. Reject checked-arithmetic overflow/underflow instead of wrapping.
+
+Relay publication assigns absolute card waiting deadline; telemetry acceptance
+assigns absolute freshness deadline, each capped by producer deadline if supplied.
+Per-peer writers check current absolute deadline/eligibility immediately before
+reservation/write. Shared immutable Outbound bytes must not cache relative age.
+Firmware retains deadlines even if complete frame awaits classification. Waiting
+expiry governs starting pending cards, NEVER cancels entrance/hold/exit once active.
+
+Calibration expiry invalidates weather/CPU immediately and forces resync; accepted
+generic cards retain conservative local deadlines and may finish offline. Device
+loop gaps >60000 ms invalidate clock before admission/reveal; ordinary millis wrap
+is not a discontinuity. Relay compares wall/monotonic deltas at least once each second;
+discrepancy >2000 ms discards waiting replay/telemetry, closes sessions and starts a
+fresh epoch/sequence/source scope while preserving persisted intent and OAuth owner.
+A wall correction may discard data, never extend it.
+
+### 20.4 Queue credits, ordered processed progress and barriers
+
+One FIFO has eight pending slots plus one separate active card. No preemption,
+priority, durable spool or exactly-once guarantee. Eligible generic relative order
+survives mixed-card compaction. Before every reveal/exit callback and LVGL render
+following time/state change, reconcile selection and freshness. Active card finishes
+regardless of link, override, generation, origin or waiting expiry.
+
+processedSeq is highest sequence completely handled in ordered delivery: enqueued,
+duplicate, expired, suppressed or explicitly covered by barrier. enqueuedSeq/ACK
+remain highest successfully enqueued sequence (with initial rebaseline exception),
+not processed/rendered receipts. Decode/classify complete DESK_EVENT before consulting
+capacity. Terminal skip needs no pending slot and may advance processed only.
+Unexpected no-slot is counted refusal and immediate disconnect without progress;
+never admit a higher sequence or send a barrier across that unhandled event.
+
+Resume only when HELLO.previousRelayEpoch matches and `0 < processedSeq <= latestSeq`.
+Otherwise baseline both current-epoch cursors at latestSeq, replay nothing. Retained
+generic cards preserve original epoch/seq/deadline; rebaseline is not presentation
+proof. Fresh boot never replays historical cards.
+
+After synchronization grantTotal starts with `8-pendingCount`. It is cumulative per
+connection. Every received DESK_EVENT consumes one admission; terminal skip replaces
+one credit immediately. Enqueued card leaving pending by start/expiry/suppression
+releases one credit, exactly once. Active completion releases NO second credit.
+A dequeue may occur before initial report, so initial observed total may be higher.
+Relay reserves/sends at most the largest valid grantTotal for this connection.
+Duplicate/coalesced reports cannot add grants. Reject old connection/epoch/report
+revision; equal report revision requires equal content. Grant and revision overflow
+requires reconnect, never wrap. ACK never gates DESK delivery or creates credit.
+
+Control/snapshot/time/sync/barrier consume no event credit. Bounded prioritized writer
+keeps immutable initial six-frame batch, one latest replaceable state slot per source/
+control, and ordered event/barrier stream. Serve pending control before another event,
+then fairly service all state types. Coalescing preserves cumulative episode/generation
+fences. Zero credit does not block TCP control/heartbeat reads or require reconnect.
+Control must be applied/reported within 5000 ms on ready connection, measured from
+oldest unapplied accepted control; newer writes or slot releases never reset that
+budget. Writer no-progress timeout is 3000 ms. Expected sync/clock/report absence also
+forces recovery. ACK, reports and arbitrary traffic do not prove control applied.
+
+Capable reconnect replays only retained unexpired external/relay cards; Twitch is
+terminally omitted on every reconnect. After ordered replay prefix send barrier
+through captured latest sequence. Normal barriers cover filtered/expired ranges in
+order, never cross an event awaiting admission/credit. New events follow captured
+prefix. Retention overflow may lose records; no durable guarantee is added.
+
+Origin is publication metadata: external for HTTP/companion; twitch for audience,
+lifecycle, provider and OAuth diagnostics; relay for independent relay/device failures.
+Never infer from visual kind/title. SourceGeneration increments on accepted mode/
+channel switch. TwitchEpisode increments whenever override or generation changes.
+Twitch capable publication requires enabled override/current generation; ineligible
+history stays terminally ineligible. Non-Twitch generation/episode remain zero.
+On control purge pending mismatched Twitch generation/episode or disabled override.
+On link loss purge all pending Twitch. Active cards and generic FIFO survive. Rapid
+disable/enable changes episode even if final enabled value coalesces; no resurrection.
+
+Presentation capability filtering remains kind-based AFTER provenance eligibility:
+CAP_GENERIC controls kinds 0x00–0x03; CAP_CHAT and relay chat policy jointly control
+CHAT. External Twitch-looking kinds remain external and are never override/generation
+suppressed. New firmware MUST retain CAP_GENERIC for desk cards; no new producer
+field can widen device presentation capabilities. Filtered records get ordered terminal
+progress/barriers; they do not silently turn into Twitch provenance.
+
+### 20.5 DEVICE_REPORT shape, age and lifecycle
+
+Header is 100 bytes, followed by nine fixed 16-byte entries: active first, then eight
+pending FIFO slots. Payload 244/frame 252 fits ceiling. Every entry is
+`originalRelayEpoch:u64, seq:u32, kind:u8, origin:u8, reserved:u16=0`. Unused entries
+are all zero. An inactive report has zero activeRemainingMs and zero active entry.
+PendingCount <=8; occupied pending entries form the first pendingCount slots.
+Retained entry epoch/sequence may differ from current cursors and exceed latestSeq;
+validate them separately, never relabel/reject valid retained cards for that reason.
+Origin codes external=0, twitch=1, relay=2, unknown=255 (legacy epoch zero only).
+
+BaseScreen connected_orbit=0, disconnected_orbit=1, twitch=2, weather=3, cpu=4.
+Reason selected=0, relay_down=1, synchronizing=2, generic_selected=3, data_missing=4,
+data_stale=5, twitch_override=6, legacy=7, clock_unavailable=8.
+ActivePhase none=0, entrance=1 (including severity flash), hold=2, exit=3.
+RemainingMs covers all remaining presentation, not hold alone. Controller transfers
+pending to active atomically before marking report dirty. Applied control revision
+can advance while active old-generation card remains visible.
+
+Counters expired/suppressed/refused saturate at u32 max and are scoped to deviceBootId.
+Current cursor fields refer only to current epoch. Meaningful-change reports have
+minimum 200 ms spacing, latest-state coalescing and idle refresh every 5000 ms.
+Sample state immediately before encoding. Reserve one replaceable uncommitted report
+intent and 512-byte TX FIFO sufficient for 252-byte report plus heartbeat/ACK; never
+overwrite partly transmitted bytes. Reports never block offline card completion.
+
+Relay observation-age upper bound is `nowRelayMs-observedRelayLowerMs`, separately
+from receipt age. Reject implausible future bound; zero calibration means unknown.
+Age >15000 ms is stale, boot/session mismatch unknown, disconnect immediately
+historical. A delayed arrival cannot make old observation fresh. DEVICE_REPORT is a
+firmware lifecycle observation, NOT proof of physical pixels or user reading.
+
+### 20.6 Independent conformance artifacts
+
+Run from repository root:
+
+    python3 tools/check_protocol_vectors.py
+    python3 tools/check_desk_contract.py
+    python3 -m unittest discover -s tools/tests -p test_desk_contract.py -v
+    g++ -std=c++11 -Wall -Wextra -Werror protocol/DeskVectors.cpp -o /path/to/private/desk-vectors
+    /path/to/private/desk-vectors protocol/desk-v1-vectors.tsv
+    scala run protocol/DeskVectors.scala --server=false -- protocol/desk-v1-vectors.tsv
+
+The Python fixture constructor used struct packing; checker uses byte shifts; C++ and
+Scala probes independently transcribe field widths and use separate byte encoders.
+These check contract artifacts, not production peer codecs, network integration,
+LVGL callback wiring, supported desktop capture or physical rendering. Both track
+owners must bind their real codecs/session tests to these fixtures before advertising
+CAP_DESK_V1. Preserve V1–V20 in all three original locations unchanged.

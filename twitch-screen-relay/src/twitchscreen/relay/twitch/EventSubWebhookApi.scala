@@ -9,6 +9,7 @@ import com.github.twitch4j.helix.TwitchHelix
 import java.nio.charset.StandardCharsets.UTF_8
 import java.security.MessageDigest
 import java.time.{Clock, Instant}
+import java.util.concurrent.{CompletableFuture, TimeUnit, TimeoutException}
 import java.time.format.DateTimeParseException
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -40,7 +41,58 @@ private[twitch] final class EventSubWebhookApi(
   import EventSubWebhookApi.*
 
   private val logger = LoggerFactory.getLogger(getClass)
-  private val deduplication = WebhookDeduplication()
+  private var deduplication = WebhookDeduplication()
+  private var broadcaster = Option.empty[String]
+  private var subscriptions = Map.empty[String, String]
+  private var registrations = Map.empty[String, CompletableFuture[String]]
+
+  private[twitch] def useDeduplication(owner: WebhookDeduplication): Unit = synchronized:
+    deduplication = owner
+
+  /** Resolved provider identity, not operator-entered channel text, gates every supported callback. */
+  private[twitch] def bindBroadcaster(id: String): Unit = synchronized:
+    require(id.nonEmpty)
+    if !broadcaster.contains(id) then
+      subscriptions = Map.empty
+      registrations = List("stream.online", "stream.offline", "channel.update", "channel.follow")
+        .map(_ -> CompletableFuture[String]())
+        .toMap
+    broadcaster = Some(id)
+
+  private[twitch] def bindSubscription(kind: String, id: String): Unit = synchronized:
+    if HealthComponent.subscription(kind).isDefined && id.nonEmpty && broadcaster.isDefined then
+      subscriptions = subscriptions.updated(kind, id)
+      registrations.get(kind).foreach(_.complete(id).discard)
+
+  private def verifyIdentity(messageType: String, envelope: EventSubEnvelope): Either[Fail, Unit] =
+    // Twitch's challenge may race the create-subscription response. Wait only for that bounded registration,
+    // never while holding the owner lock and never bind an ID merely because an incoming body claims it.
+    val registering = synchronized:
+      val subscription = envelope.subscription
+      val matches = broadcaster.isDefined && subscription.condition.flatMap(_.broadcasterUserId) == broadcaster
+      if messageType == "webhook_callback_verification" && matches && subscriptions.get(subscription.kind).isEmpty then
+        registrations.get(subscription.kind)
+      else None
+    val registered = registering.fold[Either[Fail, Unit]](Right(())): pending =>
+      try
+        pending.get(1, TimeUnit.SECONDS).discard
+        Right(())
+      catch case _: TimeoutException => Left(Fail.Unavailable("EventSub subscription awaiting reconciliation"))
+    registered.flatMap: _ =>
+      synchronized:
+        val subscription = envelope.subscription
+        if HealthComponent.subscription(subscription.kind).isEmpty then Right(())
+        else
+          val conditionMatches = broadcaster.isDefined && subscription.condition.flatMap(_.broadcasterUserId) == broadcaster
+          val eventMatches = envelope.event.forall(payload =>
+            payload.broadcasterUserId == broadcaster && payload.broadcasterUserLogin.contains(config.channel)
+          )
+          val id = subscription.id.filter(_.nonEmpty)
+          // Reconciliation binds the provider's accepted ID. Unknown/retired challenges cannot activate current health.
+          if conditionMatches && id.isDefined && subscriptions.get(subscription.kind) == id &&
+            (messageType != "notification" || eventMatches)
+          then Right(())
+          else Left(Fail.Unauthorized("EventSub callback does not belong to the current broadcaster/subscription"))
   private val mapping = EventSubMapping(tracker, config.channel, event => filter.publish(bus, event))
 
   private val callbackServerEndpoint: ServerEndpoint[Any, Identity] =
@@ -48,7 +100,7 @@ private[twitch] final class EventSubWebhookApi(
 
   override val endpoints: List[ServerEndpoint[Any, Identity]] = List(callbackServerEndpoint)
 
-  private def handleCallback(
+  private[twitch] def handleCallback(
       messageId: String,
       timestamp: String,
       signature: String,
@@ -59,6 +111,7 @@ private[twitch] final class EventSubWebhookApi(
       _ <- verifySignature(messageId, timestamp, signature, body)
       sent <- verifyFreshness(timestamp)
       envelope <- parse(body)
+      _ <- verifyIdentity(messageType, envelope)
       response <-
         if messageType == "notification" || messageType == "revocation" then
           deduplication
@@ -190,7 +243,8 @@ private[twitch] object EventSubWebhookApi:
       config: TwitchConfig,
       subscriptions: List[(SubscriptionType[?, ?, ?], EventSubCondition)],
       observe: (String, EventSubOutcome) => Unit,
-      appTokenRejected: () => Unit
+      appTokenRejected: () => Unit,
+      bindSubscription: (String, String) => Unit = (_, _) => ()
   ): Unit =
     subscriptions.foreach: (kind, condition) =>
       try
@@ -213,9 +267,17 @@ private[twitch] object EventSubWebhookApi:
               EventSubFactory.webhookSubscription(kind, condition, config.eventSub.callbackUrl, config.eventSub.secret.value)
             )
             .execute()
+          created.getSubscriptions.asScala
+            .filter(sub =>
+              sub.getCondition == condition && Option(sub.getTransport).exists(transport =>
+                transport.getMethod == EventSubTransportMethod.WEBHOOK && transport.getCallback == config.eventSub.callbackUrl
+              )
+            )
+            .foreach(sub => bindSubscription(kind.getName, sub.getId))
           val enabled = created.getSubscriptions.asScala.exists(_.getStatus == EventSubSubscriptionStatus.ENABLED)
           observe(kind.getName, if enabled then EventSubOutcome.Healthy else EventSubOutcome.Awaiting)
         else
+          usable.foreach(sub => bindSubscription(kind.getName, sub.getId))
           observe(
             kind.getName,
             if usable.exists(_.getStatus == EventSubSubscriptionStatus.ENABLED) then EventSubOutcome.Healthy else EventSubOutcome.Awaiting

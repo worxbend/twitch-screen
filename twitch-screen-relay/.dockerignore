@@ -9,3 +9,9 @@ PLAN.md
 README.md
 Dockerfile
 .dockerignore
+.env*
+!.env.example
+*.pem
+*.key
+data/
+**/runtime-state.json

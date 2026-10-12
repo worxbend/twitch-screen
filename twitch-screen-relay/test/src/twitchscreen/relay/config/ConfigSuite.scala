@@ -7,22 +7,15 @@ import scala.concurrent.duration.{DurationInt, FiniteDuration}
 import twitchscreen.relay.twitch.TwitchScopes
 
 class ConfigSuite extends munit.FunSuite:
-  private def configured =
-    ConfigFactory.parseString("http.auth.api-token = \"test-configuration-token-at-least-32-bytes\"").withFallback(ConfigFactory.load())
+  private def configured = ConfigFactory.load()
   private def configSource = ConfigSource.fromConfig(configured)
   private val ValidToken = "valid-test-token-with-at-least-32-bytes"
-  private val BasicPairRequired = "requires both Basic username and password hash"
-  private val BlankHashRejected = "basic-password-hash cannot be whitespace"
   private val MisspelledSecret = "client-secert"
   private val AuthPreferenceProperty = "http.auth.preference"
   private val NonProxyHostsProperty = "http.nonProxyHosts"
   private val CallbackUrl = "http://localhost:8080/api/v1/twitch/callback"
   private val PingIntervalKey = "ping-interval"
 
-  /** Well-formed for `PasswordVerifier.valid` (16-byte salt, 32-byte key); no password verifies against it. */
-  private val ValidHash =
-    s"pbkdf2-sha256$$600000$$${java.util.Base64.getEncoder.encodeToString(Array.fill[Byte](16)(1))}$$${java.util.Base64.getEncoder
-        .encodeToString(Array.fill[Byte](32)(2))}"
   test("the configuration shipped in resources loads"):
     val config = configSource.loadOrThrow[Config]
     assertEquals(config.deviceLink.port.value, 8099)
@@ -60,17 +53,17 @@ class ConfigSuite extends munit.FunSuite:
     assertEquals(config.twitch.oauth.scopes, TwitchScopes.Default)
     assert(!ConfigFactory.load().hasPath("twitch.user-access-token"))
 
-  test("a live relay whose redirect URL does not land on the callback path is rejected at load"):
+  test("selected live ingestion rejects a redirect URL that does not land on the callback path"):
     val failure = intercept[IllegalArgumentException](
-      liveTwitchConfig(clientId = "abc").copy(oauth = TwitchOAuthConfig("http://localhost:8080/", Nil, "t.json", 15.minutes))
+      liveTwitchConfig(clientId = "abc").copy(oauth = TwitchOAuthConfig("http://localhost:8080/", Nil, "t.json", 15.minutes)).validateLive()
     )
     assert(failure.getMessage.contains("redirect-url"), failure.getMessage)
 
   test("a sensitive value does not render itself"):
     assertEquals(Sensitive("hunter2").toString, "***")
 
-  test("live mode without a client id is rejected at load, not at the first Helix call"):
-    val failure = intercept[IllegalArgumentException](liveTwitchConfig(clientId = ""))
+  test("selected live ingestion without a client id is rejected before the first Helix call"):
+    val failure = intercept[IllegalArgumentException](liveTwitchConfig(clientId = "").validateLive())
     assert(failure.getMessage.contains("twitch.client-id"), failure.getMessage)
 
   test("live mode with credentials is accepted"):
@@ -204,20 +197,17 @@ class ConfigSuite extends munit.FunSuite:
       () => ObservabilityConfig(Int.MaxValue)
     ).foreach(build => intercept[IllegalArgumentException](build()).discard)
 
-  test("K-045: HTTP auth config cannot be constructed without a complete credential method"):
-    val absent = intercept[IllegalArgumentException](HttpAuthConfig())
-    assert(absent.getMessage.contains("requires Basic credentials or an API token"), absent.getMessage)
-    val incomplete = intercept[IllegalArgumentException](HttpAuthConfig("operator", apiToken = Some(Sensitive(ValidToken))))
-    assert(incomplete.getMessage.contains(BasicPairRequired), incomplete.getMessage)
-
-  test("K-045: a complete credential method constructs"):
-    assertEquals(HttpAuthConfig(apiToken = Some(Sensitive(ValidToken))).apiToken.map(_.value), Some(ValidToken))
+  test("empty deprecated auth config constructs but nonempty settings fail with key-only migration guidance"):
+    assertEquals(HttpAuthConfig().apiToken, None)
+    val failure = intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Some(Sensitive(ValidToken))))
+    assert(failure.getMessage.contains("http.auth.api-token"))
+    assert(!failure.getMessage.contains(ValidToken))
 
   test("callback schemes and hosts are case insensitive while scopes reject malformed names"):
     val config = liveTwitchConfig("client")
     assertEquals(config.copy(oauth = config.oauth.copy(redirectUrl = "HTTP://LOCALHOST/api/v1/twitch/callback")).mode, TwitchMode.Live)
     List(List(""), List("read scope"), List(TwitchScopes.Subscriptions, TwitchScopes.Subscriptions)).foreach: scopes =>
-      intercept[IllegalArgumentException](config.copy(oauth = config.oauth.copy(scopes = scopes))).discard
+      intercept[IllegalArgumentException](config.copy(oauth = config.oauth.copy(scopes = scopes)).validateLive()).discard
     assertEquals(config.copy(oauth = config.oauth.copy(scopes = Nil)).oauth.scopes, Nil)
 
   test("hostnames reject embedded whitespace and list settings reject numeric scalar coercion"):
@@ -286,20 +276,22 @@ class ConfigSuite extends munit.FunSuite:
   test("webhook provider constraints reject insecure callbacks and short secrets"):
     val base = liveTwitchConfig("abc")
     intercept[IllegalArgumentException](
-      base.copy(eventSub =
-        EventSubConfig(EventSubTransport.Webhook, "http://relay.example/api/v1/twitch/eventsub", Sensitive("0123456789"))
-      )
+      base
+        .copy(eventSub = EventSubConfig(EventSubTransport.Webhook, "http://relay.example/api/v1/twitch/eventsub", Sensitive("0123456789")))
+        .validateLive()
     ).discard
     val failure = intercept[IllegalArgumentException](
-      base.copy(eventSub = EventSubConfig(EventSubTransport.Webhook, "https://relay.example/api/v1/twitch/eventsub", Sensitive("short")))
+      base
+        .copy(eventSub = EventSubConfig(EventSubTransport.Webhook, "https://relay.example/api/v1/twitch/eventsub", Sensitive("short")))
+        .validateLive()
     )
     assert(failure.getMessage.contains("secret"))
 
-  test("missing management credentials fail configuration loading with an auth path"):
-    val result =
-      ConfigSource.fromConfig(ConfigFactory.parseString("http.auth.api-token = \"\"").withFallback(ConfigFactory.load())).load[Config]
-    assert(result.isLeft)
-    assert(result.swap.toOption.exists(_.toString.contains("http.auth")))
+  test("missing management credentials load and native listeners default to loopback"):
+    val config = ConfigSource.fromConfig(ConfigFactory.load()).loadOrThrow[Config]
+    assertEquals(config.http.auth, HttpAuthConfig())
+    assertEquals(config.http.host.value, "127.0.0.1")
+    assertEquals(config.deviceLink.host.value, "127.0.0.1")
 
   /** The messages of the `CannotConvert` failures reported exactly at `http.auth`, the path of the section that failed. */
   private def authConversionFailures(overrides: String): List[String] =
@@ -312,9 +304,8 @@ class ConfigSuite extends munit.FunSuite:
 
   test("K-045: invalid http.auth in HOCON is a CannotConvert scoped to http.auth, returned rather than thrown"):
     List(
-      "http.auth.api-token = \"\"" -> "requires Basic credentials or an API token",
-      "http.auth.api-token = \"sixteen-byte-tok\"" -> "at least 32 bytes",
-      "http.auth { api-token = \"\", basic-username = \"operator\" }" -> BasicPairRequired
+      "http.auth.api-token = \"sixteen-byte-tok\"" -> "Obsolete management authentication",
+      "http.auth { api-token = \"\", basic-username = \"operator\" }" -> "http.auth.basic-username"
     ).foreach: (overrides, expected) =>
       val messages = authConversionFailures(overrides)
       assert(
@@ -322,48 +313,28 @@ class ConfigSuite extends munit.FunSuite:
         s"$overrides: expected a CannotConvert at http.auth containing '$expected', got $messages"
       )
 
-  test("K-100: an empty HOCON auth secret reads as None and a whitespace-only one is rejected"):
-    val loaded = ConfigSource
+  test("obsolete HOCON secrets including whitespace fail without leaking values"):
+    List("api-token", "basic-password-hash", "basic-username").foreach: key =>
+      List(ValidToken, "   ").foreach: value =>
+        val messages = authConversionFailures(s"http.auth.$key = \"$value\"")
+        assert(messages.exists(_.contains(s"http.auth.$key")))
+        assert(!messages.exists(_.contains(ValidToken)))
+
+  test("explicit empty old HOCON secrets remain empty and harmless"):
+    val config = ConfigSource
       .fromConfig(
         ConfigFactory
-          .parseString(s"http.auth { api-token = \"$ValidToken\", basic-password-hash = \"\" }")
+          .parseString("http.auth { api-token = \"\", basic-password-hash = \"\" }")
           .withFallback(ConfigFactory.load())
       )
-      .load[Config]
-    val auth = loaded.fold(failures => fail(failures.prettyPrint()), _.http.auth)
-    assertEquals(auth.basicPasswordHash, None)
-    assertEquals(auth.apiToken.map(_.value), Some(ValidToken))
-    List(
-      "http.auth.api-token = \"   \"" -> "api-token",
-      s"http.auth { api-token = \"$ValidToken\", basic-username = \"operator\", basic-password-hash = \"   \" }" ->
-        BlankHashRejected
-    ).foreach: (overrides, expected) =>
-      val messages = authConversionFailures(overrides)
-      assert(messages.exists(_.contains(expected)), s"$overrides: expected '$expected', got $messages")
+      .loadOrThrow[Config]
+    assertEquals(config.http.auth, HttpAuthConfig())
 
-  test("K-100: whitespace-only secrets and a Basic password hash without a username cannot be constructed"):
-    val token = Some(Sensitive(ValidToken))
-    val blankToken = intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Some(Sensitive("   "))))
-    assert(blankToken.getMessage.contains("api-token"), blankToken.getMessage)
-    val blankHash =
-      intercept[IllegalArgumentException](HttpAuthConfig("operator", basicPasswordHash = Some(Sensitive(" ")), apiToken = token))
-    assert(blankHash.getMessage.contains(BlankHashRejected), blankHash.getMessage)
-    val emptyHash = intercept[IllegalArgumentException](HttpAuthConfig(basicPasswordHash = Some(Sensitive("")), apiToken = token))
-    assert(emptyHash.getMessage.contains(BlankHashRejected), emptyHash.getMessage)
-    val hashOnly = intercept[IllegalArgumentException](HttpAuthConfig(basicPasswordHash = Some(Sensitive(ValidHash)), apiToken = token))
-    assert(hashOnly.getMessage.contains(BasicPairRequired), hashOnly.getMessage)
-
-  test("K-100: an optional auth secret stays masked when the config is rendered"):
-    val rendered = HttpAuthConfig(apiToken = Some(Sensitive(ValidToken))).toString
-    assert(!rendered.contains(ValidToken), rendered)
-    assert(rendered.contains("Some(***)"), rendered)
-
-  test("configured credentials reject whitespace usernames and non-header-safe bearer tokens"):
-    val token = Some(Sensitive(ValidToken))
-    List(" ", "name:password").foreach: username =>
-      intercept[IllegalArgumentException](HttpAuthConfig(username, apiToken = token)).discard
-    List("x" * 32 + "\n", "é" * 32, "x" * 32 + " space").foreach: invalid =>
-      intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Some(Sensitive(invalid)))).discard
+  test("deprecated credentials cannot be constructed regardless of format"):
+    List(" ", "name:password", "operator").foreach: username =>
+      intercept[IllegalArgumentException](HttpAuthConfig(username)).discard
+    List("short", "x" * 32 + "\n", "é" * 32).foreach: value =>
+      intercept[IllegalArgumentException](HttpAuthConfig(apiToken = Some(Sensitive(value)))).discard
 
   private def loadWith(overrides: String) =
     ConfigSource.fromConfig(ConfigFactory.parseString(overrides).withFallback(configured)).load[Config]

@@ -2,7 +2,7 @@ package twitchscreen.relay.http
 
 import io.opentelemetry.api.OpenTelemetry
 import org.slf4j.LoggerFactory
-import ox.{Ox, discard, tap}
+import ox.{Ox, discard, tap, useInScope}
 import sttp.shared.Identity
 import sttp.tapir.server.ServerEndpoint
 import sttp.tapir.server.metrics.opentelemetry.OpenTelemetryMetrics
@@ -14,7 +14,7 @@ import sttp.tapir.swagger.bundle.SwaggerInterpreter
 import twitchscreen.relay.RelayVersion
 import twitchscreen.relay.config.{Hostname, HttpConfig}
 import twitchscreen.relay.observability.SetTraceIdInMDCInterceptor
-import io.netty.handler.codec.http.HttpServerCodec
+import io.netty.handler.codec.http.{HttpObjectAggregator, HttpServerCodec}
 import io.netty.handler.timeout.ReadTimeoutHandler
 import io.netty.channel.ChannelHandlerContext
 import java.util.concurrent.TimeUnit
@@ -25,9 +25,11 @@ import scala.concurrent.duration.{DurationInt, FiniteDuration}
   */
 final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenTelemetry):
   private val logger = LoggerFactory.getLogger(getClass)
-  private val managementAuth = ManagementAuth(config.auth)
-
-  private val apiEndpoints: List[ServerEndpoint[Any, Identity]] = apis.flatMap(_.endpoints).map(managementAuth.protect)
+  private val apiEndpoints: List[ServerEndpoint[sttp.tapir.server.netty.sync.OxStreams, Identity]] = apis
+    .flatMap(api => api.endpoints ++ api.streamingEndpoints)
+    .map: endpoint =>
+      require(endpoint.attribute(Http.Access).isDefined, s"Endpoint lacks an access classification: ${endpoint.show}")
+      endpoint
 
   private val docEndpoints: List[ServerEndpoint[Any, Identity]] =
     SwaggerInterpreter().fromServerEndpoints[Identity](apiEndpoints, "twitch-screen-relay", RelayVersion.current)
@@ -55,6 +57,7 @@ final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenT
       .host(config.host.value)
       .port(port)
       .maxConnections(HttpApi.MaxConnections)
+      .socketConfig(NettyConfig.default.socketConfig.withReuseAddress)
       .initPipeline: settings =>
         (pipeline, handler) =>
           NettyConfig.defaultInitPipeline(settings)(pipeline, handler)
@@ -63,13 +66,29 @@ final class HttpApi(apis: List[ServerEndpoints], config: HttpConfig, otel: OpenT
           // also sees the body chunks RequestBodyLimit drops after a rejection; decoded body chunks never extend it.
           pipeline.addAfter(codec, "requestDeadline", RequestDeadline(requestDeadline)).discard
           pipeline.addAfter("requestDeadline", "requestReadTimeout", RequestReadTimeout(readTimeout)).discard
-          pipeline.addAfter("requestReadTimeout", "requestBodyLimit", RequestBodyLimit(HttpApi.MaxBodyBytes)).discard
-    NettySyncServer(serverOptions, netty)
-      .addEndpoints(apiEndpoints ++ docEndpoints)
-      .start()
-      .tap: binding =>
-        logger.info(s"Management API on http://${config.host.value}:${binding.port}/docs (${apiEndpoints.size} endpoints)")
-        afterBind(binding.port)
+          pipeline.addAfter("requestReadTimeout", "browserBoundary", BrowserBoundary(config)).discard
+          pipeline.addAfter("browserBoundary", "sseLifecycle", SseLifecycle(readTimeout)).discard
+          pipeline.addAfter("sseLifecycle", "requestBodyLimit", RequestBodyLimit(HttpApi.MaxBodyBytes)).discard
+          // Tapir's streaming adapter can interpret channel EOF as body completion. Only release a request to it after Netty has
+          // decoded LastHttpContent. Timeout, disconnect and size-limit closure then discard the bounded partial body instead of
+          // allowing a syntactically valid JSON prefix to reach mutation logic. Response streaming is unaffected.
+          pipeline.addAfter("requestBodyLimit", "completeRequest", HttpObjectAggregator(HttpApi.MaxBodyBytes.toInt)).discard
+          pipeline.addAfter("completeRequest", "completedRequestAdapter", CompletedRequestAdapter()).discard
+    val raw = NettySyncServer(serverOptions, netty).addEndpoints(apiEndpoints ++ docEndpoints).start()
+    val stopLock = new Object()
+    var stopped = false
+    val binding = useInScope(
+      raw.copy(stop =
+        () =>
+          stopLock.synchronized:
+            if !stopped then
+              stopped = true
+              raw.stop()
+      )
+    )(_.stop())
+    binding.tap: binding =>
+      logger.info(s"Management API on http://${config.host.value}:${binding.port}/docs (${apiEndpoints.size} endpoints)")
+      afterBind(binding.port)
 
 object HttpApi:
   private val LoopbackHosts: Set[String] = Set("localhost", "127.0.0.1", "::1", "[::1]")
@@ -78,7 +97,7 @@ object HttpApi:
   private[http] def isLoopback(host: Hostname): Boolean = LoopbackHosts.contains(host.value.toLowerCase(java.util.Locale.ROOT))
 
   private[http] val PlaintextNonLoopbackWarning: String =
-    "Management credentials are served over plaintext HTTP on a non-loopback interface; use a trusted TLS proxy and restrict direct access"
+    "Private management is unauthenticated over plaintext HTTP on a non-loopback interface; restrict access to a trusted LAN/VPN"
 
   private[http] val MaxConnections: Int = 128
   private[http] val MaxBodyBytes: Long = 65536

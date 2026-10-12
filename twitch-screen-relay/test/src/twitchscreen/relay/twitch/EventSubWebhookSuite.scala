@@ -44,13 +44,14 @@ class EventSubWebhookSuite extends munit.FunSuite:
   )(using
       backend: SyncBackend
   ) =
+    val payload = WebhookIdentityFixtures.body(body)
     basicRequest
       .post(url)
       .header("Twitch-Eventsub-Message-Id", messageId)
       .header("Twitch-Eventsub-Message-Timestamp", timestamp)
-      .header("Twitch-Eventsub-Message-Signature", signature.getOrElse(sign(messageId, timestamp, body)))
+      .header("Twitch-Eventsub-Message-Signature", signature.getOrElse(sign(messageId, timestamp, payload)))
       .header("Twitch-Eventsub-Message-Type", messageType)
-      .body(body)
+      .body(payload)
       .send(backend)
 
   /** Subscribes inside the scope and hands the test the channel, so each test body needs no Ox capability of its own. */
@@ -67,6 +68,7 @@ class EventSubWebhookSuite extends munit.FunSuite:
         clock,
         (kind, failure) => health.observeSubscription(kind, failure)
       )
+      WebhookIdentityFixtures.bind(api)
       body(TapirSyncStubInterpreter().whenServerEndpointsRunLogic(api.endpoints).backend(), bus.subscribe("test"))
 
   test("a correctly signed verification request is answered with the challenge"):
@@ -169,6 +171,7 @@ class EventSubWebhookSuite extends munit.FunSuite:
       val moving = Movable()
       val bus = EventBus(moving, queueCapacity = 16)
       val api = EventSubWebhookApi.create(config, bus, ChannelStateTracker(config.channel, moving), BotFilter.from(notifications), moving)
+      WebhookIdentityFixtures.bind(api)
       given SyncBackend = TapirSyncStubInterpreter().whenServerEndpointsRunLogic(api.endpoints).backend()
       val events = bus.subscribe("skew-test")
       val body = """{"subscription":{"type":"channel.follow"},"event":{"user_name":"once"}}"""
@@ -206,6 +209,7 @@ class EventSubWebhookSuite extends munit.FunSuite:
           attempts += 1
           if attempts == 1 then throw IllegalStateException("temporary failure")
       )
+      WebhookIdentityFixtures.bind(api)
       given SyncBackend = TapirSyncStubInterpreter().whenServerEndpointsRunLogic(api.endpoints).backend()
       val body = """{"subscription":{"type":"channel.follow","status":"authorization_revoked"}}"""
       assertEquals(post("revocation", body, messageId = "retry").code, StatusCode.ServiceUnavailable)

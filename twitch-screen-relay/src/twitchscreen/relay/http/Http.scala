@@ -6,33 +6,43 @@ import sttp.tapir.*
 import sttp.tapir.json.jsoniter.jsonBody
 
 /** Every error response the relay produces has this body, whether it comes from endpoint logic or from Tapir itself. */
-final case class Error_OUT(error: String) derives ConfiguredJsonValueCodec, Schema
+final case class Error_OUT(error: String, code: Option[String] = None) derives ConfiguredJsonValueCodec, Schema
 
 /** Shared endpoint scaffolding. Derived mappings are methods so initialization order cannot expose a null mapping. */
 object Http:
   private[relay] val Access: AttributeKey[HttpAccess] = new AttributeKey[HttpAccess]("relay.http.access")
-  private def failToResponseData: Fail => (StatusCode, String) =
-    case Fail.NotFound(what)      => (StatusCode.NotFound, what)
-    case Fail.Conflict(msg)       => (StatusCode.Conflict, msg)
-    case Fail.IncorrectInput(msg) => (StatusCode.BadRequest, msg)
-    case Fail.Unauthorized(msg)   => (StatusCode.Unauthorized, msg)
-    case Fail.Forbidden           => (StatusCode.Forbidden, "Forbidden")
-    case Fail.Unavailable(msg)    => (StatusCode.ServiceUnavailable, msg)
-    case _                        => (StatusCode.InternalServerError, "Internal server error")
+  private def failToResponseData: Fail => (StatusCode, Error_OUT, Option[String]) =
+    case Fail.NotFound(what)              => (StatusCode.NotFound, Error_OUT(what), None)
+    case Fail.Conflict(msg)               => (StatusCode.Conflict, Error_OUT(msg), None)
+    case Fail.IncorrectInput(msg)         => (StatusCode.BadRequest, Error_OUT(msg), None)
+    case Fail.Unauthorized(msg)           => (StatusCode.Unauthorized, Error_OUT(msg), None)
+    case Fail.Forbidden                   => (StatusCode.Forbidden, Error_OUT("Forbidden"), None)
+    case Fail.Unavailable(msg)            => (StatusCode.ServiceUnavailable, Error_OUT(msg), None)
+    case Fail.MonitoringUnavailable(code) => (StatusCode.ServiceUnavailable, Error_OUT(code, Some(code)), None)
+    case Fail.ConfigurationMissing => (StatusCode.Conflict, Error_OUT("Twitch configuration missing", Some("configuration_missing")), None)
+    case Fail.ClockEpochChanged    => (StatusCode.Conflict, Error_OUT("clock epoch changed", Some("clock_epoch_changed")), None)
+    case Fail.Expired              => (StatusCode.Gone, Error_OUT("expired", Some("expired")), None)
+    case Fail.RateLimited          => (StatusCode.TooManyRequests, Error_OUT("rate limited", Some("rate_limited")), Some("1"))
+    case _                         => (StatusCode.InternalServerError, Error_OUT("Internal server error"), None)
 
-  private def responseDataToFail: (StatusCode, String) => Fail =
-    case (StatusCode.NotFound, what)          => Fail.NotFound(what)
-    case (StatusCode.Conflict, msg)           => Fail.Conflict(msg)
-    case (StatusCode.Unauthorized, msg)       => Fail.Unauthorized(msg)
-    case (StatusCode.Forbidden, _)            => Fail.Forbidden
-    case (StatusCode.ServiceUnavailable, msg) => Fail.Unavailable(msg)
-    case (_, msg)                             => Fail.IncorrectInput(msg)
+  private def responseDataToFail: (StatusCode, Error_OUT, Option[String]) => Fail =
+    case (StatusCode.Conflict, Error_OUT(_, Some("configuration_missing")), _) => Fail.ConfigurationMissing
+    case (StatusCode.Conflict, Error_OUT(_, Some("clock_epoch_changed")), _)   => Fail.ClockEpochChanged
+    case (StatusCode.Gone, Error_OUT(_, Some("expired")), _)                   => Fail.Expired
+    case (StatusCode.TooManyRequests, _, _)                                    => Fail.RateLimited
+    case (StatusCode.NotFound, error, _)                                       => Fail.NotFound(error.error)
+    case (StatusCode.Conflict, error, _)                                       => Fail.Conflict(error.error)
+    case (StatusCode.Unauthorized, error, _)                                   => Fail.Unauthorized(error.error)
+    case (StatusCode.Forbidden, _, _)                                          => Fail.Forbidden
+    case (StatusCode.ServiceUnavailable, error, _)                             => Fail.Unavailable(error.error)
+    case (_, error, _)                                                         => Fail.IncorrectInput(error.error)
 
   val jsonErrorOutOutput: EndpointOutput[Error_OUT] = jsonBody[Error_OUT]
 
   private def failOutput: EndpointOutput[Fail] =
     statusCode
-      .and(jsonErrorOutOutput.map(_.error)(Error_OUT.apply))
+      .and(jsonErrorOutOutput)
+      .and(header[Option[String]]("Retry-After"))
       .map(responseDataToFail.tupled)(failToResponseData)
 
   /** All relay endpoints start here, so they share the error format and the anti-framing headers. The version lives in the path because

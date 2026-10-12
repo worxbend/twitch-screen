@@ -25,8 +25,9 @@ struct LinkWelcome {
 };
 
 struct LinkHooks {
-  // The relay greeted us. Apply the §10.2 baseline / re-baseline rules here:
-  // fresh boot or latestSeq < ours means re-baseline; sessionId is diagnostic.
+  // Observes every greeting. Apply classic §10.2 baseline rules only when the
+  // effective caps exclude DESK; Receiver already owns a negotiated session.
+  // Fresh classic boot or latestSeq < ours means re-baseline; sessionId is diagnostic.
   void (*onWelcome)(const LinkWelcome &w);
   // An EVENT arrived (live push or replayed backlog; see Notification::replay).
   // §10.5: the app advances its high-water mark only if it actually enqueues
@@ -42,7 +43,12 @@ struct LinkHooks {
   uint32_t (*getLastSeq)();
 };
 
-void linkInit(const LinkHooks *hooks, LinkTransport &transport);
+namespace desk { class Receiver; }
+// The optional receiver is an integration opt-in. Production callers must leave
+// it null until widgets and lifecycle callbacks implement the complete profile.
+void linkInit(const LinkHooks *hooks, LinkTransport &transport, desk::Receiver *receiver = nullptr);
+// Current profile readiness, distinct from transport WELCOME liveness.
+bool linkDeskReady();
 // Drives IDLE -> CONNECTING -> WELCOME -> STREAMING. Call every loop.
 void linkLoop();
 // True once WELCOME has been received, i.e. the session is in STREAMING.

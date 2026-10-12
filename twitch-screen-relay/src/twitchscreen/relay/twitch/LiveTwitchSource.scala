@@ -21,18 +21,20 @@ private[twitch] object LiveTwitchSource:
   /** Matches the maintenance interval, so no failure mode rebuilds the client more often than a restart request does. */
   private[twitch] val SessionFailurePause: FiniteDuration = 30.seconds
 
-  def create(config: TwitchConfig, bus: EventBus, filter: BotFilter, clock: Clock)(using Ox): TwitchSource =
+  def create(config: TwitchConfig, bus: EventBus, filter: BotFilter, clock: Clock, auth: TwitchAuth)(using Ox): TwitchSource =
+    config.validateLive()
     val health = TwitchRuntimeHealth(config, bus)
-    val auth = TwitchAuth.start(config, TwitchOAuthClient.live(config, clock), bus, clock)
-    val authApi = TwitchAuthApi(auth)
     val tracker = ChannelStateTracker(config.channel, clock, pollInterval = config.pollInterval)
     val policy = EventSubTransportPolicy.of(config.eventSub.transport)
     val webhook = policy.webhookApi(config, bus, tracker, filter, clock, health.observeSubscription)
 
     new TwitchSource:
+      override private[twitch] def webhookOwner: Option[EventSubWebhookApi] = webhook
       override def status: TwitchStatus = health.status
+      override def webhookCallback: Option[(String, String, String, String, String) => Either[twitchscreen.relay.http.Fail, String]] =
+        webhook.map(api => api.handleCallback)
       override def endpoints: List[ServerEndpoint[Any, Identity]] =
-        authApi.endpoints ++ webhook.toList.flatMap(_.endpoints)
+        webhook.toList.flatMap(_.endpoints)
       override def startIngestion()(using Ox): Unit =
         forkDiscard:
           superviseSessions(
@@ -47,12 +49,21 @@ private[twitch] object LiveTwitchSource:
             val restartRequested = AtomicBoolean(false)
             val acceptingCallbacks = AtomicBoolean(true)
             val onAppTokenRejected = appTokenRejected(health, restartRequested)
-            val transport = policy.session(client, config, health, restartRequested, acceptingCallbacks, onAppTokenRejected)
+            val transport = policy.session(
+              client,
+              config,
+              health,
+              restartRequested,
+              acceptingCallbacks,
+              onAppTokenRejected,
+              (kind, id) => webhook.foreach(_.bindSubscription(kind, id))
+            )
             val broadcasterId = TwitchRetry.untilReady(
               () => resolveBroadcasterId(client.getHelix, config),
               reason => health.observe(HealthComponent.Startup, Some(reason)),
               sleep
             )
+            webhook.foreach(_.bindBroadcaster(broadcasterId))
             health.observe(HealthComponent.Startup, None)
             TwitchRetry.untilReady(
               () => attempt(client.getChat.joinChannel(config.channel)),
@@ -63,7 +74,7 @@ private[twitch] object LiveTwitchSource:
             HelixPoller.start(
               client.getHelix,
               PollingContext(config, broadcasterId, tracker, bus, clock, health),
-              TokenProvider.broadcaster(auth, config.channel),
+              TokenProvider.broadcaster(auth, broadcasterId),
               onAppTokenRejected
             )
             try maintainSubscriptions(client, config, broadcasterId, auth, health, restartRequested, transport)
