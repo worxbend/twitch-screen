@@ -23,6 +23,78 @@ def free_port():
         return listener.getsockname()[1]
 
 
+def describe_failure(error):
+    return {'type': type(error).__name__, 'message': str(error)[:2000]}
+
+
+def capture_threads(child, evidence, prefix):
+    """Owned synthetic JVM only. Include virtual threads, which a traditional jstack omits when unmounted."""
+    failures = []
+    commands = (
+        ('jstack', ['jstack', str(child.pid)]),
+        ('jcmd', ['jcmd', str(child.pid), 'Thread.dump_to_file', '-format=json', str(evidence / f'{prefix}-threads.json')]),
+    )
+    for name, command in commands:
+        try:
+            with (evidence / f'{prefix}-{name}.txt').open('w') as output:
+                completed = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, timeout=5)
+            if completed.returncode != 0:
+                failures.append(f'{name}: exit {completed.returncode}')
+        except (OSError, subprocess.TimeoutExpired) as error:
+            failures.append(f'{name}: {type(error).__name__}')
+    return failures
+
+
+def finish_run(result, evidence, child, feeds, ports, close_feed, failure=None, shutdown_seconds=30):
+    """Reap even a hung Main and persist the verdict before surfacing cleanup failure. Never replace the primary exception."""
+    errors = []
+    if failure is not None:
+        result.update(passed=False, failure=describe_failure(failure))
+    for connection, response in feeds:
+        try:
+            close_feed(connection, response)
+        except Exception as error:
+            errors.append({'phase': 'feed_close', **describe_failure(error)})
+    if child is not None:
+        result.update(mainKilled=False, mainReaped=False)
+        try:
+            if child.poll() is None:
+                child.terminate()
+            child.wait(timeout=shutdown_seconds)
+        except subprocess.TimeoutExpired as error:
+            errors.append({'phase': 'main_shutdown', **describe_failure(error)})
+            result['shutdownDiagnostics'] = capture_threads(child, evidence, 'shutdown')
+        except Exception as error:
+            errors.append({'phase': 'main_shutdown', **describe_failure(error)})
+        finally:
+            if child.poll() is None:
+                try:
+                    child.kill()
+                    result['mainKilled'] = True
+                    child.wait(timeout=5)
+                except Exception as error:
+                    errors.append({'phase': 'main_reap', **describe_failure(error)})
+            result['mainReaped'] = child.poll() is not None
+            result['mainExitCode'] = child.returncode
+    result['listenersClosed'] = True
+    for port in ports:
+        try:
+            with socket.socket() as probe:
+                probe.settimeout(1)
+                result['listenersClosed'] &= probe.connect_ex(('127.0.0.1', port)) != 0
+        except OSError as error:
+            result['listenersClosed'] = False
+            errors.append({'phase': 'listener_probe', **describe_failure(error)})
+    if not result['listenersClosed']:
+        errors.append({'phase': 'listener_probe', 'type': 'AssertionError', 'message': 'owned listeners still open'})
+    result['cleanupErrors'] = errors
+    if errors:
+        result['passed'] = False
+    (evidence / 'result.json').write_text(json.dumps(result, indent=2))
+    if errors and failure is None:
+        raise RuntimeError(f'owned Main cleanup failed; see {evidence / "result.json"}')
+
+
 def run(assembly, evidence, long_seconds=65, native=None, slow_reader=False, browser_executable=None):
     os.umask(0o077)
     evidence.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -40,6 +112,7 @@ def run(assembly, evidence, long_seconds=65, native=None, slow_reader=False, bro
     result = {'assemblySha256': hashlib.sha256(assembly.read_bytes()).hexdigest(), 'productAccepted': False, 'checks': []}
     feeds = []
     child = None
+    failure = None
 
     def exchange(path, method='GET', data=None, headers=None):
         connection = http_port_client()
@@ -60,14 +133,18 @@ def run(assembly, evidence, long_seconds=65, native=None, slow_reader=False, bro
 
     def feed(source):
         connection = http_port_client(source)
+        feeds.append((connection, None))  # Own the socket even when request/getresponse times out.
         connection.request('GET', '/api/v1/admin/events')
         response = connection.getresponse()
-        feeds.append((connection, response))
+        feeds[-1] = (connection, response)
         return connection, response
 
     def close_feed(connection, response):
-        response.close()
-        connection.close()
+        try:
+            if response is not None:
+                response.close()
+        finally:
+            connection.close()
 
     def event(response) -> dict[str, Any]:
         fields: dict[str, Any] = {}
@@ -265,21 +342,14 @@ def run(assembly, evidence, long_seconds=65, native=None, slow_reader=False, bro
                     assert any(row['reportRevision'] is not None for row in final['devices'])
                 (evidence / 'snapshot.json').write_text(json.dumps(final, indent=2))
                 result['passed'] = True
+            except BaseException as error:
+                failure = error
+                result.update(passed=False, failure=describe_failure(error))
+                if child is not None and child.poll() is None:
+                    result['failureDiagnostics'] = capture_threads(child, evidence, 'failure')
+                raise
             finally:
-                for feed_connection, feed_response in feeds:
-                    close_feed(feed_connection, feed_response)
-                if child is not None:
-                    if child.poll() is None:
-                        child.terminate()
-                    child.wait(timeout=30)
-                    result['mainExitCode'] = child.returncode
-                result['listenersClosed'] = True
-                for port in (http_port, device):
-                    with socket.socket() as probe:
-                        probe.settimeout(1)
-                        result['listenersClosed'] &= probe.connect_ex(('127.0.0.1', port)) != 0
-                (evidence / 'result.json').write_text(json.dumps(result, indent=2))
-                assert result['listenersClosed']
+                finish_run(result, evidence, child, feeds, (http_port, device), close_feed, failure=failure)
     print(json.dumps(result, indent=2))
 
 

@@ -11,7 +11,7 @@ import sttp.tapir.model.ServerRequest
 import sttp.tapir.server.netty.NettyServerRequest
 import sttp.tapir.server.netty.sync.OxStreams
 import sttp.model.sse.ServerSentEvent
-import ox.{Chunk, discard}
+import ox.{Chunk, discard, never}
 import ox.flow.Flow
 import java.net.InetAddress
 import java.nio.charset.StandardCharsets.UTF_8
@@ -44,27 +44,33 @@ final class AdminApi private[relay] (hub: DeviceHub, monitoring: MonitoringContr
           .flatMap: (_, subscription) =>
             var transferred = false
             try
-              request match
+              val closeTransport: () => Unit = request match
                 case netty: NettyServerRequest =>
-                  netty.ctx
-                    .channel()
+                  val channel = netty.ctx.channel()
+                  channel
                     .closeFuture()
                     .addListener(
                       new ChannelFutureListener:
                         override def operationComplete(result: ChannelFuture): Unit = subscription.close()
                     )
                     .discard
-                case _ => ()
+                  () => channel.close().discard
+                case _ => () => ()
               capture()
                 .flatMap: (initial, snapshot) =>
                   AdminSnapshot
                     .encoded(snapshot)
                     .map: first =>
                       transferred = true
-                      feed(initial, first, subscription)
+                      feed(initial, first, subscription, closeTransport)
             finally if !transferred then subscription.close()
 
-  private def feed(initial: HubObservation, first: Array[Byte], subscription: HubSubscription): Flow[Chunk[Byte]] = Flow.usingEmit: emit =>
+  private def feed(
+      initial: HubObservation,
+      first: Array[Byte],
+      subscription: HubSubscription,
+      closeTransport: () => Unit
+  ): Flow[Chunk[Byte]] = Flow.usingEmit: emit =>
     var epoch = initial.publication.relayEpoch
     var revision = initial.revision
     var lastSnapshotNanos = 0L
@@ -98,6 +104,13 @@ final class AdminApi private[relay] (hub: DeviceHub, monitoring: MonitoringContr
         if !subscription.isClosed && System.nanoTime() - heartbeatNanos >= 15000000000L then
           emit(Chunk.fromArray(": heartbeat\n\n".getBytes(UTF_8)))
           heartbeatNanos = System.nanoTime()
+      // An SSE feed ends by cancelling its transport, not by normally completing the producer. Ox's reactive adapter calls
+      // data.done() on normal completion; Jox can spin there waiting for selected-receiver cleanup. Several simultaneous closes
+      // can occupy every virtual-thread carrier, preventing that cleanup and even application shutdown on a two-CPU JVM.
+      // Closing the channel signals publisher cancellation. Park (unmounted) until that owner interrupts this producer, so its
+      // receiver clears its select before the producer exits. The same path covers hub shutdown and failed recapture.
+      closeTransport()
+      never
     finally subscription.close()
 
   /** Snapshot construction only: encoding and network emission happen after releasing settings acceptance. */

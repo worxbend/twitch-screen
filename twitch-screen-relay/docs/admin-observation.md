@@ -81,11 +81,34 @@ Stream completion restores ordinary idle protection. Further pipelined requests
 on a live stream close the connection. Channel close, stream cancellation, failed
 preparation and hub shutdown release observer admission.
 
+Stream termination is cancellation-owned: after admission closes, the producer
+closes its transport and waits for the response publisher to interrupt it. It does
+not normally complete while the reactive receiver is still selected. Concurrent
+normal completion in the pinned Ox/Jox adapter can otherwise spin on receiver
+cleanup and starve every virtual-thread carrier on a two-CPU JVM, including shutdown.
+The channel-close listener still releases admission if preparation never reaches
+the response producer; the producer's `finally` also closes it idempotently.
+
 ## Executable checks and remaining acceptance
 
 From `twitch-screen-relay/`, after building the assembly:
 
     python3 tools/check_admin_runtime.py --assembly out/assembly.dest/out.jar --evidence /absolute/private/evidence
+
+The focused real-socket regression launches separate synthetic Main JVMs with two
+and eight active processors. It fills all eight admissions, rejects per-address
+and global excess, closes seven feeds, reopens admission, reads canonical authority,
+then shuts down with all eight streams open and verifies process/listener cleanup:
+
+    ./mill --no-server -j 1 test.testOnly twitchscreen.relay.http.AdminSocketLifecycleSuite
+
+To exercise the production harness under the smaller hosted topology:
+
+    JAVA_TOOL_OPTIONS=-XX:ActiveProcessorCount=2 python3 tools/check_admin_runtime.py --assembly out/assembly.dest/out.jar --slow-reader --evidence /absolute/private/evidence
+
+On failure the runtime harness retains the original exception in `result.json`,
+captures bounded `jstack` and virtual-thread `jcmd` diagnostics, and kills/reaps Main
+if graceful termination times out. Forced cleanup is a failed verdict, never a pass.
 
 Add `--slow-reader` for real unread kernel-window pressure and `--native PATH` for
 actual native classic-pressure/DESK/reconnect pairing. `--browser-executable PATH`

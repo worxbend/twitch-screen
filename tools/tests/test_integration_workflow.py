@@ -25,6 +25,10 @@ class IntegrationWorkflowTests(unittest.TestCase):
         self.assertNotIn('||', script, 'acceptance failures must propagate')
         return script
 
+    def test_integration_keeps_the_small_runner_carrier_topology(self):
+        self.assertRegex(job_blocks()['integration'],
+                         r'(?m)^      JAVA_TOOL_OPTIONS: -XX:ActiveProcessorCount=2$')
+
     def test_immutable_baseline_has_history_in_the_actual_integration_checkout(self):
         job = job_blocks()['integration']
         checkout = [step for step in step_blocks(job) if 'uses: actions/checkout@' in step]

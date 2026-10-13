@@ -154,6 +154,9 @@ jobs:
   integration:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    env:
+      # Exercise the small-runner carrier topology, including SSE cancellation.
+      JAVA_TOOL_OPTIONS: -XX:ActiveProcessorCount=2
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:

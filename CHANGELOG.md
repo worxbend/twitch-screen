@@ -20,6 +20,11 @@ remain subject to [third-party notices](THIRD_PARTY_NOTICES.md) and
 
 ### Fixed
 
+- SSE termination is transport-cancellation-owned, preventing concurrent stream
+  completion from starving virtual-thread carriers on two-CPU JVMs. Real-socket
+  regressions fill all eight admissions, disconnect/reopen and shut down at full
+  admission with both two and eight processors. CI integration pins the smaller
+  topology; harness cleanup preserves failures and kills/reaps hung test-owned JVMs.
 - DESK delivery and encoding accept the receiver-default zero hold only for
   native Twitch Chat. Hub-to-wire regressions preserve provenance, deadlines
   and explicit-duration validation for all other publications.
