@@ -66,6 +66,7 @@ jobs:
       - run: python3 tools/check_desk_contract.py
       - run: python3 -m unittest discover -s tools/tests -v
       - run: python3 -m unittest discover -s twitch-screen-relay/tools/tests -v
+      - run: python3 twitch-screen-firmware/tools/test_production_restart_oracle.py
       - name: Verify shipped panel epoch and local-expiry authority
         run: |
           node --version
@@ -186,8 +187,11 @@ jobs:
       - name: Verify actual Main TCP, canonical SSE and chronological baseline
         run: |
           python twitch-screen-relay/tools/check_admin_runtime.py --assembly twitch-screen-relay/out/assembly.dest/out.jar --native twitch-screen-firmware/.pio/build/native-runtime-peer/program --slow-reader --evidence "$TMPDIR/admin-main"
-          python twitch-screen-firmware/tools/test_production_restart.py --assembly twitch-screen-relay/out/assembly.dest/out.jar --binary twitch-screen-firmware/.pio/build/native-runtime-peer/program --test-owned --evidence "$TMPDIR/restart"
+          python twitch-screen-firmware/tools/test_runtime_failures.py --binary twitch-screen-firmware/.pio/build/native-runtime-peer/program --evidence "$TMPDIR/restart-active-socket"
+          python twitch-screen-firmware/tools/test_production_restart.py --assembly twitch-screen-relay/out/assembly.dest/out.jar --binary twitch-screen-firmware/.pio/build/native-runtime-peer/program --test-owned --restart-mode observed --evidence "$TMPDIR/restart"
           python twitch-screen-firmware/tools/test_production_restart_verdict.py --evidence "$TMPDIR/restart"
+          python twitch-screen-firmware/tools/test_production_restart.py --assembly twitch-screen-relay/out/assembly.dest/out.jar --binary twitch-screen-firmware/.pio/build/native-runtime-peer/program --test-owned --restart-delay-seconds 15 --restart-mode completed-originals --evidence "$TMPDIR/restart-delayed"
+          python twitch-screen-firmware/tools/test_production_restart_verdict.py --evidence "$TMPDIR/restart-delayed"
           PYTHONPATH= twitch-screen-client/.venv/bin/python twitch-screen-client/tools/check_runtime_admin.py --assembly twitch-screen-relay/out/assembly.dest/out.jar --test-owned --evidence "$TMPDIR/producer-admin"
 
       - name: Verify real process-gap freshness and global card chronology
@@ -224,6 +228,16 @@ jobs:
           include-hidden-files: false
           if-no-files-found: warn
           path: |
+            ${{ runner.temp }}/twitch-screen-integration/restart/fixture.json
+            ${{ runner.temp }}/twitch-screen-integration/restart/observations.jsonl
+            ${{ runner.temp }}/twitch-screen-integration/restart/cleanup.json
+            ${{ runner.temp }}/twitch-screen-integration/restart/verified.json
+            ${{ runner.temp }}/twitch-screen-integration/restart/peer-stderr.log
+            ${{ runner.temp }}/twitch-screen-integration/restart-delayed/fixture.json
+            ${{ runner.temp }}/twitch-screen-integration/restart-delayed/observations.jsonl
+            ${{ runner.temp }}/twitch-screen-integration/restart-delayed/cleanup.json
+            ${{ runner.temp }}/twitch-screen-integration/restart-delayed/verified.json
+            ${{ runner.temp }}/twitch-screen-integration/restart-delayed/peer-stderr.log
             ${{ runner.temp }}/twitch-screen-integration/admin-main/result.json
             ${{ runner.temp }}/twitch-screen-integration/admin-main/test_legacy_production.py.log
             ${{ runner.temp }}/twitch-screen-integration/admin-main/test_legacy_production_verdict.py.log

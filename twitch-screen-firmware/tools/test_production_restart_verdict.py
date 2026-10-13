@@ -24,6 +24,17 @@ class RestartVerdictTests(unittest.TestCase):
     def report(self):
         return next(r for r in self.records if r['event'] == 'device_report_written' and r['epoch'] == self.new)
 
+    def pending_report(self):
+        rows = [r for r in self.records if r['event'] == 'device_report_written' and r['pending'] >= 2]
+        # Prefer retained entries carried by the new epoch. In delayed runs
+        # they already completed, so mutate their original admission evidence.
+        return next((r for r in rows if r['epoch'] == self.new), rows[0])
+
+    def active_report(self):
+        rows = [r for r in self.records if r['event'] == 'device_report_written' and r['phase']
+                and r['activeEpoch'] == self.ready[0]['epoch']]
+        return next((r for r in rows if r['epoch'] == self.new), rows[0])
+
     def view(self):
         return next(r for r in self.records if r['event'] == 'application_view' and r['epoch'] == self.new and r['reason'] == 4 and not r['covered'])
 
@@ -31,7 +42,7 @@ class RestartVerdictTests(unittest.TestCase):
         with self.assertRaises((AssertionError, ValueError, KeyError)):
             verify(self.records, self.fixture)
 
-    def test_actual_baseline_passes(self):
+    def test_unmodified_inputs_pass(self):
         self.assertTrue(verify(self.records, self.fixture)['passed'])
 
     def test_expired_pending_card_started_fails(self):
@@ -44,15 +55,33 @@ class RestartVerdictTests(unittest.TestCase):
         self.reject()
 
     def test_retained_active_relabel_fails(self):
-        self.report()['activeEpoch'] = self.new
+        self.active_report()['activeEpoch'] = self.new
         self.reject()
 
     def test_pending_identity_relabel_fails(self):
-        self.report()['pendingEntries'][0]['epoch'] = self.new
+        self.pending_report()['pendingEntries'][0]['epoch'] = self.new
         self.reject()
 
     def test_duplicated_pending_identity_fails(self):
-        self.report()['pendingEntries'][1] = copy.deepcopy(self.report()['pendingEntries'][0])
+        report = self.pending_report()
+        report['pendingEntries'][1] = copy.deepcopy(report['pendingEntries'][0])
+        self.reject()
+
+    def test_wrong_remaining_pending_with_conserved_credit_fails(self):
+        report = self.pending_report()
+        report['pendingEntries'].pop()
+        report['pending'] -= 1
+        report['grantTotal'] += 1
+        self.reject()
+
+    def test_idle_to_active_identity_resurrection_fails(self):
+        report = next(r for r in reversed(self.records) if r['event'] == 'device_report_written' and not r['phase'])
+        report.update(activeEpoch=self.ready[0]['epoch'], activeSeq=self.fixture['published'][0]['seq'])
+        self.reject()
+
+    def test_completed_identity_reappears_as_active_fails(self):
+        report = next(r for r in reversed(self.records) if r['event'] == 'device_report_written' and not r['phase'])
+        report.update(phase=2, activeEpoch=self.ready[0]['epoch'], activeSeq=self.fixture['published'][0]['seq'])
         self.reject()
 
     def test_restart_credit_overgrant_fails(self):
@@ -103,6 +132,12 @@ class RestartVerdictTests(unittest.TestCase):
         self.records[next(i for i, r in enumerate(self.records) if r['event'] == 'started')]['holdMs'] -= 1
         self.reject()
 
+    def test_shortened_original_callback_hold_fails(self):
+        hold = next(r for r in self.records if r['event'] == 'card_lifecycle' and r['phase'] == 2)
+        exit_card = next(r for r in self.records if r['event'] == 'card_lifecycle' and r['phase'] == 3)
+        exit_card['atMs'] = hold['atMs'] + 11999
+        self.reject()
+
     def test_unchanged_epoch_claim_fails(self):
         assert self.ready is not None
         self.ready[1]['epoch'] = self.ready[0]['epoch']
@@ -122,6 +157,16 @@ class RestartVerdictTests(unittest.TestCase):
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_invalid_restart_delays_rejected_before_inputs(self):
+        for delay in ('-1', '15.1', 'nan', 'inf'):
+            with self.subTest(delay=delay):
+                result = subprocess.run(['python3', str(Path(__file__).with_name('test_production_restart.py')),
+                                         '--assembly', '/unused', '--binary', '/unused', '--evidence', '/unused',
+                                         '--test-owned', '--restart-delay-seconds', delay],
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('finite and in 0..15', result.stderr)
+
     def test_restart_requires_disposable_ownership_before_inputs(self):
         result = subprocess.run(['python3', str(Path(__file__).with_name('test_production_restart.py')),
                                  '--assembly', '/unused', '--binary', '/unused', '--evidence', '/unused'],

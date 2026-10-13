@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## v0.1.0-beta.3 — 2026-10-13
+
+Source-only verification correction; firmware presentation behavior is unchanged.
+The published beta.2 tag is retained rather than rewritten.
+
+### Fixed
+
+- Restart verification distinguishes legitimate card completion during an outage
+  from identity relabeling. Active identity, remaining FIFO and reveals follow
+  actual callback/observation chronology, not an assumed cold-start duration.
+- Strict retention, original holds, expiry, cursor reset, credit conservation and
+  source/session fencing remain checked; delayed restart and negative mutations
+  supplement the active-overlap path.
+
+### Limitations
+
+- Beta.2's main checks passed, but its tag integration and one rerun failed the
+  timing-specific restart assertion. This correction does not change beta.2's
+  historical check results or move its tag.
+- No new hardware flash, physical LCD/provider/desktop acceptance, binary-rights
+  clearance or Pages deployment is claimed. All beta.2 source-only exclusions
+  and the two dependency exceptions expiring 2026-10-25 remain unchanged.
+
 ## v0.1.0-beta.2 — 2026-10-13
 
 Source-only prerelease. Binary redistribution and complete product acceptance

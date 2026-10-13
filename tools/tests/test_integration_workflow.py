@@ -84,6 +84,20 @@ class IntegrationWorkflowTests(unittest.TestCase):
         self.assertLess(names.index('      - name: Prepare pinned test-only Chromium for authority races'),
                         names.index('      - name: Verify real browser epoch races and local source/report expiry'))
 
+    def test_restart_gates_keep_real_active_retention_and_delayed_completion(self):
+        script = self.required_step('Verify actual Main TCP, canonical SSE and chronological baseline')
+        commands = [shlex.split(line) for line in script.splitlines() if 'tools/test_production_restart.py ' in line]
+        self.assertEqual(len(commands), 2)
+        for command, mode, directory in zip(commands, ('observed', 'completed-originals'), ('restart', 'restart-delayed')):
+            self.assertEqual(command[command.index('--restart-mode') + 1], mode)
+            self.assertEqual(command[command.index('--evidence') + 1], '$TMPDIR/' + directory)
+            self.assertIn('--test-owned', command)
+            self.assertIn('python twitch-screen-firmware/tools/test_production_restart_verdict.py --evidence "$TMPDIR/' + directory + '"', script)
+        self.assertNotIn('--restart-delay-seconds', commands[0])
+        self.assertEqual(commands[1][commands[1].index('--restart-delay-seconds') + 1], '15')
+        self.assertIn('python twitch-screen-firmware/tools/test_runtime_failures.py --binary ' + NATIVE, script)
+        self.assertIn('python3 twitch-screen-firmware/tools/test_production_restart_oracle.py', job_blocks()['protocol'])
+
     def test_failure_diagnostics_are_retained_without_uploading_runtime_scratch(self):
         uploads = [step for step in step_blocks(job_blocks()['integration']) if 'uses: actions/upload-artifact@' in step]
         self.assertEqual(len(uploads), 1)
@@ -94,6 +108,16 @@ class IntegrationWorkflowTests(unittest.TestCase):
         self.assertIn('if-no-files-found: warn', upload)
         paths = re.findall(r'(?m)^            (\$\{\{ runner.temp \}\}/[^\n]+)$', upload)
         self.assertEqual(set(paths), {
+            '${{ runner.temp }}/twitch-screen-integration/restart/fixture.json',
+            '${{ runner.temp }}/twitch-screen-integration/restart/observations.jsonl',
+            '${{ runner.temp }}/twitch-screen-integration/restart/cleanup.json',
+            '${{ runner.temp }}/twitch-screen-integration/restart/verified.json',
+            '${{ runner.temp }}/twitch-screen-integration/restart/peer-stderr.log',
+            '${{ runner.temp }}/twitch-screen-integration/restart-delayed/fixture.json',
+            '${{ runner.temp }}/twitch-screen-integration/restart-delayed/observations.jsonl',
+            '${{ runner.temp }}/twitch-screen-integration/restart-delayed/cleanup.json',
+            '${{ runner.temp }}/twitch-screen-integration/restart-delayed/verified.json',
+            '${{ runner.temp }}/twitch-screen-integration/restart-delayed/peer-stderr.log',
             '${{ runner.temp }}/twitch-screen-integration/admin-main/result.json',
             '${{ runner.temp }}/twitch-screen-integration/admin-main/test_legacy_production.py.log',
             '${{ runner.temp }}/twitch-screen-integration/admin-main/test_legacy_production_verdict.py.log',
