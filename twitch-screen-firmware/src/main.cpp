@@ -165,6 +165,7 @@ void loop() {
 
   desk::Card next;
   if (!uiNotifyBusy() && controller.start(receiver.now(), next)) {
+    uiNotifySetBacklog(controller.pendingCount());
     uiNotifyShow(next.notification, next.origin != desk::Origin::Unknown);
   }
 

@@ -11,6 +11,8 @@ struct NotifyLifecycle {
   void (*complete)();
 };
 // Loop-owned callbacks run at actual animation/timer boundaries, before reveal.
+// Queue pressure shortens default chat holds, without changing FIFO or explicit TTLs.
+void uiNotifySetBacklog(size_t pending);
 void uiNotifySetLifecycle(const NotifyLifecycle *lifecycle);
 void uiNotifyInit();
 // Actual widgets and all controller lifecycle callbacks must exist before DESK.

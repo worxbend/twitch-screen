@@ -44,9 +44,17 @@ private[relay] object DeskMessageCodec:
   def fromStats(base: RelayMessage.Stats, identity: Identity, generation: Long, revision: Long, availability: Availability): Stats =
     Stats(Tsb3Encoder.toDevice(base).drop(Tsb3.HeaderSize).toVector, identity, generation, revision, availability)
 
+  /** Zero delegates native Twitch chat pacing to the receiver; every other publication needs an explicit bounded hold. */
+  def requireEventHold(record: EventRecord, origin: Origin): Unit =
+    val hold = record.ttl.deciseconds
+    require(
+      (hold >= 1 && hold <= 300) || (hold == 0 && record.kind == NotificationKind.Chat && origin == Origin.Twitch),
+      "DESK hold must be 1–300 deciseconds, or zero for native Twitch chat"
+    )
+
   /** Publication supplies original absolute deadline and typed provenance, never a title/kind heuristic. */
   def fromEvent(record: EventRecord, epoch: Long, generation: Long, episode: Long, deadline: Long, origin: Origin): Event =
-    require(record.ttl.deciseconds >= 1 && record.ttl.deciseconds <= 300, "DESK hold must be explicit and at most 30 seconds")
+    requireEventHold(record, origin)
     Event(
       Tsb3Encoder.toDevice(RelayMessage.Event(record), text = TextPolicy.AsciiFolded).drop(Tsb3.HeaderSize).toVector,
       epoch,

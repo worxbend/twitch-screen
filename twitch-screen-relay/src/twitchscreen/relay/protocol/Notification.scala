@@ -1,7 +1,7 @@
 package twitchscreen.relay.protocol
 
 import java.time.Instant
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration.{Duration, FiniteDuration}
 import sttp.tapir.Schema
 
 /** Stable identifier of a notification, derived from its sequence number so it survives a restart of the reader. */
@@ -89,10 +89,8 @@ private[relay] final case class EventRequest(
     )
 
 private[relay] object EventRequest:
-  /** A Twitch-sourced event, which takes §6.4.1's per-kind display time rather than naming one of its own.
-    *
-    * The ttl is derived from the kind here, in one place, because the kind is the only thing that determines it and a caller that could
-    * pass its own would be a caller that could disagree with the vectors of §18.
+  /** Twitch chat delegates its hold to the receiver (`ttl_ds = 0`) so queue pressure can accelerate it. Other Twitch kinds retain their
+    * per-kind display times; explicit manual HTTP durations are unchanged.
     */
   def of(
       kind: NotificationKind,
@@ -103,7 +101,8 @@ private[relay] object EventRequest:
       tier: SubTier = SubTier.NotApplicable,
       flags: EventFlags = EventFlags.Empty
   ): EventRequest =
-    EventRequest(kind, actor, text, DisplayTtl.defaultFor(kind), value, months, tier, flags, DeskMessageCodec.Origin.Twitch)
+    val ttl = if kind == NotificationKind.Chat then Duration.Zero else DisplayTtl.defaultFor(kind)
+    EventRequest(kind, actor, text, ttl, value, months, tier, flags, DeskMessageCodec.Origin.Twitch)
 
   /** Internal diagnostics carry producer provenance, independent of their visual kind. */
   def diagnostic(kind: NotificationKind, actor: String, text: String, origin: DeskMessageCodec.Origin): EventRequest =

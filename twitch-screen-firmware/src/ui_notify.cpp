@@ -43,9 +43,13 @@ lv_obj_t *seqLabel = nullptr;
 struct CardState {
   bool busy = false;
   Entrance entrance = Entrance::Slide;  // decided once per card in uiNotifyShow
-  uint32_t holdMs = HOLD_DEFAULT_MS;    // how long the current card stays up
+  uint32_t holdMs = HOLD_DEFAULT_MS;    // original requested hold
+  bool adaptiveChat = false;
+  uint32_t holdStarted = 0, holdBudget = 0;
+  lv_timer_t *holdTimer = nullptr;
 };
 CardState card;
+size_t pendingCards = 0;
 const NotifyLifecycle *lifecycle = nullptr;
 
 void animY(void *var, int32_t v) { lv_obj_set_y(static_cast<lv_obj_t *>(var), v); }
@@ -77,19 +81,23 @@ void hideStart() {
   if (lifecycle && lifecycle->beginExit) lifecycle->beginExit();
   lv_anim_delete(ring, animOpa);  // stop the severe-card ring pulse, if any
   lv_obj_set_style_opa(ring, LV_OPA_COVER, 0);
-  if (card.entrance == Entrance::None) { hideReady(nullptr); return; }  // replay leaves at once
+  // Replay/chat bypass exit animation but still run both lifecycle boundaries.
+  if (card.entrance == Entrance::None) { hideReady(nullptr); return; }
   uiBaseSetCovered(false);
   animate(overlay, animY, 0, PANEL, SLIDE_OUT_MS, lv_anim_path_ease_in, hideReady);
 }
 
 void holdTimerCb(lv_timer_t *t) {
+  card.holdTimer = nullptr;
   lv_timer_delete(t);
   hideStart();
 }
 
 void showReady(lv_anim_t *) {
   if (lifecycle && lifecycle->hold) lifecycle->hold();
-  lv_timer_create(holdTimerCb, card.holdMs, nullptr);
+  card.holdStarted = lv_tick_get();
+  card.holdBudget = chatHoldMs(card.holdMs, card.adaptiveChat, pendingCards);
+  card.holdTimer = lv_timer_create(holdTimerCb, card.holdBudget, nullptr);
 }
 
 // Slide the card in. Only WARNING/ALERT keep the accent ring breathing while it
@@ -239,6 +247,20 @@ void layoutHeadline() {
 
 void uiNotifySetLifecycle(const NotifyLifecycle *value) { lifecycle = value; }
 
+void uiNotifySetBacklog(size_t pending) {
+  pendingCards = pending;
+  if (!card.holdTimer || !card.adaptiveChat) return;
+  const uint32_t budget = chatHoldMs(card.holdMs, true, pending);
+  if (budget >= card.holdBudget) return;
+  card.holdBudget = budget;
+  const uint32_t elapsed = lv_tick_get() - card.holdStarted;
+  if (elapsed >= budget) lv_timer_ready(card.holdTimer);
+  else {
+    lv_timer_set_period(card.holdTimer, budget - elapsed);
+    lv_timer_reset(card.holdTimer);
+  }
+}
+
 void uiNotifyInit() {
   overlay = lv_obj_create(lv_layer_top());
   lv_obj_set_size(overlay, PANEL, PANEL);
@@ -352,7 +374,7 @@ void applyTexts(const Notification &n) {
 void playEntrance(const Notification &n) {
   switch (card.entrance) {
     case Entrance::None:
-      // Replay displays immediately, with no slide, flash, or perpetual ring pulse.
+      // Replay/chat display immediately: no slide, flash, or perpetual ring pulse.
       lv_obj_set_y(overlay, 0);
       lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
       lv_obj_set_hidden(overlay, false);
@@ -376,7 +398,7 @@ void playEntrance(const Notification &n) {
   lv_anim_set_exec_cb(&a, animOpa);
   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
   lv_anim_set_reverse_duration(&a, ALERT_MS);
-  lv_anim_set_repeat_count(&a, 2);  // 3 pulses total
+  lv_anim_set_repeat_count(&a, 2);  // LVGL counts total pulses, including the first.
   lv_anim_set_completed_cb(&a, flashDone);
   lv_anim_start(&a);
 }
@@ -389,6 +411,7 @@ void uiNotifyShow(const Notification &n, bool deskLayout) {
   card.entrance = entranceFor(n.replay, n.kind);
   uiBaseSetCovered(true);
   card.holdMs = holdMsFor(n);
+  card.adaptiveChat = n.kind == NotifyKind::Chat && n.ttl_ds == 0;
   applyKindPresentation(n, deskLayout);
   applyTexts(n);
   playEntrance(n);

@@ -1,6 +1,6 @@
 # Development and verification
 
-> Desk-update migration notice: management Basic/Bearer instructions in this historical guide are obsolete for this checkout. Nonempty `RELAY_HTTP_AUTH_*` settings fail startup; Authorization confers no privilege. Use the [current root quickstart](../../README.md#first-success-without-twitch), [migration guide](migration.md) and [implementation status](../implementation-status.md). Trusted-network isolation is mandatory. Clock/display/weather/CPU ingress and durable desired display intent are mounted. Complete DESK delivery, admin and runtime-channel behavior remain pending.
+> Nonempty `RELAY_HTTP_AUTH_*` settings fail startup; Authorization confers no privilege. Trusted-network isolation is mandatory. Clock/display/weather/CPU ingress, DESK delivery, runtime monitoring and admin snapshot/SSE/panel are mounted. Software tests do not establish physical LCD, live-provider or complete product acceptance. See the [migration guide](migration.md) and [implementation status](../implementation-status.md).
 
 Each project has its own build directory. There is no root build that compiles the relay, firmware, and CAD together. Use the root-level Python checks to verify shared contracts, and use the component tools for compilation and tests.
 
@@ -64,7 +64,7 @@ Run these in `twitch-screen-relay/`:
 | Command | Purpose |
 |---|---|
 | `./mill compile` | Compile application code with warnings treated as errors. |
-| `./mill test` | Run the full MUnit suite, including real-socket device tests. |
+| `./mill --no-server -j 1 test.testForked` | Run a fresh full MUnit suite, including real-socket device tests, without relying on a cached default target. |
 | `./mill test.testOnly twitchscreen.relay.http.ApiSuite` | Run one named suite; replace the class with the relevant test. |
 | `./mill mill.scalalib.scalafmt/checkFormatAll` | Check Scala formatting without changing files. |
 | `./mill mill.scalalib.scalafmt/` | Format Scala sources; review the resulting diff. |
@@ -74,7 +74,6 @@ Run these in `twitch-screen-relay/`:
 | `./mill show resolvedRunMvnDeps` | Print resolved runtime artifacts for dependency inspection or auditing. |
 | `./mill resolve _` | List available build targets when discovering a task. |
 | `./mill inspect compile` | Inspect a particular build target. |
-| `python3 tools/hash_management_password.py` | Prompt for a management password and emit its PBKDF2 verifier. |
 
 The compiler enables `-Werror`, `-deprecation`, `-feature`, `-Wunused:all`, `-Wvalue-discard`, and `-Wnonunit-statement`. Scalafmt and MUnit are configured. Scalafix and WartRemover are not installed as build gates; skill guidance about them does not make them active checks.
 
@@ -89,7 +88,7 @@ Useful focused suites include:
 | Slow-device behavior | `twitchscreen.relay.device.DeviceBackpressureSuite` |
 | Lifecycle event/statistics ordering | `twitchscreen.relay.device.LifecycleOrderingSuite` |
 | Application shutdown | `twitchscreen.relay.device.ApplicationShutdownSuite` |
-| Management authentication | `twitchscreen.relay.http.ManagementAuthSuite` and `ManagementRoutesSuite` in the same package |
+| HTTP access boundary | `twitchscreen.relay.http.ManagementAuthSuite` and `ManagementRoutesSuite` in the same package; legacy credentials confer no privilege |
 | Twitch recovery adapters | `twitchscreen.relay.twitch.TwitchRecoverySuite` |
 | Webhook signatures and duplicate delivery | `twitchscreen.relay.twitch.EventSubWebhookSuite` and `WebhookDeduplicationSuite` in the same package |
 | Configuration validation | `twitchscreen.relay.config.ConfigSuite` |
@@ -116,6 +115,8 @@ Run these in `twitch-screen-firmware/`, after creating the root `.venv-pio` envi
 | `../.venv-pio/bin/pio test -e native -f test_link_session` | Run a single test directory while working on link behavior. |
 | `../.venv-pio/bin/pio test -e native-sanitized` | Run native suites with AddressSanitizer and UndefinedBehaviorSanitizer; this is the Linux host gate used in CI. |
 | `../.venv-pio/bin/pio test -e native-lvgl` | Exercise actual LVGL lifecycle and orbital adapter on a memory-only display under sanitizers; not physical pixels. |
+| `../.venv-pio/bin/pio test -e native-lvgl-base` | Verify base selection, coverage and statistics with real LVGL. |
+| `../.venv-pio/bin/pio test -e native-generic` | Verify one-minute visible photo intervals, provider parsers and progressive JPEG/render failure paths. |
 | `../.venv-pio/bin/pio run -e esp32dev` | Compile the ESP32 application. |
 | `../.venv-pio/bin/pio run -e esp32dev -t upload` | Flash a connected board over USB; select the intended device before running. |
 | `../.venv-pio/bin/pio device list` | List detected serial ports. |
@@ -194,7 +195,7 @@ The first command checks Dockerfile build configuration. The second builds the i
 
 This smoke does not flash hardware, call live Twitch, or prove memory requirements for a sustained real workload. A healthy container also does not establish that an ESP32 can reach the host's LAN port.
 
-For a persistent local Compose run, use `docker compose up --build` from `twitch-screen-relay/` with management credentials configured. The supplied Compose file selects simulated mode and publishes ports 8080 and 8099. `docker compose down` stops its services; the named token volume persists unless explicitly removed. Deployment configuration is covered in [relay setup](relay-setup.md).
+For a persistent local Compose run, use `python3 tools/compose.py --env-file .env.example up --build -d` from `twitch-screen-relay/`. The safe example disables Twitch ingestion and publishes ports 8080 and 8099 only on loopback. Use the same wrapper and environment file with `down` to stop its services; named state volumes persist unless explicitly removed. Deployment configuration is covered in [relay setup](relay-setup.md).
 
 ## CAD and generated assets
 
@@ -230,11 +231,14 @@ This overwrites `src/assets/twitch_glitch.h` and the 48- and 84-pixel PNG previe
 
 | Job | Gates |
 |---|---|
-| `relay` | JDK 25 setup; `./mill compile`; audit-tool unit tests; resolved runtime dependency audit; `./mill test`; Scalafmt check. |
-| `protocol` | Golden-vector drift check; Python syntax compilation for CAD scripts, firmware tools, and root tools. |
-| `firmware` | Python 3.13 and PlatformIO 6.1.18; runner contract; native, sanitizer and actual-LVGL memory-display tests; refuse existing credentials header before example-only ESP32 compilation. |
+| `relay` | JDK 25 setup; compilation; resolved runtime dependency audit; fresh serialized MUnit run; Scalafmt check. |
+| `protocol` | TSB/3 and DESK/1 contract drift checks; root and relay-tool Python tests; panel epoch/expiry Node tests; Python syntax compilation. |
+| `firmware` | Python 3.13 and PlatformIO 6.1.18; runner contract; all five native/sanitizer/LVGL/Generic environments; actual runtime-peer pairing, recovery, reconnect and observation checks; example-only ESP32 compilation. |
 | `companion` | Hash-locked isolated environment; source tests, wheel build/allowlist parity, installed-wheel tests and safe configuration CLI. |
+| `integration` | Exact relay assembly and native application; real TCP/SSE, restart/suspend freshness, pinned Chromium panel checks and installed companion against test-owned Compose/native/browser resources. |
 | `container` | Docker build configuration check; build `twitch-screen-relay:ci`; run the container smoke against that image. |
+
+The separate product-site artifact workflow runs site unit tests, deterministic build/readback and source/exact-artifact Chromium checks. It uploads only a static artifact; it does not deploy Pages.
 
 The Python syntax gate can be reproduced from the repository root:
 
@@ -252,6 +256,6 @@ Run `git status --short` before and after a change. Local `.env` files, Twitch t
 
 CAD `output/` is intentionally versioned: geometry changes can produce a large but necessary deliverable diff. The generated release gallery, manifest, and ZIP are excluded. Review source, validation reports, and generated outputs together when changing geometry.
 
-Repository-specific agent skills live under `.agents/skills/` (directory unavailable in this checkout). They document workflows and conventions; they do not replace the configured compiler, tests, or CI gates. Record the commands actually run and distinguish them from checks that require physical hardware or a real Twitch account.
+Agent instructions are in the root [AGENTS.md](../../AGENTS.md). Installed skills supplement those instructions; this checkout does not vendor a skill catalog. Record commands actually run and distinguish them from checks that require physical hardware or a real Twitch account.
 
 Use [troubleshooting](troubleshooting.md) to investigate a failed stage, and return to the [guidebook](../README.md) for the complete setup path.

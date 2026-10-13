@@ -52,6 +52,26 @@ class CalibratedIngressSuite extends munit.FunSuite:
         .send(backend)
       assertEquals(readFromString[Notification_OUT](rounded.body.fold(identity, identity)).ttlMs, 200L)
 
+  test("manual HTTP chat preserves default and explicit holds instead of inheriting Twitch pacing"):
+    withApi: (backend, hub) =>
+      for (field, expected) <- List(("", 8000L), (",\"ttlMs\":101", 200L), (",\"ttlMs\":6000", 6000L)) do
+        val response = basicRequest
+          .post(uri"http://localhost/api/v1/notifications")
+          .contentType("application/json")
+          .body(s"{\"type\":\"chat\",\"title\":\"manual\",\"body\":\"fixed hold\"$field}")
+          .send(backend)
+        assertEquals(response.code, StatusCode.Ok)
+        val accepted = readFromString[Notification_OUT](response.body.fold(identity, identity))
+        assertEquals(accepted.ttlMs, expected)
+        assertEquals(accepted.origin, "external")
+      val invalid = basicRequest
+        .post(uri"http://localhost/api/v1/notifications")
+        .contentType("application/json")
+        .body("""{"type":"chat","title":"manual","body":"","ttlMs":0}""")
+        .send(backend)
+      assertEquals(invalid.code, StatusCode.BadRequest)
+      assertEquals(hub.snapshot.notificationsPublished, 3L)
+
   test("unknown duplicate null and malformed deadline fields cannot mutate authority"):
     withApi: (backend, hub) =>
       val additions = List(

@@ -15,6 +15,38 @@ class ProtocolBoundarySuite extends munit.FunSuite:
     val frame = FrameReader(ByteArrayInputStream(bytes)).read().toOption.get
     Tsb3Decoder.fromRelay(frame).toOption.get
 
+  test("Twitch chat keeps receiver-selected hold through the TSB/3 wire"):
+    val request = EventRequest.of(
+      NotificationKind.Chat,
+      "viewer",
+      "busy chat",
+      value = EventValue.clamp(0x123456L),
+      flags = EventFlags.ChatColourPresent
+    )
+    val record = request.record(SeqNo.fromWire(1), Instant.EPOCH)
+    decoded(RelayMessage.Event(record)) match
+      case RelayMessage.Event(result) =>
+        assertEquals(result.ttl.deciseconds, 0)
+        assertEquals(result.value.value, 0x123456L)
+        assertEquals(result.flags, EventFlags.ChatColourPresent)
+        assertEquals(result.actor, "viewer")
+        assertEquals(result.text, "busy chat")
+      case other => fail(s"expected EVENT, got $other")
+
+  test("only Twitch chat delegates hold; other native kinds and manual chat preserve their durations"):
+    for kind <- NotificationKind.values if kind != NotificationKind.Chat do
+      val record = EventRequest.of(kind, "actor", "text").record(SeqNo.fromWire(1), Instant.EPOCH)
+      assertEquals(record.ttl.deciseconds, DisplayTtl.fromDuration(DisplayTtl.defaultFor(kind)).deciseconds, kind.toString)
+    for hold <- List(100.millis, 6.seconds, 10.minutes) do
+      val record = EventRequest
+        .card(NotificationRequest(NotificationKind.Chat, "manual", "fixed hold", hold))
+        .record(SeqNo.fromWire(2), Instant.EPOCH)
+      decoded(RelayMessage.Event(record)) match
+        case RelayMessage.Event(result) => assertEquals(result.ttl.deciseconds, DisplayTtl.fromDuration(hold).deciseconds)
+        case other                      => fail(s"expected EVENT, got $other")
+    val diagnostic = EventRequest.diagnostic(NotificationKind.Chat, "relay", "diagnostic", DeskMessageCodec.Origin.Relay)
+    assertEquals(diagnostic.record(SeqNo.fromWire(3), Instant.EPOCH).ttl.deciseconds, 60)
+
   test("chat rates saturate at the wire width instead of wrapping"):
     for value <- List(65535, 65536, 70000, Int.MaxValue) do
       val stats = StreamStats.Unknown.copy(chatRate = MessagesPerMinute.clamp(value))

@@ -317,7 +317,7 @@ private[device] object DeskDelivery:
       replay: Boolean = false
   ) extends Ordered:
     require(relayEpoch != 0 && deadlineRelayMs != 0 && record.seq.value > 0)
-    require(record.ttl.deciseconds >= 1 && record.ttl.deciseconds <= 300)
+    DeskMessageCodec.requireEventHold(record, origin)
     require(origin != DeskMessageCodec.Origin.Unknown)
     if origin == DeskMessageCodec.Origin.Twitch then
       require(sourceGeneration > 0 && sourceGeneration <= 0xffffffffL && twitchEpisode > 0 && twitchEpisode <= 0xffffffffL)

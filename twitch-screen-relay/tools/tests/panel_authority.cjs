@@ -84,6 +84,15 @@ test('source and nearly stale report expire while SSE stays open', async () => {
   f.feeds[0].emit(value(A, 3)); assert.match(f.nodes.get('cpu-value').textContent, /fresh: fresh/);
   assert.match(f.nodes.get('device-detail').textContent, /fresh firmware observation/);
 });
+test('expiry timer advances from report to source deadline, then stops without polling', async () => {
+  const f = await fixture(); f.feeds[0].emit(value(A, 2));
+  const deadlines = () => [...f.timers.values()].map(timer => timer.at).sort((a, b) => a - b);
+  assert.deepEqual(deadlines(), [2, 16000]);
+  f.advance(2); assert.deepEqual(deadlines(), [1000, 16000]);
+  f.advance(998); assert.deepEqual(deadlines(), [16000]);
+  assert.match(f.nodes.get('cpu-value').textContent, /stale.*not current/);
+  assert.equal(f.requests(), 1);
+});
 test('duplicate revision does not renew captured source/report lifetime', async () => {
   const f = await fixture(); f.feeds[0].emit(value(A, 2)); f.advance(900);
   f.feeds[0].emit(value(A, 2)); f.advance(100);

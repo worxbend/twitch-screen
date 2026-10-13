@@ -300,6 +300,47 @@ int main() {
   check(lv_obj_is_hidden(weather.root) && uiBaseView().selected() == desk::Base::ConnectedOrbit &&
         controller.selection(receiver.now()).reason == desk::Reason::DataMissing,
         "missing snapshot hides Weather and reports honest missing status");
+  // Real DESK envelopes exercise shared application backlog propagation and
+  // removal while the instantaneous chat overlay still covers the base.
+  preference(6, desk::Preferred::Weather, true);
+  for (uint32_t seq = 2; seq <= 5; ++seq) {
+    desk::wire::Event event;
+    event.epoch = 10; event.deadline = receiver.now() + (seq == 4 ? 200 : 10000);
+    event.origin = seq == 3 || seq == 5 ? desk::Origin::Twitch : desk::Origin::External;
+    if (event.origin == desk::Origin::Twitch) event.generation = event.episode = 1;
+    event.base.seq = seq;
+    event.base.kind = static_cast<uint8_t>(seq == 4 ? NotifyKind::Follow : NotifyKind::Chat);
+    std::array<uint8_t, 256> frame{};
+    const auto encoded = desk::wire::encodeEvent(frame.data(), frame.size(), 0, event);
+    check(encoded.ok() && receiver.receive(desk::wire::DeskEvent, 0, frame.data() + 8, encoded.size - 8) == desk::Received::Enqueued,
+          "mixed DESK pressure enters actual codec/receiver FIFO");
+  }
+  apply(); // Four pending becomes three waiting at the main/peer start seam.
+  desk::Card chat;
+  check(controller.start(receiver.now(), chat) && chat.notification.seq == 2, "DESK adaptive chat starts in FIFO order");
+  uiNotifySetBacklog(controller.pendingCount()); uiNotifyShow(chat.notification, true);
+  const uint64_t chatStarted = receiver.now();
+  const unsigned chatExits = exits, chatCompletions = completions;
+  pump(20);
+  check(controller.remaining(receiver.now()) == 150 && uiNotifyBusy() && uiBaseView().covered(),
+        "shared application view keeps controller and real chat timer at 250 ms original-start cap");
+  preference(7, desk::Preferred::Weather, false);
+  check(controller.pendingCount() == 1 && controller.suppressedTotal() == 2 && uiBaseView().covered(),
+        "DESK disable removes Twitch pressure without revealing through active chat");
+  pump(12);
+  check(controller.pendingCount() == 0 && controller.expiredTotal() == 1 && controller.remaining(receiver.now()) == 90,
+        "actual waiting expiry drains pressure without extending controller hold");
+  const uint64_t chatGrant = controller.grantTotal();
+  pump(14);
+  check(uiNotifyBusy() && uiBaseView().covered() && receiver.now() - chatStarted == 230,
+        "drained real chat timer cannot fire early or uncover before its deadline");
+  for (unsigned i = 0; i < 12 && uiNotifyBusy(); ++i) pump();
+  check(!uiNotifyBusy() && !controller.active() && receiver.now() - chatStarted <= 285 &&
+        exits == chatExits + 1 && completions == chatCompletions + 1 && controller.grantTotal() == chatGrant,
+        "drained real DESK timer finishes monotonically once with no duplicate credit");
+  check(!uiBaseView().covered() && uiBaseView().selected() == desk::Base::ConnectedOrbit && lv_obj_is_hidden(weather.root),
+        "instant chat completion reveals current missing-weather fallback, never stale telemetry");
+
   receiver.classic(); controller.legacyGreeting(0, 2); apply();
   check(uiIdleVisible() && lv_obj_is_hidden(weather.root) && lv_obj_is_hidden(cpu.root) && !receiver.ready(),
         "Desk to classic fallback never exposes cached Weather or applied Desk readiness");

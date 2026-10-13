@@ -60,8 +60,18 @@ unsigned policyViews(){
   expect(generic::testPhoto(photo.data(),size),"first decoded photo enters publication slot");view.update();
   expect(view.slide()==0&&view.generation()==1,"first late photo starts new full slide clock");
   expect(generic::testPhoto(photo.data(),size),"prefetched photo enters bounded pending slot");
-  lv_tick_inc(4999);view.update();expect(view.slide()==0&&view.generation()==1,"first photo holds 4999ms after loading");
-  lv_tick_inc(1);view.update();expect(view.slide()==1&&view.generation()==2,"prefetched photo displayed exactly at first-photo 5s deadline");
+  lv_tick_inc(generic::SlideMs-1);view.update();expect(view.slide()==0&&view.generation()==1,"first photo holds for its full minute after loading");
+  lv_tick_inc(1);view.update();expect(view.slide()==1&&view.generation()==2,"prefetched photo displayed exactly at first-photo one-minute deadline");
+  expect(generic::testPhoto(photo.data(),size),"third photo prefetched before cover");
+  view.setVisible(false);lv_tick_inc(2*generic::SlideMs);view.update();
+  expect(view.generation()==2&&view.slide()==1,"covered real renderer retains active and pending photos beyond multiple slide deadlines");
+  lv_tick_inc((UINT32_MAX-1000u)-lv_tick_get());s.state.success(lv_tick_get());generic::testSnapshot(s);
+  view.setVisible(true);
+  expect(view.generation()==2&&view.slide()==1,"resume preserves active photo and restarts full minute even near clock wrap");
+  lv_tick_inc(generic::SlideMs-1);view.update();
+  expect(view.generation()==2&&view.slide()==1,"real resumed photo holds full minute across raw LVGL tick wrap");
+  lv_tick_inc(1);view.update();
+  expect(view.generation()==3&&view.slide()==0,"wrapped resume deadline consumes exactly one prefetched photo");
   view.destroy();generic::testReset();lv_display_delete(display);lv_deinit();
   printf("policy UI failures=%u\n",failures);return failures;
 }

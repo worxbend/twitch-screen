@@ -36,7 +36,8 @@ class TwitchOAuthOwnerSuite extends munit.FunSuite:
       true
 
   private def withOwner(body: (TwitchConfig, TestClock, Provider, EventBus, TwitchOAuthOwner) => Ox ?=> Unit): Unit =
-    val directory = Files.createTempDirectory(Path.of(sys.env("TMPDIR")), "relay-oauth-owner-")
+    val directory =
+      Files.createTempDirectory(Path.of(sys.env.getOrElse("TMPDIR", System.getProperty("java.io.tmpdir"))), "relay-oauth-owner-")
     try
       supervised:
         val clock = TestClock()

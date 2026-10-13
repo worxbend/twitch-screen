@@ -145,6 +145,7 @@ class Controller {
       disconnect();
     }
     removeIneligible(now, !linked_);
+    accelerateChat();
     return selection(now);
   }
   Selection selection(uint64_t now) const {
@@ -192,13 +193,16 @@ class Controller {
     active_ = pending_[0]; erase(0);
     phase_ = entranceFor(active_.notification.replay, active_.notification.kind) == Entrance::None
         ? Phase::Hold : Phase::Entrance;
+    activeHoldStarted_ = now;
     activeEnd_ = addBounded(now, occupancy(active_.notification));
+    accelerateChat();
     out = active_;
     return true;
   }
   bool hold(uint64_t now) {
     if (phase_ != Phase::Entrance) return false;
     phase_ = Phase::Hold;
+    activeHoldStarted_ = now;
     activeEnd_ = addBounded(now, holdDuration(active_.notification) + exitDuration(active_.notification));
     return true;
   }
@@ -266,11 +270,21 @@ class Controller {
   static uint32_t holdDuration(const Notification &n) {
     return n.ttl_ds ? uint32_t(n.ttl_ds) * 100u : kindPresentation(n.kind).holdMs;
   }
-  static uint32_t exitDuration(const Notification &n) { return n.replay ? 0u : 280u; }
+  static uint32_t exitDuration(const Notification &n) {
+    return entranceFor(n.replay, n.kind) == Entrance::None ? 0u : 280u;
+  }
+  void accelerateChat() {
+    const Notification &n = active_.notification;
+    if (phase_ != Phase::Hold || n.kind != NotifyKind::Chat || n.ttl_ds) return;
+    const uint64_t end = addBounded(activeHoldStarted_, chatHoldMs(holdDuration(n), true, pendingCount_));
+    if (end < activeEnd_) activeEnd_ = end;
+  }
   static uint32_t occupancy(const Notification &n) {
     const Entrance entrance = entranceFor(n.replay, n.kind);
+    // LVGL repeat_count=2 is two forward/reverse 200 ms pulses, not
+    // an initial pulse plus two repeats: 800 ms flash + 350 ms slide.
     return holdDuration(n) + exitDuration(n) + (entrance == Entrance::None ? 0u :
-        entrance == Entrance::FlashThenSlide ? 1550u : 350u);
+        entrance == Entrance::FlashThenSlide ? 1150u : 350u);
   }
   bool session(uint64_t epoch, uint64_t connection) const {
     return linked_ && !legacy_ && epoch == epoch_ && connection == connection_;
@@ -319,6 +333,7 @@ class Controller {
   size_t pendingCount_ = 0;
   Card active_;
   Phase phase_ = Phase::None;
+  uint64_t activeHoldStarted_ = 0;
   uint64_t activeEnd_ = 0, epoch_ = 0, connection_ = 0, welcomedAt_ = 0;
   uint64_t grant_ = 0, received_ = 0;
   uint32_t processed_ = 0, enqueued_ = 0, expired_ = 0, suppressed_ = 0, refused_ = 0;

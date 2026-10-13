@@ -48,9 +48,10 @@ private[relay] object DisplayTtl:
 
   /** §6.4.1's per-kind display time, pinned frame by frame by vectors V6–V15.
     *
-    * Every Twitch-sourced event takes its time from here. One uniform value across all twelve kinds is legal and wrong: it gives a follow
-    * the same share of the display as a stream transition, and a large one turns §10.3's reconnect burst into a slideshow that keeps the
-    * idle dashboard off the screen for minutes while the device's 8-entry queue drains one card at a time.
+    * Twitch chat delegates its hold to the receiver; other Twitch events take their time from here. One uniform value across all twelve
+    * kinds is legal and wrong: it gives a follow the same share of the display as a stream transition, and a large one turns §10.3's
+    * reconnect burst into a slideshow that keeps the idle dashboard off the screen for minutes while the device's 8-entry queue drains one
+    * card at a time.
     */
   def defaultFor(kind: NotificationKind): FiniteDuration = kind.defaultTtl
 

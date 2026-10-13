@@ -192,6 +192,7 @@ function render() {
     byId('history').append(element('li', `${card.title || 'Untitled'} · ${card.body} · ${card.identity.origin} · ${card.identity.originalRelayEpoch}:${card.identity.seq} · ${card.remainingExpiryMs} ms waiting lifetime at capture`));
   });
   if (!snapshot.notifications.length) byId('history').append(element('li', 'No retained records.'));
+  return elapsed;
 }
 
 function cardLabel(card) {
@@ -199,7 +200,7 @@ function cardLabel(card) {
   return `${known?.title || `Kind ${card.kind}`} · ${card.origin} · ${card.originalRelayEpoch}:${card.seq}`;
 }
 
-function renderDevice() {
+function renderDevice(elapsed = observationElapsedMs()) {
   const device = snapshot.devices.find((item) => item.deviceId === selectedDevice);
   const queue = byId('device-queue');
   queue.replaceChildren();
@@ -207,7 +208,7 @@ function renderDevice() {
     text('device-detail', 'No device connected or retained.');
     text('transport-detail', 'Transport backlog unavailable.');
   } else {
-    const status = reportStatus(device);
+    const status = reportStatus(device, elapsed);
     const current = connected && status === 'fresh';
     text('device-detail', `${device.deviceId} · ${device.firmwareVersion || 'firmware unknown'} · ${current ? 'fresh firmware observation' : `${status}; not a current queue`} · desired ${device.desiredDisplayRevision}, applied ${device.appliedDisplayRevision ?? 'unknown'} · ${device.baseScreen || 'base unknown'} / ${device.reason || 'reason unknown'} · age upper bound ${device.observationAgeUpperMs ?? 'unknown'} ms at capture.${device.active ? ' Base becomes visible after the active card finishes.' : ''}`);
     if (device.active) queue.append(element('li', `Active: ${cardLabel(device.active.identity)} · ${device.active.phase} · ${device.active.remainingMs} ms total occupancy estimate at observation${current ? '' : ' (frozen)'}`));

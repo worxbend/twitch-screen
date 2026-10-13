@@ -57,6 +57,6 @@ For a security-sensitive report, avoid posting credentials in a public issue. Us
 
 ## Agent-assisted contributions
 
-Project skills live in `.agents/skills/` (directory unavailable in this checkout). They cover Scala quality, architecture and tooling, firmware workflow, protocol testing, and display debugging. Compatibility symlinks are provided under `.claude/skills/`, `.kimi/skills/`, `.kimi-code/skills/`, and `.codex/skills/`; edit the canonical source once.
+Use any relevant installed agent skills alongside the checked-in build configuration. This checkout does not vendor an agent-skill catalog; do not assume compatibility skill directories or historical workflow evidence are available.
 
 Agent work also follows the root [AGENTS.md](AGENTS.md), including its commit, rebase, and publication instructions. Use the relevant skills, inspect the current source, and respect the requested scope. Documentation work should not silently alter firmware, runtime configuration, or deployment state. Verify generated text and commands just as carefully as code.

@@ -4,7 +4,7 @@
 
 // Local presentation only. Relay/controller enums and reports remain untouched.
 namespace generic {
-constexpr uint32_t SlideMs = 5000, WeatherRefreshMs = 300000;
+constexpr uint32_t SlideMs = 60000, WeatherRefreshMs = 300000;
 constexpr uint32_t WeatherFreshMs = 600000, ReachableMs = 90000, RetryMs = 30000;
 constexpr size_t PhotoSide = 96, PhotoPixels = PhotoSide * PhotoSide, BodyLimit = 8192;
 constexpr size_t DecodeLimit = 64 * 1024;

@@ -20,7 +20,7 @@ class TwitchOAuthDiagnosticsSuite extends munit.FunSuite:
   private val defaults = ConfigSource.fromConfig(ConfigFactory.load()).loadOrThrow[Config]
   private val clock = Clock.systemUTC()
   private val fixture = FunFixture[Path](
-    _ => Files.createTempDirectory(Path.of(sys.env("TMPDIR")), "oauth-diagnostics-"),
+    _ => Files.createTempDirectory(Path.of(sys.env.getOrElse("TMPDIR", System.getProperty("java.io.tmpdir"))), "oauth-diagnostics-"),
     directory => Using.resource(Files.walk(directory))(_.iterator().asScala.toList.reverse.foreach(Files.delete(_)))
   )
 

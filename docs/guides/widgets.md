@@ -15,8 +15,8 @@ when they finish. The Twitch dashboard and event-card artwork are unchanged.
 
 Generic fetches a Picsum photo slideshow and local Kyiv outdoor weather directly
 from public APIs, independently of the relay. A new random photo is requested over
-HTTPS for each rotation; there is no fixed catalog. Photos rotate every five visible
-seconds with Kyiv weather text over every photo, never a separate weather slide.
+HTTPS for each rotation; there is no fixed catalog. Photos rotate once per minute
+of visible time with Kyiv weather text over every photo, never a separate weather slide.
 Without current internet evidence,
 a red-yellow breathing gas animation distinguishes **No Wi-Fi**, **Checking
 internet** and **No internet**. A disconnected relay does not imply disconnected

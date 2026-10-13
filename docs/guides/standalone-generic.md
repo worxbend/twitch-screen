@@ -23,7 +23,7 @@ separate states:
 - **Internet available, Generic selected through the relay:** the same photo and
   weather screensaver is displayed.
 
-The slideshow uses five-second visible photo intervals. Every photo has overlaid
+The slideshow uses sixty-second visible photo intervals. Every photo has overlaid
 Kyiv location, outdoor temperature in Celsius and weather condition; there is no
 separate weather slide. The next random photo is prefetched into the spare slot.
 If the download is late or fails, the current photo remains visible until another

@@ -17,6 +17,7 @@ import threading
 import urllib.request
 from test_four_peer_matrix import BASELINE
 from test_production_views import observation_lines
+from baseline_sources import baseline_repository
 
 
 def verify(records, published):
@@ -56,6 +57,7 @@ def main():
     os.umask(0o077)
     root = Path(__file__).resolve().parents[2]
     assert not (root / '.agent-workflow/STOP').exists()
+    baseline_repository(root, BASELINE)
     args.evidence.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix='firmware-baseline-running-', dir=os.environ['TMPDIR']))
     manifest = []

@@ -4,8 +4,14 @@ import java.io.ByteArrayInputStream
 import java.net.{InetAddress, ServerSocket, Socket}
 import java.nio.file.{Files, Path}
 import java.util.HexFormat
+import java.time.Clock
+import ox.supervised
+import ox.channels.Channel
 import scala.jdk.CollectionConverters.*
+import twitchscreen.relay.bus.EventBus
+import twitchscreen.relay.config.ChatNotifications
 import twitchscreen.relay.protocol.*
+import twitchscreen.relay.settings.*
 
 class DeskDeliverySuite extends munit.FunSuite:
   private def vector(name: String): Frame =
@@ -51,6 +57,102 @@ class DeskDeliverySuite extends munit.FunSuite:
       value.origin,
       replay
     )
+
+  test("DESK card permits zero only for Twitch chat and keeps explicit hold bounds for every kind and origin"):
+    val template = card("external_twitch_kind")
+    for
+      kind <- NotificationKind.values
+      origin <- DeskMessageCodec.Origin.values
+      hold <- List(0, 1, 300, 301)
+    do
+      val record = template.record.copy(kind = kind, ttl = DisplayTtl.fromWire(hold))
+      def candidate: DeskDelivery.Card = template.copy(
+        record = record,
+        origin = origin,
+        sourceGeneration = if origin == DeskMessageCodec.Origin.Twitch then 3L else 0L,
+        twitchEpisode = if origin == DeskMessageCodec.Origin.Twitch then 5L else 0L
+      )
+      val allowed = origin != DeskMessageCodec.Origin.Unknown &&
+        (hold == 1 || hold == 300 || (hold == 0 && kind == NotificationKind.Chat && origin == DeskMessageCodec.Origin.Twitch))
+      val clue = s"kind=$kind origin=$origin hold=$hold"
+      if allowed then assertEquals(candidate.record.ttl.deciseconds, hold, clue)
+      else
+        val error = intercept[IllegalArgumentException](candidate)
+        assert(error.getMessage.startsWith("requirement failed"), clue)
+
+  test("actual DeviceHub native chat publishes and reserves receiver-default DESK hold with current Twitch provenance"):
+    supervised:
+      val clock = Clock.systemUTC()
+      val hub = DeviceHub.start(TestRelay.config, ChatNotifications.Show, clock, EventBus(clock, 64))
+      hub.installSettings(
+        SettingsSnapshot(RuntimeSettings.firstRun("disabled", "synthetic").copy(display = DisplaySettings(true, "generic")), 1L, "startup")
+      )
+      val caps = TestDevice.FullCaps | Capabilities.fromWire(DeskGreetingCodec.CapabilityBit)
+      assert((caps.unsigned & Capabilities.Chat.unsigned) != 0)
+      val connection = hub.attach(
+        AttachRequest(
+          DeviceId("desk-native-chat").toOption.get,
+          "127.0.0.1",
+          ProtocolVersion.Three,
+          SeqNo.Zero,
+          caps,
+          Channel.buffered[Outbound](128),
+          LinkCounters(clock),
+          () => (),
+          Channel.buffered[Unit](1),
+          deskHello = Some(DeskGreetingCodec.HelloTail(0, 0, 55, 1000))
+        )
+      )
+      val desk = hub.desk(connection).get
+      try
+        (0 until 6).foreach: _ =>
+          desk.written(desk.next().get, true)
+        val captured = desk.greeting
+        assert(captured.display.enabled)
+        assert(captured.display.sourceGeneration > 0 && captured.display.twitchEpisode > 0)
+        val ready = full.copy(
+          identity = captured.identity,
+          deviceBootId = 55,
+          observedDeviceMs = 1001,
+          observedRelayLowerMs = captured.tail.sampledRelayMs,
+          grantTotal = 8,
+          processedSeq = 0,
+          enqueuedSeq = 0,
+          displayRevision = captured.display.revision,
+          sourceGeneration = captured.display.sourceGeneration,
+          twitchEpisode = captured.display.twitchEpisode,
+          weatherRevision = captured.weather.revision,
+          cpuRevision = captured.cpu.revision,
+          pending = Vector.empty
+        )
+        assertEquals(desk.report(ready), Right(true))
+        val receipt = hub.publish(EventRequest.of(NotificationKind.Chat, "native chatter", "paced chat")).toOption.get
+        val publication = hub.retainedPublications.last
+        assert(publication.capableEligible)
+        assertEquals(publication.record.ttl, DisplayTtl.Default)
+        val reservation = desk.delivery.reserve(hub.relayClock.monotonicMs).get
+        assertEquals(reservation.event, Some(receipt.seq.value))
+        val frame = parsed(reservation)
+        assertEquals(frame.header.typeCode.value, 0x2b)
+        assertEquals(frame.payload.slice(18, 20).toVector, Vector[Byte](0, 0))
+        val envelope = DeskMessageCodec.decodeEvent(frame).toOption.get
+        assertEquals(envelope.origin, DeskMessageCodec.Origin.Twitch)
+        assertEquals(envelope.relayEpoch, publication.relayEpoch)
+        assertEquals(envelope.sourceGeneration, captured.display.sourceGeneration)
+        assertEquals(envelope.twitchEpisode, captured.display.twitchEpisode)
+        assertEquals(envelope.deadlineRelayMs, publication.deadlineRelayMs)
+        val classic = frame.copy(header = frame.header.copy(typeCode = TypeCode.fromWire(0x21.toByte)))
+        val record = Tsb3Decoder.fromRelay(classic).toOption.get.asInstanceOf[RelayMessage.Event].record
+        assertEquals(record.seq, receipt.seq)
+        assertEquals(record.kind, NotificationKind.Chat)
+        assertEquals(record.ttl, DisplayTtl.Default)
+        assertEquals((record.actor, record.text), ("native chatter", "paced chat"))
+        desk.delivery.written(reservation, hub.relayClock.monotonicMs, true)
+        assert(!desk.delivery.isClosed)
+        assertEquals(desk.delivery.pendingCount, 0)
+      finally
+        desk.close()
+        hub.detach(connection, DisconnectReason.PeerClosed)
 
   test("transport observation counts every writer lane and keeps in-flight and credits separate"):
     val delivery = owner()

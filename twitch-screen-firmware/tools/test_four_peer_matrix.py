@@ -19,6 +19,7 @@ import time
 import urllib.request
 from runtime_lifecycle import verify_callbacks, verify_report_phases
 from test_production_views import observation_lines
+from baseline_sources import baseline_repository
 
 BASELINE = 'b30b91f4a29bc70a50428ac1bf6894e3ba4b7ac2'
 
@@ -33,6 +34,7 @@ def main():
     os.umask(0o077)
     root = Path(__file__).resolve().parents[2]
     assert not (root / '.agent-workflow/STOP').exists()
+    baseline_repository(root, BASELINE)
     args.evidence.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix='firmware-four-peer-', dir=os.environ['TMPDIR']))
     relay = scratch / 'relay'; firmware = scratch / 'firmware'

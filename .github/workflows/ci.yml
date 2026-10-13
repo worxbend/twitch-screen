@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: verify-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -20,6 +24,8 @@ jobs:
         working-directory: twitch-screen-relay
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
         with:
           distribution: temurin
@@ -31,12 +37,18 @@ jobs:
             ~/.cache/mill
           key: relay-${{ runner.os }}-${{ hashFiles('twitch-screen-relay/build.mill', 'twitch-screen-relay/mill') }}
       - run: ./mill compile
+      - name: Prepare isolated relay test scratch
+        run: |
+          mkdir -p "$RUNNER_TEMP/twitch-screen-relay"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP/twitch-screen-relay" >> "$GITHUB_ENV"
       - name: Audit resolved runtime dependencies
         working-directory: .
         run: |
           python3 -m unittest discover -s tools/tests -v
           python3 tools/audit_relay_dependencies.py
-      - run: ./mill --no-server -j 1 test
+      # test is a cached task alias; testForked is the fresh test command.
+      - name: Execute fresh relay tests
+        run: ./mill --no-server -j 1 test.testForked
       - run: ./mill --no-server mill.scalalib.scalafmt/checkFormatAll
 
   protocol:
@@ -44,6 +56,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Prepare isolated contract test scratch
+        run: |
+          mkdir -p "$RUNNER_TEMP/twitch-screen-protocol"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP/twitch-screen-protocol" >> "$GITHUB_ENV"
       - run: python3 tools/check_protocol_vectors.py
       - run: python3 tools/check_desk_contract.py
       - run: python3 -m unittest discover -s tools/tests -v
@@ -63,6 +81,8 @@ jobs:
         working-directory: twitch-screen-firmware
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
@@ -73,6 +93,10 @@ jobs:
             ~/.platformio/platforms
             twitch-screen-firmware/.pio/libdeps
           key: firmware-${{ runner.os }}-${{ hashFiles('twitch-screen-firmware/platformio.ini') }}
+      - name: Prepare isolated firmware test scratch
+        run: |
+          mkdir -p "$RUNNER_TEMP/twitch-screen-firmware"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP/twitch-screen-firmware" >> "$GITHUB_ENV"
       - run: python -m pip install --only-binary ':all:' platformio==6.1.18
       - run: python tools/test_runner_contract.py
       - run: pio test -e native
@@ -81,12 +105,14 @@ jobs:
       - run: pio test -e native-lvgl-base
       - run: pio test -e native-generic
       - name: Verify actual application peer and fail-closed capable verdict
+        env:
+          RECOVERY_EVIDENCE: ${{ runner.temp }}/firmware-recovery
         run: |
           pio test -e native-runtime-peer --without-testing
           python tools/test_runtime_peer.py --binary .pio/build/native-runtime-peer/program
           python tools/test_capable_pairing.py --binary .pio/build/native-runtime-peer/program
-          python tools/test_runtime_recovery.py --binary .pio/build/native-runtime-peer/program --evidence '${{ runner.temp }}/firmware-recovery'
-          python tools/test_recovery_freshness.py --evidence '${{ runner.temp }}/firmware-recovery'
+          python tools/test_runtime_recovery.py --binary .pio/build/native-runtime-peer/program --evidence "$RECOVERY_EVIDENCE"
+          python tools/test_recovery_freshness.py --evidence "$RECOVERY_EVIDENCE"
           python tools/test_capable_reconnect.py --binary .pio/build/native-runtime-peer/program
           python tools/test_runtime_failures.py --binary .pio/build/native-runtime-peer/program
           python tools/test_pairing_runbook.py
@@ -105,6 +131,8 @@ jobs:
         working-directory: twitch-screen-client
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -128,6 +156,10 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Baseline firmware adapters read immutable historical source via git show.
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
         with:
           distribution: temurin
@@ -178,11 +210,61 @@ jobs:
           TSC_TEST_INSTALLED=1 PYTHONPATH= twitch-screen-client/.venv/bin/python twitch-screen-client/tools/check_runtime_device.py --image-id "$IMAGE_ID" --binary twitch-screen-firmware/.pio/build/native-runtime-peer/program --browser-executable "$TMPDIR/browser/chrome-headless-shell-linux64/chrome-headless-shell" --test-owned --deny-monitor --evidence "$TMPDIR/producer-denied"
           TSC_TEST_INSTALLED=1 PYTHONPATH= twitch-screen-client/.venv/bin/python twitch-screen-client/tools/check_runtime_device.py --image-id "$IMAGE_ID" --binary twitch-screen-firmware/.pio/build/native-runtime-peer/program --browser-executable "$TMPDIR/browser/chrome-headless-shell-linux64/chrome-headless-shell" --test-owned --malformed-response --evidence "$TMPDIR/producer-malformed"
 
+      # Allowlist synthetic diagnostics only: no runtime state, tokens, browser
+      # profiles, screenshots, binaries, or wholesale TMPDIR uploads.
+      - name: Retain synthetic baseline diagnostics on success or failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: integration-baseline-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          include-hidden-files: false
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/twitch-screen-integration/admin-main/result.json
+            ${{ runner.temp }}/twitch-screen-integration/admin-main/test_legacy_production.py.log
+            ${{ runner.temp }}/twitch-screen-integration/admin-main/test_legacy_production_verdict.py.log
+            ${{ runner.temp }}/twitch-screen-integration/admin-main/legacy-running/build.log
+            ${{ runner.temp }}/twitch-screen-integration/admin-main/legacy-running/peer-stderr.log
+            ${{ runner.temp }}/twitch-screen-integration/admin-browser/result.json
+            ${{ runner.temp }}/twitch-screen-integration/admin-browser/test_legacy_production.py.log
+            ${{ runner.temp }}/twitch-screen-integration/admin-browser/test_legacy_production_verdict.py.log
+            ${{ runner.temp }}/twitch-screen-integration/admin-browser/legacy-running/build.log
+            ${{ runner.temp }}/twitch-screen-integration/admin-browser/legacy-running/peer-stderr.log
+
   container:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - run: docker build --check twitch-screen-relay
       - run: docker build -t twitch-screen-relay:ci twitch-screen-relay
       - run: python3 tools/smoke_container.py twitch-screen-relay:ci
+
+  required:
+    name: Verify required checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [relay, protocol, firmware, companion, integration, container]
+    if: ${{ always() }}
+    steps:
+      - name: Require every verification job to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          expected = {'relay', 'protocol', 'firmware', 'companion', 'integration', 'container'}
+          results = json.loads(os.environ['NEEDS_JSON'])
+          if not isinstance(results, dict) or set(results) != expected:
+              raise SystemExit('Missing or unexpected required verification jobs')
+          failed = [name for name, row in results.items()
+                    if not isinstance(row, dict) or row.get('result') != 'success']
+          if failed:
+              raise SystemExit('Required verification did not succeed: ' + ', '.join(sorted(failed)))
+          print('Every required verification job succeeded')
+          PY

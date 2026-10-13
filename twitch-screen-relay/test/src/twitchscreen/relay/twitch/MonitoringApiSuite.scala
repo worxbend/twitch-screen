@@ -24,7 +24,7 @@ import twitchscreen.relay.settings.*
 class MonitoringApiSuite extends munit.FunSuite:
   private val defaults = ConfigSource.fromConfig(ConfigFactory.load()).loadOrThrow[Config]
   private val fixture = FunFixture[Path](
-    _ => Files.createTempDirectory(Path.of(sys.env("TMPDIR")), "relay-monitoring-"),
+    _ => Files.createTempDirectory(Path.of(sys.env.getOrElse("TMPDIR", System.getProperty("java.io.tmpdir"))), "relay-monitoring-"),
     directory => Using.resource(Files.walk(directory))(_.iterator().asScala.toList.reverse.foreach(Files.delete(_)))
   )
   private def fake(config: TwitchConfig): TwitchSource = new TwitchSource:

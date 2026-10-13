@@ -26,7 +26,8 @@ class RuntimeRecoverySuite extends munit.FunSuite:
   test(
     "installed Dependencies automatically rotates clock domain and recreates simulated ingestion without rebinding HTTP or losing desired state"
   ):
-    val directory = Files.createTempDirectory(Path.of(sys.env("TMPDIR")), "automatic-runtime-")
+    val directory =
+      Files.createTempDirectory(Path.of(sys.env.getOrElse("TMPDIR", System.getProperty("java.io.tmpdir"))), "automatic-runtime-")
     val httpPort = port()
     val devicePort = port()
     val source = ConfigFactory

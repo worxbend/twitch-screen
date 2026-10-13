@@ -62,7 +62,7 @@ int takePending(const uint16_t *&pixels,uint32_t &generation) {
   Guard guard;(void)guard;const int i=slots.pending();if(i<0)return -1;
   slots.activate(i); pixels=pictures[i];generation=slots.generation[i];
 #ifdef ARDUINO
-  pictureDemand.store(true);wake(); // Prefetch immediately, BEFORE the next 5s rotation.
+  pictureDemand.store(true);wake(); // Prefetch immediately, BEFORE the next one-minute rotation.
 #endif
   return i;
 }

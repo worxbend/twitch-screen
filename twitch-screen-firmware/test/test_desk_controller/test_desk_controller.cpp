@@ -133,6 +133,109 @@ void lifecycle(Checker &check) {
   check(c.beginExit(61091, false).base == Base::DisconnectedOrbit, "offline exit reveals local base");
   check(c.complete(61371, false), "offline report/clock cannot block completion");
 }
+void chatPacing(Checker &check) {
+  Controller c;
+  c.legacyWelcome();
+  Notification n; n.kind = NotifyKind::Chat; n.seq = 1;
+  check(c.legacyAdmit(n) == Admission::Enqueued, "quiet chat admitted");
+  Card out;
+  check(c.start(100, out) && c.phase() == Phase::Hold, "chat appears immediately without entrance animation");
+  check(c.remaining(100) == 2500, "quiet chat keeps readable default hold without exit animation");
+  n.seq = 2;
+  check(c.legacyAdmit(n) == Admission::Enqueued, "new chat queues behind active card");
+  c.reconcile(200, false);
+  check(c.remaining(200) == 400, "arrival shortens existing chat to 500 ms from original hold start");
+  n.seq = 3; c.legacyAdmit(n);
+  n.seq = 4; c.legacyAdmit(n);
+  c.reconcile(250, false);
+  check(c.remaining(250) == 100, "three waiting cards shorten active chat to 250 ms total");
+  check(c.beginExit(350, false).base == Base::Twitch && c.complete(350, false), "chat exits immediately through real lifecycle");
+  check(c.start(350, out) && out.notification.seq == 2, "accelerated chat keeps FIFO order");
+  check(c.remaining(350) == 500, "two waiting cards use intermediate pacing");
+  c.disconnect(); c.reconcile(400, false);
+  check(c.pendingCount() == 2 && c.remaining(400) == 450,
+        "classic disconnect retains pending FIFO and shortened hold");
+  c.beginExit(850, false); c.complete(850, false);
+
+  Controller explicitHold;
+  explicitHold.legacyWelcome();
+  n.seq = 1; n.ttl_ds = 20;
+  explicitHold.legacyAdmit(n); explicitHold.start(100, out);
+  n.seq = 2; explicitHold.legacyAdmit(n);
+  explicitHold.reconcile(200, false);
+  check(explicitHold.remaining(200) == 1900, "explicit wire hold duration remains authoritative");
+  check(entranceFor(false, NotifyKind::Follow) == Entrance::Slide &&
+        entranceFor(false, NotifyKind::Alert) == Entrance::FlashThenSlide,
+        "audience and severity animations unchanged");
+}
+void chatEdges(Checker &check) {
+  // Explicit durations (including shorter-than-cap holds) win for live and
+  // replay chat at every bounded FIFO pressure, not just one example TTL.
+  for (bool replay : {false, true}) for (uint16_t ttl : {uint16_t(0), uint16_t(1), uint16_t(20), uint16_t(6000)})
+    for (size_t waiting = 0; waiting <= Controller::Capacity; ++waiting) {
+      Controller c; c.legacyWelcome();
+      Notification n; n.kind = NotifyKind::Chat; n.seq = 1; n.replay = replay; n.ttl_ds = ttl;
+      check(c.legacyAdmit(n) == Admission::Enqueued, "matrix chat admitted");
+      Card out; check(c.start(100, out), "matrix chat starts before burst");
+      for (size_t i = 0; i < waiting; ++i) {
+        n.seq = uint32_t(i + 2); n.kind = i % 2 ? NotifyKind::Alert : NotifyKind::Follow;
+        check(c.legacyAdmit(n) == Admission::Enqueued, "mixed-kind queue contributes pressure without priority reordering");
+      }
+      c.reconcile(110, false);
+      const uint32_t budget = ttl ? uint32_t(ttl) * 100u : waiting >= 3 ? 250u : waiting ? 500u : 2500u;
+      check(c.remaining(110) == budget - 10 && c.phase() == Phase::Hold,
+            "explicit TTL/replay/mixed-kind pressure matrix matches original-start hold");
+      check(!c.hold(120) && c.remaining(120) == budget - 20,
+            "duplicate hold callback cannot restart an immediate chat");
+    }
+
+  Controller c; connect(c, check, control(1, true));
+  Card value = card(1, Origin::Twitch); value.notification.kind = NotifyKind::Chat; value.notification.ttl_ds = 0;
+  check(c.admit(value, 100) == Admission::Enqueued, "DESK default chat admitted");
+  Card out; check(c.start(100, out), "DESK chat starts quiet");
+  for (uint32_t seq = 2; seq <= 4; ++seq) {
+    value = card(seq, Origin::Twitch, seq == 2 ? 220 : 100000);
+    value.notification.kind = seq == 2 ? NotifyKind::Follow : NotifyKind::Chat;
+    check(c.admit(value, 120) == Admission::Enqueued, "DESK pressure cards admitted");
+  }
+  c.reconcile(150, true);
+  check(c.remaining(150) == 200, "DESK three waiting cards shorten chat to 250 ms");
+  c.reconcile(220, true);
+  check(c.pendingCount() == 2 && c.expiredTotal() == 1 && c.remaining(220) == 130,
+        "expiry reducing pressure never lengthens an already shortened active chat");
+  check(c.control(10, 20, control(2, false, Preferred::Weather, 1, 2)), "disable drains remaining Twitch pressure");
+  c.reconcile(230, true);
+  check(c.pendingCount() == 0 && c.suppressedTotal() == 2 && c.remaining(230) == 120 && c.active(),
+        "actual queue removal keeps shortened active card alive until its callback");
+  const uint64_t grant = c.grantTotal();
+  check(grant - c.receivedTotal() == Controller::Capacity, "expiry/suppression/start preserve all DESK credits");
+  check(c.beginExit(350, true).reason == Reason::DataMissing && c.complete(350, true) && c.grantTotal() == grant,
+        "instant chat reveal applies new base without releasing active credit twice");
+
+  Controller late; late.legacyWelcome();
+  Notification n; n.seq = 1; n.kind = NotifyKind::Chat;
+  late.legacyAdmit(n); late.start(100, out);
+  n.seq = 2; n.kind = NotifyKind::Warning; late.legacyAdmit(n);
+  late.reconcile(1000, false);
+  check(late.remaining(1000) == 0 && late.phase() == Phase::Hold && !late.complete(1000, false),
+        "pressure arriving after the cap makes hold due, never completes it without UI callback");
+  late.beginExit(1000, false); late.complete(1000, false);
+  check(late.start(1000, out) && out.notification.kind == NotifyKind::Warning && late.remaining(1000) == 4930,
+        "severe successor retains flash/slide/default hold/exit under mixed chat pressure");
+
+  // Feed the same wrapping raw clock used by Receiver, not a wrapping u64.
+  MillisClock clock; Controller wrap; wrap.legacyWelcome();
+  n.seq = 1; n.kind = NotifyKind::Chat;
+  const uint32_t rawStart = UINT32_MAX - 100;
+  const uint64_t started = clock.update(rawStart);
+  wrap.legacyAdmit(n); wrap.start(started, out);
+  n.seq = 2; wrap.legacyAdmit(n);
+  const uint64_t wrapped = clock.update(uint32_t(rawStart + 200u));
+  wrap.reconcile(wrapped, false);
+  check(!clock.discontinuity() && wrap.remaining(wrapped) == 300, "chat cap uses extended millis across raw clock wrap");
+  wrap.reconcile(clock.update(uint32_t(rawStart + 500u)), false);
+  check(wrap.remaining(started + 500) == 0 && wrap.active(), "wrap deadline becomes due without estimated completion");
+}
 void pressure(Checker &check) {
   Controller c;
   connect(c, check);
@@ -186,8 +289,8 @@ void replayAndSeverity(Checker &check) {
     Card value = card(1); value.notification.kind = NotifyKind::Alert; value.notification.replay = replay != 0;
     check(c.admit(value, 100) == Admission::Enqueued, "external severity never inferred as Twitch");
     Card out; check(c.start(100, out), "severity card starts");
-    check(c.remaining(100) == (replay ? 30000u : 31830u), "severity flash and replay occupancy estimates");
-    if (!replay) check(c.hold(1650), "severity actual flash/slide completion");
+    check(c.remaining(100) == (replay ? 30000u : 31430u), "severity flash and replay occupancy estimates");
+    if (!replay) check(c.hold(1250), "severity actual flash/slide completion");
     check(c.beginExit(40000, true).base == Base::ConnectedOrbit, "replay exit also reconciles");
     check(c.complete(40000, true), "callback rather than estimate completes replay");
   }
@@ -305,7 +408,7 @@ void deterministicPressure(Checker &check) {
 int main() {
   Checker check;
   selectionMatrix(check); synchronization(check); lifecycle(check);
-  pressure(check); episodeAndFifo(check); replayAndSeverity(check);
+  chatPacing(check); chatEdges(check); pressure(check); episodeAndFifo(check); replayAndSeverity(check);
   viewBoundary(check); legacyParity(check); deterministicPressure(check);
   printf("%d checks, %d failures\n", check.checks, check.failures);
   return check.failures != 0;

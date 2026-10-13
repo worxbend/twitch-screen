@@ -118,11 +118,20 @@ cloudy, fog, drizzle, rain, snow, thunderstorm. Temperature and CPU/memory round
 0.01, half away from zero AFTER range validation. Optional CPU temperature is accepted
 and queryable; device CPU widget uses memory as its ONLY secondary metric.
 
-Hold rounds UP to 100 ms and response reports effective hold: 101 becomes 200,
-never wire zero. Waiting expiry remains independent; 1 ms may expire before any device
-starts it. Existing per-kind Twitch holds remain 6/8/10 s. Tightened former HTTP hold
-maximum 6553500 to 30000 ms is an explicit breaking migration, not legacy wire change.
-Whole entrance/hold/exit occupancy exceeds hold; active report estimates all of it.
+HTTP notification hold rounds UP to 100 ms and the response reports effective hold:
+101 becomes 200, never wire zero, including external/manual Chat. Waiting expiry
+remains independent; 1 ms may expire before any device starts it. DESK publication
+requires an explicit hold of 1–300 deciseconds, with exactly one exception: native
+Twitch Chat (`kind=Chat`, `origin=Twitch`) sends `ttl_ds=0` to delegate adaptive pacing
+to the receiver. The firmware holds it for 2500 ms with no waiting cards, 500 ms with
+one or two, and 250 ms with three or more; backlog changes never extend its original
+hold. Non-chat Twitch holds remain 6/8/10 s. Zero for any other kind/origin and holds
+above 300 deciseconds remain rejected at relay publication boundaries. Immutable
+classic wire vectors retain their historical explicit Chat holds; zero already means
+receiver default in the shared EVENT base, and the DESK firmware decoder accepts it.
+Tightened former HTTP hold maximum 6553500 to 30000 ms is an explicit breaking
+migration, not legacy wire change. Whole entrance/hold/exit occupancy exceeds hold
+for animated cards; active report estimates all of it.
 
 Global POST and each telemetry PUT use 10/s, burst 20 token buckets; excess 429,
 Retry-After 1, no mutation. Device snapshot publication coalesces to <=5/s/source;

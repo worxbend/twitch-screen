@@ -329,6 +329,8 @@ int main() {
              static_cast<unsigned long>(card.notification.seq), static_cast<unsigned long long>(card.epoch),
              static_cast<unsigned>(card.origin), card.notification.replay ? "true" : "false",
              static_cast<unsigned long>(startedAt), static_cast<unsigned long>(holdMs));
+      // Match main.cpp: the active card no longer contributes to queue pressure.
+      uiNotifySetBacklog(controller.pendingCount());
       uiNotifyShow(card.notification, card.origin != desk::Origin::Unknown);
     }
     metrics.uiFinished(uiStartedUs, socket.nowUs());

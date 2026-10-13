@@ -130,6 +130,34 @@ class DeskMessageReportCodecSuite extends munit.FunSuite:
     )
   )
 
+  test("event publication permits receiver-default hold only for native Twitch chat and retains all explicit hold bounds"):
+    for
+      kind <- NotificationKind.values
+      origin <- Origin.values
+      hold <- List(0, 100, 30000, 30100)
+    do
+      def candidate: DeskMessageCodec.Event = fromEvent(
+        card(1, kind, hold, "synthetic", "hold boundary"),
+        identity.relayEpoch,
+        if origin == Origin.Twitch then 3L else 0L,
+        if origin == Origin.Twitch then 5L else 0L,
+        65000,
+        origin
+      )
+      val allowed = origin != Origin.Unknown &&
+        (hold == 100 || hold == 30000 || (hold == 0 && kind == NotificationKind.Chat && origin == Origin.Twitch))
+      val clue = s"kind=$kind origin=$origin holdMs=$hold"
+      if allowed then
+        val envelope = candidate
+        val encoded = frame(event(envelope))
+        assertEquals(decodeEvent(encoded), Right(envelope), clue)
+        assertEquals(encoded.payload(18) & 0xff | ((encoded.payload(19) & 0xff) << 8), hold / 100, clue)
+        assertEquals(encoded.payload(20) & 0xff, kind.code, clue)
+        assertEquals(envelope.origin, origin, clue)
+      else
+        val error = intercept[IllegalArgumentException](candidate)
+        assert(error.getMessage.startsWith("requirement failed"), clue)
+
   test("all eight remaining canonical vectors match independent expected typed fields and exact bytes"):
     assertEquals(hex.formatHex(stats(statsValue)), hex.formatHex(vector("stats_observed")))
     assertEquals(decodeStats(frame(vector("stats_observed"))), Right(statsValue))

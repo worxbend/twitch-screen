@@ -18,6 +18,7 @@ inline bool initializeApplicationBoot(Receiver &receiver, uint64_t boot) {
 inline void applyApplicationView(Receiver &receiver, uint32_t rawMillis) {
   receiver.tick(rawMillis);
   const Selection selected = receiver.controller().reconcile(receiver.now(), receiver.calibrated());
+  uiNotifySetBacklog(receiver.controller().pendingCount());
   if (receiver.negotiated()) uiIdleApplyStats(receiver.applicationStats());
   uiBaseView().apply(selected, receiver.weather(), receiver.cpu());
 }

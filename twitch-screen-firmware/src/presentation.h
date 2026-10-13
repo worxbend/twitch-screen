@@ -43,9 +43,17 @@ inline uint32_t readableChatColor(uint32_t rgb) {
 enum class Entrance : uint8_t { None, Slide, FlashThenSlide };
 
 inline Entrance entranceFor(bool replay, NotifyKind kind) {
-  if (replay) return Entrance::None;
+  if (replay || kind == NotifyKind::Chat) return Entrance::None;
   return kind == NotifyKind::Warning || kind == NotifyKind::Alert ? Entrance::FlashThenSlide
                                                                   : Entrance::Slide;
+}
+
+// Default chat holds adapt to queue pressure; explicit wire durations are preserved.
+// Shorten from the original hold start, never restart or lengthen an active card.
+inline uint32_t chatHoldMs(uint32_t requested, bool adaptiveChat, size_t pending) {
+  if (!adaptiveChat || !pending) return requested;
+  const uint32_t cap = pending >= 3 ? 250u : 500u;
+  return requested < cap ? requested : cap;
 }
 
 // K-118: the hold-time accent-ring pulse is an object-wide style opa animation. Below COVER it

@@ -65,6 +65,12 @@ class NotificationRouterSuite extends munit.FunSuite:
     assertEquals(plain.value.value, 0L)
     assert(!plain.flags.contains(EventFlags.ChatColourPresent))
 
+  test("native chat delegates pacing to the receiver while explicit HTTP chat holds stay authoritative"):
+    val native = routed(RelayEvent.ChatMessaged("viewer", "fast chat", None))
+    assertEquals(native.record(SeqNo.fromWire(1L), Instant.EPOCH).ttl.deciseconds, 0)
+    val manual = EventRequest.card(NotificationRequest(NotificationKind.Chat, "manual", "fixed hold", 6.seconds))
+    assertEquals(manual.record(SeqNo.fromWire(2L), Instant.EPOCH).ttl.deciseconds, 60)
+
   test("chat is routed whatever the relay's chat policy says, because every EVENT is sequenced"):
     // §10.3: a kind skipped by the sequence space lets a later event hold the high-water mark past a lost durable
     // one. The policy is ANDed with CAP_CHAT at the moment of sending (§6.1), which DeviceLinkSuite pins.

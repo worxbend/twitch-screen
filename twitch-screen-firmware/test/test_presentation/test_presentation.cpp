@@ -169,8 +169,10 @@ void testReplaySkipsEntrance(Checker &check) {
   for (int code = 0; code < 256; ++code) {
     const NotifyKind kind = kindFromCode(static_cast<uint8_t>(code));
     check(entranceFor(true, kind) == Entrance::None, "replay never animates, any kind");
-    check(entranceFor(false, kind) == (isSevere(kind) ? Entrance::FlashThenSlide : Entrance::Slide),
-          "live cards flash only for warning and alert, any code");
+    const Entrance expected = kind == NotifyKind::Chat ? Entrance::None :
+        isSevere(kind) ? Entrance::FlashThenSlide : Entrance::Slide;
+    check(entranceFor(false, kind) == expected,
+          "chat appears immediately; only warning and alert flash, any code");
   }
   check(entranceFor(true, NotifyKind::Alert) == Entrance::None, "replayed alert skips flash");
   check(entranceFor(true, NotifyKind::Warning) == Entrance::None, "replayed warning skips flash");
@@ -178,7 +180,18 @@ void testReplaySkipsEntrance(Checker &check) {
   check(entranceFor(false, NotifyKind::Warning) == Entrance::FlashThenSlide,
         "live warning flashes");
   for (const NotifyKind kind : routineKinds())
-    check(entranceFor(false, kind) == Entrance::Slide, "routine live cards only slide");
+    check(entranceFor(false, kind) == (kind == NotifyKind::Chat ? Entrance::None : Entrance::Slide),
+          "routine cards slide except immediate chat");
+}
+
+void testChatHoldCaps(Checker &check) {
+  for (uint32_t requested : {0u, 100u, 249u, 250u, 499u, 500u, 2500u, 600000u, UINT32_MAX})
+    for (size_t waiting : {size_t(0), size_t(1), size_t(2), size_t(3), size_t(8), SIZE_MAX}) {
+      const uint32_t cap = waiting >= 3 ? 250u : 500u;
+      check(chatHoldMs(requested, false, waiting) == requested, "nonadaptive kinds and explicit TTL are never capped");
+      check(chatHoldMs(requested, true, waiting) == (!waiting || requested < cap ? requested : cap),
+            "chat cap boundaries never extend short holds or overflow large queue counts");
+    }
 }
 
 // K-118: only severe live cards pay for the full-panel ring pulse during the hold.
@@ -209,6 +222,7 @@ int main() {
   testRoundingBucket(check);
   testVisibilityRule(check);
   testReplaySkipsEntrance(check);
+  testChatHoldCaps(check);
   testSevereRingPulse(check);
   printf("%d checks, %d failures\n", check.checks, check.failures);
   return check.failures != 0;

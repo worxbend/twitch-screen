@@ -11,7 +11,7 @@ class StandaloneGenericDocsTests(unittest.TestCase):
         for required in ('No Wi-Fi', 'Checking internet', 'No internet',
                          'relay absent', 'https://picsum.photos/',
                          'https://open-meteo.com/', '50.45466', '30.5238',
-                         'five-second', '96 × 96', 'no PSRAM',
+                         'sixty-second', '96 × 96', 'no PSRAM',
                          'non-commercial', 'physical LCD'):
             with self.subTest(required=required):
                 self.assertIn(required, text)
